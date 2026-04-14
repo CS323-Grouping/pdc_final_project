@@ -1,60 +1,59 @@
 import pygame
+import threading
+from player_scripts import player as pl
+from network import network_handler as nw
+
+server_data = {}
+lock = threading.Lock()
+
+def network_thread(network_obj, hero_obj):
+    global server_data
+    while True:
+        try:
+            reply = network_obj.send((hero_obj.pos.x, hero_obj.pos.y))
+            if reply:
+                with lock:
+                    server_data = reply
+        except Exception as e:
+            print(f"Network error: {e}")
+            break
 
 pygame.init()
-
-screen = pygame.display.set_mode((640,640), pygame.RESIZABLE)
+screen = pygame.display.set_mode((640, 640), pygame.RESIZABLE)
 clock = pygame.time.Clock()
-p_pos = pygame.Vector2(screen.get_width() / 2, screen.get_height() / 2)
-player = pygame.image.load("assets/characters/placeholder_AI_Knight.png").convert_alpha()
-player = pygame.transform.scale(player, (128, 128))
-dt = 0
 
+n = nw.Network()
+start_pos = n.get_pos()
+if not start_pos:
+    start_pos = (100, 100)
 
-def check_border(position):
-    if position.x > screen.get_width():
-        position.x = screen.get_width()
-    if position.x < 0:
-        position.x = 0
-    if position.y > screen.get_height():
-        position.y = screen.get_height()
-    if position.y < 0:
-        position.y = 0
+hero = pl.Player(start_pos, "assets/characters/placeholder_AI_Knight.png")
 
-
-    return position
+t = threading.Thread(target=network_thread, args=(n, hero), daemon=True)
+t.start()
 
 running = True
-while running:
-    WIDTH, HEIGHT = screen.get_size()
+dt = 0
 
+while running:
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
 
-    rect = player.get_rect(center=p_pos)
+    WIDTH, HEIGHT = screen.get_size()
+    hero.update(dt, WIDTH, HEIGHT)
 
-    screen.blit(player, rect)
+    screen.fill((0, 0, 0))
+    hero.draw(screen)
 
-    keys = pygame.key.get_pressed()
-    if keys[pygame.K_w]: # needs normalization along the diagonal
-        p_pos.y -= 300 * dt
-    if keys[pygame.K_s]:
-        p_pos.y += 300 * dt
-    if keys[pygame.K_a]:
-        p_pos.x -= 300 * dt
-    if keys[pygame.K_d]:
-        p_pos.x += 300 * dt
+    with lock:
+        positions = dict(server_data)
+
+    for p_id, p_pos in positions.items():
+        if int(p_id) != n.id:
+            pygame.draw.circle(screen, (255, 0, 0), (int(p_pos[0]), int(p_pos[1])), 20)
+
     pygame.display.flip()
     dt = clock.tick(60) / 1000
-
-    p_pos = check_border(p_pos)
-
-
-
-    screen.fill((0,0,0))
-
-
-
-
 
 pygame.quit()
