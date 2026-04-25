@@ -1,50 +1,45 @@
 import socket
-import pickle
+import struct
 
-
+FRMT_PACKET = "!4sii"
+CONNECTION = b"CONN"
+GET_POS = b"GPOS"
+POS = b"POSI"
 
 class Network:
     def __init__(self):
         self.client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.client.settimeout(0.1)
 
-        self.server = "192.168.1.5"
+        self.server = "192.168.1.13"
         self.port = 5555
         self.addr = (self.server, self.port)
 
-        self.id = self.connect()
+        self.connect()
 
     def connect(self):
         try:
-            self.client.sendto(b"connect", self.addr)
-            data, _ = self.client.recvfrom(2048)
-            return int(data.decode())
+            msg = struct.pack(FRMT_PACKET, CONNECTION, 0, 0)
+            self.client.sendto(msg, self.addr)
+            data, addr = self.client.recvfrom(128)
+            cmd, x, y = struct.unpack(FRMT_PACKET, data)
 
+            if cmd == CONNECTION:
+                print("connection successful")
         except Exception as e:
             print(f"Connection Error: {e}")
-            return None
 
     def get_pos(self):
         try:
-            data = self.client.recvfrom(128)
-            if not data:
-                return None
-            return pickle.loads(data)
-        except socket.timeout:
-            return None
-        except Exception as e:
-            print(f"get_pos error: {e}")
-            return None
+            msg = struct.pack(FRMT_PACKET, GET_POS, 0, 0)
+            self.client.sendto(msg, self.addr)
 
-    def send(self, data):
-        try:
-            self.client.sendto(pickle.dumps(data), self.addr)
-            data, _ = self.client.recvfrom(2048)
-            if not data:
-                return None
-            return pickle.loads(data)
-        except socket.timeout:
-            return None
+            data, addr = self.client.recvfrom(128)
+            cmd, x, y = struct.unpack(FRMT_PACKET, data)
+
+            if cmd == POS:
+                return (x, y)
+
         except Exception as e:
-            print(f"send error: {e}")
+            print(f"Error: {e}")
             return None

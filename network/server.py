@@ -1,6 +1,11 @@
 import socket
 import threading
-import pickle
+import struct
+
+FRMT_PACKET = "!4sii"
+CONNECTION = b"CONN"
+GET_POS = b"GPOS"
+POS = b"POSI"
 
 server = "0.0.0.0"
 port = 5555
@@ -13,22 +18,38 @@ print("Waiting for a connection, Server Started")
 
 pos = {}
 
-lock = threading.Lock()
+# lock = threading.Lock()
 curr_player = 0
 
 Known_Addresses = {}
 
-while True:
-    data, addr = s.recvfrom(128)
+start_position = (100, 100)
+
+def handle_messages(data, addr):
+    global curr_player
+
+    cmd, x, y = struct.unpack(FRMT_PACKET, data)
+
     if addr not in Known_Addresses:
         print(f"Connection from {addr}")
-        s.sendto("Connection Successful".encode(), addr)
         Known_Addresses[addr] = curr_player
-        curr_player + 1
+        curr_player += 1
+
+        reply = struct.pack(FRMT_PACKET, CONNECTION, 0, 0)
+        s.sendto(reply, addr)
 
 
-    for address in Known_Addresses:
-        if addr != address:
-            s.sendto(data, address)
+    if cmd == GET_POS:
+        reply = struct.pack(FRMT_PACKET, POS, 100, 100)
+        s.sendto(reply, addr)
+
+    # need to update so that it sends out positions of multiplayer guys
+
+
+while True:
+    data, addr = s.recvfrom(128)
+    handle_messages(data, addr)
+
+
 
 
