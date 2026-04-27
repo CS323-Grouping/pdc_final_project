@@ -54,7 +54,7 @@ while running:
 
     for p_id, p_pos in positions.items():
         if int(p_id) != n.id:
-            pygame.draw.circle(screen, (255, 0, 0), (int(p_pos[0]), int(p_pos[1])), 20)
+            pygame.draw.rect(screen, (255, 0, 0), (int(p_pos[0]), int(p_pos[1])), 20)
     hero.draw(screen)
 
     pygame.display.flip()

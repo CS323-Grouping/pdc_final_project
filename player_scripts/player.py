@@ -1,6 +1,6 @@
 import pygame
 class Player:
-    def __init__(self, start_pos, image_path):
+    def __init__(self, start_pos, image_path, color=(255,0,255)):
         self.image = pygame.image.load(image_path).convert_alpha()
         self.image = pygame.transform.scale(self.image, (self.image.get_height()*0.27, 128))
         self.vel = pygame.Vector2(0, 0)
@@ -8,6 +8,7 @@ class Player:
         self.speed = 300
         self.rect = pygame.Rect(start_pos, (64, 128))
         self.on_ground = False
+        self.color = color
 
     def handle_input(self, dt):
         keys = pygame.key.get_pressed()
@@ -64,5 +65,5 @@ class Player:
 
     def draw(self, surface):
         # surface.blit(self.image, self.rect)
-        pygame.draw.rect(surface, (255, 255, 0), self.rect, 2)
+        pygame.draw.rect(surface, self.color, self.rect)
 
