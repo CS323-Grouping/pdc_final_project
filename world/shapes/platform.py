@@ -9,5 +9,6 @@ class Platform():
         self.rect = pygame.Rect(self.pos.x, self.pos.y, self.size_x, self.size_y)
 
 
+
     def draw(self, surface):
         pygame.draw.rect(surface, self.color, self.rect)
