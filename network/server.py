@@ -2,10 +2,11 @@ import socket
 import threading
 import struct
 
-FRMT_PACKET = "!4sii"
+FRMT_PACKET = "!4sffi" #command, x, y, id
 CONNECTION = b"CONN"
 GET_POS = b"GPOS"
 POS = b"POSI"
+DISC = B"DISC"
 
 server = "0.0.0.0"
 port = 5555
@@ -25,25 +26,41 @@ Known_Addresses = {}
 
 start_position = (100, 100)
 
+id = 0
+
 def handle_messages(data, addr):
     global curr_player
 
-    cmd, x, y = struct.unpack(FRMT_PACKET, data)
+    cmd, x, y, recv_id = struct.unpack(FRMT_PACKET, data)
 
     if addr not in Known_Addresses:
         print(f"Connection from {addr}")
-        Known_Addresses[addr] = curr_player
+
+        player_id = curr_player
+        Known_Addresses[addr] = player_id
         curr_player += 1
 
-        reply = struct.pack(FRMT_PACKET, CONNECTION, 0, 0)
+
+        reply = struct.pack(FRMT_PACKET, CONNECTION, 100, 100, player_id)
         s.sendto(reply, addr)
 
+        return
 
-    if cmd == GET_POS:
-        reply = struct.pack(FRMT_PACKET, POS, 100, 100)
-        s.sendto(reply, addr)
 
-    # need to update so that it sends out positions of multiplayer guys
+    if cmd == POS:
+        msg = struct.pack(FRMT_PACKET, POS, x, y, id)
+        for addrs in Known_Addresses:
+            if addr == addrs:
+                continue
+
+            s.sendto(msg, addrs)
+
+    if cmd == DISC:
+        print(f"{addr} disconnected")
+        del Known_Addresses[addr]
+
+
+
 
 
 while True:

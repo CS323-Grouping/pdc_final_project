@@ -2,7 +2,7 @@ import pygame
 class Player:
     def __init__(self, start_pos, image_path, color=(255,0,255)):
         self.image = pygame.image.load(image_path).convert_alpha()
-        self.image = pygame.transform.scale(self.image, (self.image.get_height()*0.27, 128))
+        # self.image = pygame.transform.scale(self.image, (self.image.get_height()*0.27, 128))
         self.vel = pygame.Vector2(0, 0)
         self.pos = pygame.Vector2(start_pos)
         self.speed = 300
@@ -64,6 +64,6 @@ class Player:
 
 
     def draw(self, surface):
-        # surface.blit(self.image, self.rect)
+        # surface.blit(self.image, self.rect) # Only change if there is sprite for the player already
         pygame.draw.rect(surface, self.color, self.rect)
 
