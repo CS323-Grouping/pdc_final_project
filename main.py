@@ -25,7 +25,7 @@ def network_thread(network_obj):
         # def __init__(self, start_pos, image_path, color=(255,0,255)):
         cmd, x, y, player_id = data
         print("Received:", data)
-        if cmd == nw.POS:
+        if cmd == nw.POSITION:
             with lock:
                 server_data[player_id] = (x, y)
 
@@ -41,8 +41,8 @@ if not start_pos:
 
 hero = pl.Player(start_pos, "assets/characters/placeholder_AI_Knight.png")
 
-t = threading.Thread(target=network_thread, args=(n,), daemon=True)
-t.start()
+Network_thread = threading.Thread(target=network_thread, args=(n,), daemon=True)
+Network_thread.start()
 
 running = True
 dt = 0

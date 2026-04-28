@@ -4,9 +4,9 @@ import struct
 
 FRMT_PACKET = "!4sffi" #command, x, y, id
 CONNECTION = b"CONN"
-GET_POS = b"GPOS"
-POS = b"POSI"
-DISC = B"DISC"
+POSITION = b"POSI"
+DISCONNECT = b"DISC"
+DISCOVER = b'DSCV'
 
 server = "0.0.0.0"
 port = 5555
@@ -28,45 +28,66 @@ start_position = (100, 100)
 
 id = 0
 
+server = "0.0.0.0"
+port = 5555
+
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.bind((server, port))
+
+print("Server started, waiting for connections...")
+
+curr_player = 0
+known_addresses = {}   # addr -> player_id
+player_positions = {}  # player_id -> (x, y)
+
+PACKET_SIZE = struct.calcsize(FRMT_PACKET)
+
+
 def handle_messages(data, addr):
     global curr_player
 
-    cmd, x, y, recv_id = struct.unpack(FRMT_PACKET, data)
-
-    if addr not in Known_Addresses:
-        print(f"Connection from {addr}")
-
-        player_id = curr_player
-        Known_Addresses[addr] = player_id
-        curr_player += 1
-
-
-        reply = struct.pack(FRMT_PACKET, CONNECTION, 100, 100, player_id)
-        s.sendto(reply, addr)
-
+    if len(data) != PACKET_SIZE:
         return
 
+    cmd, x, y, recv_id = struct.unpack(FRMT_PACKET, data)
 
-    if cmd == POS:
-        msg = struct.pack(FRMT_PACKET, POS, x, y, id)
-        for addrs in Known_Addresses:
-            if addr == addrs:
+    if cmd == DISCOVER:
+        reply = struct.pack(FRMT_PACKET, DISCOVER, 0.0, 0.0, 0)
+        s.sendto(reply, addr)
+        return
+
+    if addr not in known_addresses:
+        player_id = curr_player
+        curr_player += 1
+
+        known_addresses[addr] = player_id
+        player_positions[player_id] = (100.0, 100.0)
+
+        print(f"New connection {addr} -> id {player_id}")
+
+        reply = struct.pack(FRMT_PACKET, CONNECTION, 100.0, 100.0, player_id)
+        s.sendto(reply, addr)
+        return
+
+    player_id = known_addresses[addr]
+
+    if cmd == POSITION:
+        player_positions[player_id] = (x, y)
+
+        msg = struct.pack(FRMT_PACKET, POSITION, x, y, player_id)
+
+        for other_addr, other_id in known_addresses.items():
+            if other_addr == addr:
                 continue
+            s.sendto(msg, other_addr)
 
-            s.sendto(msg, addrs)
+    elif cmd == DISCONNECT:
+        print(f"Player {player_id} disconnected")
 
-    if cmd == DISC:
-        print(f"{addr} disconnected")
-        del Known_Addresses[addr]
-
-
-
+        del known_addresses[addr]
+        del player_positions[player_id]
 
 
 while True:
-    data, addr = s.recvfrom(128)
+    data, addr = s.recvfrom(1024)
     handle_messages(data, addr)
-
-
-
-
