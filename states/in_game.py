@@ -8,6 +8,7 @@ from states.common import ScreenState
 from ui import components as ui
 from ui.theme import DEFAULT_THEME
 from world.level_1 import create_level_1
+from player_scripts import camera
 
 LOGGER = logging.getLogger(__name__)
 
@@ -23,7 +24,10 @@ class InGameState(ScreenState):
         self._elimination_feed: list[str] = []
         self._dead_sent = False
 
+
+
     def enter(self):
+        self.camera = camera.Camera(640, 640)  # NEEDS UPDATE FOR SCREEN SIZES
         self.platforms = create_level_1()
         self._dead_sent = False
         self._elimination_feed = []
@@ -41,9 +45,6 @@ class InGameState(ScreenState):
             LOGGER.warning("Player sprite missing: %s", err)
             self.hero = None
         self._last_pos = None
-
-    def exit(self):
-        self._remote_positions.clear()
 
     def _drain_network(self) -> bool:
         for event in self.context.drain_network_events():
@@ -84,9 +85,15 @@ class InGameState(ScreenState):
             net.update_pos(self.hero.pos.x, self.hero.pos.y)
             self._last_pos = self.hero.pos.copy()
 
+        if self.hero and self.camera:
+            self.camera.update(self.hero)
+
     def draw(self, surface):
         super().draw(surface)
         theme = DEFAULT_THEME
+
+        camera = self.camera
+
         if self.hero is None:
             surface.blit(
                 self.context.font.render("Missing player asset", True, theme.text_warn),
@@ -95,19 +102,42 @@ class InGameState(ScreenState):
             return
 
         w, h = surface.get_size()
+
         for platform in self.platforms:
+            original_rect = platform.rect.copy()
+
+            platform.rect.x += camera.camera_rect.x
+            platform.rect.y += camera.camera_rect.y
+
             platform.draw(surface)
+
+            platform.rect = original_rect
 
         ow, oh = 64, 128
         my_id = self.context.network.id if self.context.network else -1
+
         for p_id, p_pos in self._remote_positions.items():
             if int(p_id) == my_id:
                 continue
-            draw_x = int(p_pos[0] - ow / 2)
-            draw_y = int(p_pos[1] - oh / 2)
+
+            world_x = p_pos[0] - ow / 2
+            world_y = p_pos[1] - oh / 2
+
+            draw_x = int(world_x + camera.camera_rect.x)
+            draw_y = int(world_y + camera.camera_rect.y)
+
             pygame.draw.rect(surface, (60, 100, 220), (draw_x, draw_y, ow, oh), border_radius=4)
             pygame.draw.rect(surface, theme.border, (draw_x, draw_y, ow, oh), width=1, border_radius=4)
 
-        self.hero.draw(surface)
+        if hasattr(self.hero, "rect"):
+            screen_rect = self.hero.rect.move(camera.camera_rect.x, camera.camera_rect.y)
+            surface.blit(self.hero.image, screen_rect)
+        else:
+            self.hero.draw(surface, camera)
 
-        ui.draw_elimination_feed(surface, self.context.tiny_font, self._elimination_feed, theme)
+        ui.draw_elimination_feed(
+            surface,
+            self.context.tiny_font,
+            self._elimination_feed,
+            theme
+        )
