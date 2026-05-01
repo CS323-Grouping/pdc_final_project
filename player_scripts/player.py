@@ -43,7 +43,7 @@ class Player:
             direction = direction.normalize()
 
         self.pos.x += direction.x * self.speed * dt
-        self.check_border(screen_width, screen_height)
+        # self.check_border(screen_width, screen_height)
 
         if w_pressed_edge and self.on_ground:
             self.vel.y = self.jump_velocity
@@ -140,7 +140,7 @@ class Player:
             self.vel.y += self.gravity * dt
 
         self.pos.y += self.vel.y * dt
-        self.check_border(screen_width, screen_height)
+        # self.check_border(screen_width, screen_height)
 
         self._resolve_platforms_vertical(entities)
         self._sync_rect_from_pos()
