@@ -19,6 +19,59 @@ def test_pack_unpack_round_trip_pos():
     assert player_id == 7
 
 
+def test_position_packet_remains_position_only_for_avatar_rendering():
+    assert protocol.FRMT_PACKET == "!4sffi"
+
+
+def test_player_state_round_trip_for_remote_animation():
+    packet = protocol.pack_player_state(12.5, -3.25, 7, "jump_left")
+    unpacked = protocol.safe_unpack_player_state(packet)
+
+    assert unpacked is not None
+    tag, x, y, player_id, state_id = unpacked
+    assert tag == protocol.PLAYER_STATE
+    assert x == pytest.approx(12.5)
+    assert y == pytest.approx(-3.25)
+    assert player_id == 7
+    assert protocol.animation_state_name(state_id) == "jump_left"
+
+
+def test_player_state_rejects_malformed_packet():
+    assert protocol.safe_unpack_player_state(b"bad-data") is None
+
+
+def test_avatar_header_round_trip():
+    packet = protocol.pack_avatar_header(
+        player_id=2,
+        avatar_id=123,
+        total_chunks=4,
+        payload_size=protocol.NETWORK_AVATAR_BYTES,
+    )
+    unpacked = protocol.safe_unpack_avatar_header(packet)
+
+    assert unpacked == (
+        protocol.AVATAR_HEADER,
+        2,
+        123,
+        4,
+        protocol.NETWORK_AVATAR_BYTES,
+    )
+
+
+def test_avatar_chunk_round_trip():
+    payload = b"avatar-data"
+    packet = protocol.pack_avatar_chunk(
+        player_id=2,
+        avatar_id=123,
+        chunk_index=1,
+        total_chunks=4,
+        payload=payload,
+    )
+    unpacked = protocol.safe_unpack_avatar_chunk(packet)
+
+    assert unpacked == (protocol.AVATAR_CHUNK, 2, 123, 1, 4, payload)
+
+
 def test_safe_unpack_rejects_malformed_packet():
     assert protocol.safe_unpack(b"bad-data") is None
     assert protocol.safe_unpack(b"") is None
@@ -103,6 +156,44 @@ def test_conno_round_trip():
     assert u is not None
     assert u[1] == protocol.CONNO_REASON_FULL
     assert u[2] == 0
+
+
+def test_session_round_trip_for_reconnect_ticket():
+    p = protocol.pack_session(4, 123456)
+    assert protocol.safe_unpack_session(p) == (protocol.SESSION, 4, 123456)
+
+
+def test_reconnect_round_trip():
+    p = protocol.pack_reconnect(4, 123456, "PlayerOne")
+    u = protocol.safe_unpack_reconnect(p)
+
+    assert u == (protocol.RECONNECT, protocol.PROTO_VERSION, 4, 123456, "PlayerOne")
+
+
+def test_reconnect_response_round_trip():
+    ok = protocol.pack_reconnect_ok(4, 12.5, 80.25, "RoomOne")
+    unpacked_ok = protocol.safe_unpack_reconnect_ok(ok)
+
+    assert unpacked_ok is not None
+    assert unpacked_ok[0] == protocol.RECONNECT_OK
+    assert unpacked_ok[1] == 4
+    assert unpacked_ok[2] == pytest.approx(12.5)
+    assert unpacked_ok[3] == pytest.approx(80.25)
+    assert unpacked_ok[4] == "RoomOne"
+
+    no = protocol.pack_reconnect_no(protocol.RECONNECT_DENY_EXPIRED)
+    assert protocol.safe_unpack_reconnect_no(no) == (protocol.RECONNECT_NO, protocol.RECONNECT_DENY_EXPIRED)
+
+
+def test_match_pause_resume_round_trip():
+    pause = protocol.pack_match_pause(3, 29.5)
+    unpacked_pause = protocol.safe_unpack_match_pause(pause)
+
+    assert unpacked_pause is not None
+    assert unpacked_pause[0] == protocol.MATCH_PAUSE
+    assert unpacked_pause[1] == 3
+    assert unpacked_pause[2] == pytest.approx(29.5)
+    assert protocol.safe_unpack_match_resume(protocol.pack_match_resume()) == (protocol.MATCH_RESUME,)
 
 
 def test_list_round_trip_empty_and_multi():

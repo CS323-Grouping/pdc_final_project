@@ -1,16 +1,38 @@
 import pygame
 
+
 class Camera:
-    def __init__(self, width, height):
-        self.camera_rect = pygame.Rect(0, 0, width, height)
+    def __init__(self, width, height, upper_follow_threshold=64, fall_margin=32):
+        self.x = 0.0
+        self.y = 0.0
+        self.width = width
+        self.height = height
+        self.upper_follow_threshold = upper_follow_threshold
+        self.fall_margin = fall_margin
         self.SCREEN_WIDTH = width
         self.SCREEN_HEIGHT = height
 
+    @property
+    def camera_rect(self):
+        return pygame.Rect(
+            int(round(-self.x)),
+            int(round(-self.y)),
+            self.width,
+            self.height,
+        )
+
+    @property
+    def bottom(self):
+        return self.y + self.height
+
     def apply(self, entity):
-        return entity.rect.move(self.camera_rect.topleft)
+        return entity.rect.move(-int(round(self.x)), -int(round(self.y)))
 
     def update(self, target):
-        x = -target.rect.centerx + self.SCREEN_WIDTH // 2
-        y = -target.rect.centery + self.SCREEN_HEIGHT // 2
+        target_screen_y = target.rect.centery - self.y
+        if target_screen_y < self.upper_follow_threshold:
+            target_y = target.rect.centery - self.upper_follow_threshold
+            self.y = min(self.y, target_y)
 
-        self.camera_rect = pygame.Rect(x, y, self.camera_rect.width, self.camera_rect.height)
+    def has_fallen_below(self, target) -> bool:
+        return target.rect.top > self.bottom + self.fall_margin

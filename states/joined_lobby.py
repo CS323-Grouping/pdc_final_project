@@ -42,8 +42,8 @@ class JoinedLobbyState(ScreenState):
 
     def _layout(self):
         w, h = self.context.screen.get_size()
-        self.ready_button.rect.topleft = (w // 2 - 165, h - 58)
-        self.leave_button.rect.topleft = (w // 2 + 15, h - 58)
+        self.ready_button.rect.topleft = (w // 2 - 165, h - 52)
+        self.leave_button.rect.topleft = (w // 2 + 15, h - 52)
 
     def _note_roster_change(self, entries: list) -> None:
         new_ids = frozenset(p[0] for p in entries)
@@ -68,9 +68,12 @@ class JoinedLobbyState(ScreenState):
             elif isinstance(event, nw.CountdownCancelEvent):
                 self.context.countdown_remaining = None
             elif isinstance(event, nw.GameStartEvent):
+                self.context.countdown_remaining = None
                 self.switch("in_game")
                 return
             elif isinstance(event, nw.GameEndEvent):
+                self.context.reset_lobby_after_game()
+                self._ready_on = False
                 self.context.results_standings = list(event.standings)
                 self.context.return_state_after_results = "joined_lobby"
                 self.switch("results")
@@ -100,7 +103,7 @@ class JoinedLobbyState(ScreenState):
             self._row_flash[k] = anim.highlight_decay(self._row_flash[k], dt, rate=3.0)
             if self._row_flash[k] <= 0.01:
                 del self._row_flash[k]
-        mp = pygame.mouse.get_pos()
+        mp = self.context.mouse_pos
         self._ready_h = self.ready_button.rect.collidepoint(mp)
         self._leave_h = self.leave_button.rect.collidepoint(mp)
 
@@ -124,7 +127,7 @@ class JoinedLobbyState(ScreenState):
                 self._pulse_t,
                 theme,
             )
-        elif not self._ready_on and self.ready_button.rect.collidepoint(pygame.mouse.get_pos()):
+        elif not self._ready_on and self.ready_button.rect.collidepoint(self.context.mouse_pos):
             ui.draw_tooltip(
                 surface,
                 self.context.tiny_font,
@@ -134,16 +137,16 @@ class JoinedLobbyState(ScreenState):
             )
 
         hid = _host_player_id(self.context.roster)
-        y = 112
+        y = 96
         for player_id, ready, name in self.context.roster:
-            tag = ""
             if hid is not None and player_id == hid:
-                tag = " · HOST"
-            line = f"{name}{tag}  ·  {'READY' if ready else 'not ready'}"
-            row_rect = pygame.Rect(20, y, surface.get_width() - 40, 42)
+                line = f"{name}  ·  HOST"
+            else:
+                line = f"{name}  ·  {'READY' if ready else 'not ready'}"
+            row_rect = pygame.Rect(20, y, surface.get_width() - 40, 34)
             flash = self._row_flash.get(player_id, 0.0)
             ui.draw_roster_row(surface, self.context.small_font, row_rect, line, flash, theme=theme)
-            y += 50
+            y += 42
 
         self.ready_button.text = "Unready" if self._ready_on else "Ready"
         glow = anim.pulse01(self._pulse_t, 1.0) if self._ready_on else 0.0
