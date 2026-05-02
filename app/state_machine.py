@@ -9,10 +9,12 @@ from typing import Dict, Optional, Type
 
 import pygame
 
+from app.display import DisplayConfig, DisplayManager
 from network import network_handler as nw
 from ui import components as ui
 from ui.theme import DEFAULT_THEME
 
+from states.avatar_setup import AvatarSetupState
 from states.browse_lobby import BrowseLobbyState
 from states.host_lobby import HostLobbyState
 from states.in_game import InGameState
@@ -21,6 +23,18 @@ from states.menu import MainMenuState
 from states.results import ResultsState
 
 LOGGER = logging.getLogger(__name__)
+MAX_FRAME_DT = 1.0 / 30.0
+
+
+@dataclass
+class ReconnectTicket:
+    addr: str
+    port: int
+    room_name: str
+    player_id: int
+    session_token: int
+    player_name: str
+    is_host: bool
 
 
 @dataclass
@@ -28,6 +42,7 @@ class AppContext:
     screen: pygame.Surface
     clock: pygame.time.Clock
     log_level: str
+    display_manager: Optional[DisplayManager] = None
     running: bool = True
     player_name: str = "Player123"
     room_name: str = "Room123"
@@ -35,7 +50,11 @@ class AppContext:
     banner_timer: float = 0.0
     status_message: str = ""
     status_timer: float = 0.0
+    avatar_surface: Optional[pygame.Surface] = None
+    avatar_window_surface: Optional[pygame.Surface] = None
+    avatar_source_name: str = "Default avatar"
     network: Optional[nw.Network] = None
+    reconnect_ticket: Optional[ReconnectTicket] = None
     is_host: bool = False
     server_process: Optional[subprocess.Popen] = None
     server_host: str = "127.0.0.1"
@@ -46,6 +65,7 @@ class AppContext:
     start_pos: tuple = (100.0, 100.0)
     results_standings: list = None
     return_state_after_results: str = "joined_lobby"
+    mouse_pos: tuple[int, int] = (0, 0)
 
     def __post_init__(self):
         t = DEFAULT_THEME
@@ -79,14 +99,41 @@ class AppContext:
         if self.countdown_remaining is not None:
             self.countdown_remaining = max(0.0, self.countdown_remaining - dt)
 
-    def draw_global_messages(self):
-        width, _height = self.screen.get_size()
+    def draw_global_messages(self, surface: Optional[pygame.Surface] = None):
+        surface = surface or self.screen
         if self.banner_message:
-            ui.draw_banner_bar(self.screen, self.small_font, self.banner_message)
+            ui.draw_banner_bar(surface, self.small_font, self.banner_message)
         if self.status_message:
             y = 34 if self.banner_message else 8
             status_surface = self.tiny_font.render(self.status_message, True, (255, 230, 120))
-            self.screen.blit(status_surface, (8, y))
+            surface.blit(status_surface, (8, y))
+
+    def update_mouse_pos(self, use_internal: bool = False):
+        pos = pygame.mouse.get_pos()
+        if use_internal and self.display_manager is not None:
+            self.mouse_pos = self.display_manager.window_to_internal(pos)
+        else:
+            self.mouse_pos = pos
+
+    def apply_display_settings(self, selected_scale: int, fullscreen: bool):
+        if self.display_manager is None:
+            return False
+        config = DisplayConfig(selected_scale=selected_scale, fullscreen=fullscreen)
+        try:
+            self.screen = self.display_manager.apply_config(config)
+        except pygame.error as err:
+            self.set_status(f"Could not apply display mode: {err}", duration=4.0)
+            return False
+        return True
+
+    def to_render_event(self, event, use_internal: bool = False):
+        if not use_internal or self.display_manager is None:
+            return event
+        if hasattr(event, "pos"):
+            attrs = dict(event.__dict__)
+            attrs["pos"] = self.display_manager.window_to_internal(event.pos)
+            return pygame.event.Event(event.type, attrs)
+        return event
 
     def start_local_server(self, room_name: str) -> bool:
         self.stop_server()
@@ -131,27 +178,50 @@ class AppContext:
         self.roster = []
         self.countdown_remaining = None
         self.results_standings = []
+        self.remember_reconnect_ticket()
         self.network.start_receiver()
 
-    def detach_network(self, send_disconnect: bool = True):
+    def remember_reconnect_ticket(self):
+        if self.network is None:
+            return
+        if self.network.id < 0 or self.network.session_token == 0:
+            return
+        addr, port = self.network.addr
+        if not addr or port <= 0:
+            return
+        self.reconnect_ticket = ReconnectTicket(
+            addr=addr,
+            port=port,
+            room_name=self.room_name,
+            player_id=self.network.id,
+            session_token=self.network.session_token,
+            player_name=self.player_name,
+            is_host=self.is_host,
+        )
+
+    def reset_lobby_after_game(self):
+        self.countdown_remaining = None
+        self.roster = [(player_id, False, name) for player_id, _ready, name in self.roster]
+
+    def detach_network(self, send_disconnect: bool = True, preserve_reconnect: bool = False):
         if self.network is None:
             self.is_host = False
             self.roster = []
             self.countdown_remaining = None
+            if not preserve_reconnect:
+                self.reconnect_ticket = None
             return
         try:
             if send_disconnect:
                 self.network.disconnect()
         finally:
-            self.network.stop_receiver()
-            try:
-                self.network.client.close()
-            except OSError:
-                pass
+            self.network.close()
             self.network = None
             self.is_host = False
             self.roster = []
             self.countdown_remaining = None
+            if not preserve_reconnect:
+                self.reconnect_ticket = None
 
     def drain_network_events(self):
         if self.network is None:
@@ -175,6 +245,7 @@ class StateMachine:
         self.current_state = None
         self.state_map: Dict[str, Type] = {
             "menu": MainMenuState,
+            "avatar_setup": AvatarSetupState,
             "browse_lobby": BrowseLobbyState,
             "host_lobby": HostLobbyState,
             "joined_lobby": JoinedLobbyState,
@@ -192,16 +263,37 @@ class StateMachine:
     def run(self, initial_state: str = "menu"):
         self.change(initial_state)
         while self.context.running:
-            dt = self.context.clock.tick(60) / 1000.0
+            raw_dt = self.context.clock.tick(60) / 1000.0
+            dt = min(raw_dt, MAX_FRAME_DT)
+            use_internal = (
+                self.context.display_manager is not None
+                and self.current_state is not None
+                and self.current_state.render_to_internal
+            )
+            self.context.update_mouse_pos(use_internal=use_internal)
             for event in pygame.event.get():
+                event = self.context.to_render_event(event, use_internal=use_internal)
                 self.current_state.handle_event(event)
 
             self.current_state.update(dt)
             self.context.tick_timers(dt)
 
-            self.current_state.draw(self.context.screen)
-            self.context.draw_global_messages()
-            pygame.display.flip()
+            if self.context.display_manager is not None and use_internal:
+                surface = self.context.display_manager.begin_frame()
+            elif self.context.display_manager is not None:
+                surface = self.context.display_manager.begin_window_frame()
+            else:
+                surface = self.context.screen
+            self.current_state.draw(surface)
+            self.context.draw_global_messages(surface)
+            if self.context.display_manager is not None and use_internal:
+                window_surface = self.context.display_manager.blit_internal_to_window()
+                self.current_state.draw_window_overlay(window_surface)
+                pygame.display.flip()
+            elif self.context.display_manager is not None:
+                self.context.display_manager.present_window()
+            else:
+                pygame.display.flip()
 
         if self.current_state is not None:
             self.current_state.exit()

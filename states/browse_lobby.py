@@ -39,7 +39,21 @@ class BrowseLobbyState(ScreenState):
         self.back_button.rect.topleft = (16, 52)
         self.refresh_button.rect.topright = (width - 16, 52)
 
-    def _badge_info(self, room) -> tuple[str, BadgeKind]:
+    def _can_reconnect(self, room) -> bool:
+        ticket = self.context.reconnect_ticket
+        if ticket is None:
+            return False
+        if ticket.addr != room.addr or ticket.port != room.game_port:
+            return False
+        if ticket.room_name and ticket.room_name != room.room_name:
+            return False
+        return room.state in (protocol.STATE_IN_GAME, protocol.STATE_PAUSED)
+
+    def _badge_info(self, room, reconnectable: bool = False) -> tuple[str, BadgeKind]:
+        if reconnectable:
+            return "RECONNECT", "reconnect"
+        if room.state == protocol.STATE_PAUSED:
+            return "PAUSED", "paused"
         if room.state == protocol.STATE_COUNTDOWN:
             return "STARTING", "starting"
         if room.state == protocol.STATE_IN_GAME:
@@ -49,11 +63,39 @@ class BrowseLobbyState(ScreenState):
         return "LOBBY", "lobby"
 
     def _joinable(self, room) -> bool:
-        if room.state in (protocol.STATE_COUNTDOWN, protocol.STATE_IN_GAME):
+        if self._can_reconnect(room):
+            return True
+        if room.state in (protocol.STATE_COUNTDOWN, protocol.STATE_IN_GAME, protocol.STATE_PAUSED):
             return False
         if room.current_players >= room.max_players:
             return False
         return True
+
+    def _reconnect_room(self, room):
+        ticket = self.context.reconnect_ticket
+        if ticket is None:
+            self.context.set_status("No reconnect slot is available.", duration=3.0)
+            return
+        net = nw.Network()
+        result = net.reconnect_to_room(
+            room.addr,
+            room.game_port,
+            ticket.player_id,
+            ticket.session_token,
+            ticket.player_name,
+        )
+        if not result.ok:
+            self.context.set_status("Reconnect failed or the slot expired.", duration=4.0)
+            net.close()
+            return
+
+        self.context.attach_network(
+            network_obj=net,
+            is_host=ticket.is_host,
+            room_name=result.room_name,
+            start_pos=result.start_pos,
+        )
+        self.switch("in_game")
 
     def _join_room(self, room):
         net = nw.Network()
@@ -67,7 +109,7 @@ class BrowseLobbyState(ScreenState):
                         f"On cooldown — {result.extra} seconds remaining.",
                         duration=6.0,
                     )
-                net.client.close()
+                net.close()
                 self.switch("menu")
                 return
             if result.reason_code == protocol.CONNO_REASON_IN_GAME:
@@ -76,7 +118,7 @@ class BrowseLobbyState(ScreenState):
                 self.context.set_status("Room is already full.", duration=3.0)
             else:
                 self.context.set_status("Failed to join room.", duration=3.0)
-            net.client.close()
+            net.close()
             return
 
         self.context.attach_network(
@@ -97,9 +139,12 @@ class BrowseLobbyState(ScreenState):
             if self.refresh_button.rect.collidepoint(event.pos):
                 self.context.set_status("Refreshing room list…", duration=1.0)
                 return
-            for rect, room, joinable in self.room_rows:
+            for rect, room, joinable, reconnectable in self.room_rows:
                 if rect.collidepoint(event.pos) and joinable:
-                    self._join_room(room)
+                    if reconnectable:
+                        self._reconnect_room(room)
+                    else:
+                        self._join_room(room)
                     return
 
     def update(self, dt: float):
@@ -123,11 +168,12 @@ class BrowseLobbyState(ScreenState):
         y = 118
         for room in snapshot:
             row_rect = pygame.Rect(24, y, width - 48, 72)
+            reconnectable = self._can_reconnect(room)
             joinable = self._joinable(room)
-            self.room_rows.append((row_rect, room, joinable))
+            self.room_rows.append((row_rect, room, joinable, reconnectable))
             y += 80
 
-        mp = pygame.mouse.get_pos()
+        mp = self.context.mouse_pos
         self._back_h = self.back_button.rect.collidepoint(mp)
         self._ref_h = self.refresh_button.rect.collidepoint(mp)
 
@@ -155,11 +201,13 @@ class BrowseLobbyState(ScreenState):
 
         now = time.monotonic()
         fonts = (self.context.small_font, self.context.tiny_font)
-        for rect, room, joinable in self.room_rows:
-            label, kind = self._badge_info(room)
+        for rect, room, joinable, reconnectable in self.room_rows:
+            label, kind = self._badge_info(room, reconnectable)
             key = (room.addr, room.game_port)
             fade = anim.fade_in_progress(now - self._card_seen.get(key, now), 0.35)
             addr_line = f"{room.addr}:{room.game_port}"
+            if reconnectable:
+                addr_line = f"{addr_line}  ·  reserved slot"
             ui.draw_room_card(
                 surface,
                 fonts,

@@ -4,6 +4,7 @@ import sys
 
 import pygame
 
+from app.display import DisplayManager
 from app.state_machine import AppContext, StateMachine
 from network import network_handler as nw
 from network import protocol
@@ -71,9 +72,14 @@ def main():
     configure_logging(args.log_level)
 
     pygame.init()
-    screen = pygame.display.set_mode((640, 640), pygame.RESIZABLE)
+    display_manager = DisplayManager.create_default()
     clock = pygame.time.Clock()
-    ctx = AppContext(screen=screen, clock=clock, log_level=args.log_level)
+    ctx = AppContext(
+        screen=display_manager.screen,
+        clock=clock,
+        log_level=args.log_level,
+        display_manager=display_manager,
+    )
 
     if args.name:
         ctx.player_name = args.name.strip() or ctx.player_name
@@ -102,10 +108,7 @@ def main():
         result = net.connect_to_room(host, port, ctx.player_name)
         if not result.ok:
             LOGGER.error("Direct join failed (reason=%s extra=%s)", result.reason_code, result.extra)
-            try:
-                net.client.close()
-            except OSError:
-                pass
+            net.close()
             pygame.quit()
             sys.exit(1)
         ctx.attach_network(net, is_host=False, room_name=result.room_name, start_pos=result.start_pos)
