@@ -1,6 +1,4 @@
 import pygame
-from typing import List, Optional, Dict
-from world.powerup import ActivePowerUp, PowerUpType
 
 
 class Player:
@@ -9,64 +7,13 @@ class Player:
         self.vel = pygame.Vector2(0, 0)
         self.pos = pygame.Vector2(start_pos)
         self.speed = 300
-        self.base_speed = 300
         self.gravity = 1800.0
-        self.base_gravity = 1800.0
         self.jump_velocity = -720.0
         self.rect = pygame.Rect(0, 0, 64, 128)
         self.rect.center = (int(self.pos.x), int(self.pos.y))
         self.on_ground = False
         self.color = color
         self._w_down_prev = False
-        
-        # Power-up system
-        self.active_powerups: Dict[PowerUpType, ActivePowerUp] = {}
-        self.extra_jumps = 0  # Extra mid-air jumps available
-        self.current_time = 0.0
-        
-    def add_powerup(self, powerup_type: PowerUpType, duration: float = 0.0):
-        """Add a power-up to the player"""
-        active = ActivePowerUp(powerup_type, duration, self.current_time)
-        self.active_powerups[powerup_type] = active
-        self._apply_powerup_effect(powerup_type)
-    
-    def _apply_powerup_effect(self, powerup_type: PowerUpType):
-        """Apply the immediate effect of a power-up"""
-        if powerup_type == PowerUpType.DOUBLE_JUMP:
-            self.extra_jumps = 1
-        elif powerup_type == PowerUpType.SPEED_BOOST:
-            self.speed = self.base_speed * 1.5
-        elif powerup_type == PowerUpType.LOW_GRAVITY:
-            self.gravity = self.base_gravity * 0.5
-        elif powerup_type == PowerUpType.FALL_SLOW:
-            self.gravity = self.base_gravity * 0.7
-    
-    def update_powerups(self, dt: float):
-        """Update power-up timers and remove expired ones"""
-        self.current_time += dt
-        expired = []
-        for ptype, active in self.active_powerups.items():
-            if active.is_expired(self.current_time):
-                expired.append(ptype)
-        
-        for ptype in expired:
-            self._remove_powerup(ptype)
-    
-    def _remove_powerup(self, powerup_type: PowerUpType):
-        """Remove a power-up and restore base values"""
-        if powerup_type in self.active_powerups:
-            del self.active_powerups[powerup_type]
-        
-        if powerup_type == PowerUpType.DOUBLE_JUMP:
-            self.extra_jumps = 0
-        elif powerup_type == PowerUpType.SPEED_BOOST:
-            self.speed = self.base_speed
-        elif powerup_type == PowerUpType.LOW_GRAVITY or powerup_type == PowerUpType.FALL_SLOW:
-            self.gravity = self.base_gravity
-    
-    def has_powerup(self, powerup_type: PowerUpType) -> bool:
-        """Check if player has an active power-up"""
-        return powerup_type in self.active_powerups
 
     def _sync_rect_from_pos(self):
         self.rect.center = (int(round(self.pos.x)), int(round(self.pos.y)))
