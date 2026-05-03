@@ -1,0 +1,146 @@
+import pygame
+
+class Player:
+    def __init__(self, start_pos, image_path):
+        # Load and scale image
+        self.image = pygame.image.load(image_path).convert_alpha()
+        self.image = pygame.transform.scale(self.image, (64, 128))  # adjust if needed
+
+        # Rect based on image
+        self.rect = self.image.get_rect(topleft=start_pos)
+        self.pos = pygame.Vector2(self.rect.center)
+
+        # Movement
+        self.vel = pygame.Vector2(0, 0)
+        self.base_speed = 300
+        self.base_jump_power = 12
+        self.speed = self.base_speed
+        self.jump_power = self.base_jump_power
+
+        # Effects
+        self.active_effects = {}
+        self.shielded = False
+        self.double_jump_enabled = False
+        self.double_jump_used = False
+
+        self.on_ground = False
+
+    def handle_input(self, dt):
+        keys = pygame.key.get_pressed()
+        direction = pygame.Vector2(0, 0)
+
+        if keys[pygame.K_a]:
+            direction.x -= 1
+        if keys[pygame.K_d]:
+            direction.x += 1
+
+        if direction.length() > 0:
+            direction = direction.normalize()
+
+        self.pos.x += direction.x * self.speed * dt
+
+        if keys[pygame.K_w]:
+            if self.on_ground:
+                self.vel.y = -self.jump_power
+                self.on_ground = False
+                self.double_jump_used = False
+            elif self.double_jump_enabled and not self.double_jump_used:
+                self.vel.y = -self.jump_power
+                self.double_jump_used = True
+
+    def apply_effect(self, effect, factor, duration):
+        existing = self.active_effects.get(effect)
+        if existing and existing["factor"] == factor:
+            existing["remaining"] = max(existing["remaining"], duration)
+            return
+
+        if effect == "speed":
+            self.speed *= factor
+        elif effect == "jump":
+            self.jump_power *= factor
+        elif effect == "shield":
+            self.shielded = True
+        elif effect == "double_jump":
+            self.double_jump_enabled = True
+            self.double_jump_used = False
+
+        self.active_effects[effect] = {"factor": factor, "remaining": duration}
+
+    def update_effects(self, dt):
+        expired = []
+        for effect, data in list(self.active_effects.items()):
+            data["remaining"] -= dt
+            if data["remaining"] <= 0:
+                expired.append(effect)
+
+        for effect in expired:
+            self.remove_effect(effect)
+
+    def remove_effect(self, effect):
+        data = self.active_effects.pop(effect, None)
+        if not data:
+            return
+
+        if effect == "speed":
+            self.speed /= data["factor"]
+        elif effect == "jump":
+            self.jump_power /= data["factor"]
+        elif effect == "shield":
+            self.shielded = False
+        elif effect == "double_jump":
+            self.double_jump_enabled = False
+            self.double_jump_used = False
+
+    def check_border(self, screen_width, screen_height):
+        if self.pos.x > screen_width:
+            self.pos.x = screen_width
+        if self.pos.x < 0:
+            self.pos.x = 0
+        if self.pos.y > screen_height:
+            self.pos.y = screen_height
+        if self.pos.y < 0:
+            self.pos.y = 0
+
+    def update(self, dt, screen_width, screen_height, entities):
+        self.handle_input(dt)
+        self.check_border(screen_width, screen_height)
+        self.update_effects(dt)
+
+        if not self.on_ground:
+            self.vel.y += 0.5  # gravity
+
+        self.pos.y += self.vel.y
+
+        # Sync rect with position
+        self.rect.center = self.pos
+
+        self.on_ground = False
+
+        # Collision
+        for entity in entities:
+            if self.rect.colliderect(entity.rect):
+
+                if self.vel.y > 0 and self.rect.bottom <= entity.rect.bottom:
+                    self.rect.bottom = entity.rect.top
+                    self.pos.y = self.rect.centery
+                    self.vel.y = 0
+                    self.on_ground = True
+
+                elif self.vel.y < 0:
+                    self.rect.top = entity.rect.bottom
+                    self.pos.y = self.rect.centery
+                    self.vel.y = 0
+
+        if self.on_ground:
+            self.double_jump_used = False
+
+    def draw(self, surface):
+        # Draw player image
+        surface.blit(self.image, self.rect)
+
+        # OPTIONAL: Debug hitbox (uncomment if needed)
+        # pygame.draw.rect(surface, (255, 255, 0), self.rect, 2)
+
+        # Shield effect
+        if self.shielded:
+            pygame.draw.rect(surface, (0, 150, 255), self.rect.inflate(10, 10), 2)
