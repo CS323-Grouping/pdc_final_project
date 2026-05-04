@@ -15,8 +15,10 @@ from ui import components as ui
 from ui.theme import DEFAULT_THEME
 from world.assets import load_world_assets
 from world.constants import (
+    BORDER_WIDTH,
     INTERNAL_HEIGHT,
     INTERNAL_WIDTH,
+    PLAYABLE_RIGHT,
     PLAYER_FRAME_HEIGHT,
     PLAYER_FRAME_WIDTH,
     PLAYER_HITBOX_HEIGHT,
@@ -74,6 +76,8 @@ class InGameState(ScreenState):
         self._avatar_send_count = 0
         self._paused_players: dict[int, float] = {}
         self._pause_heartbeat_elapsed = 0.0
+        self._observing = False
+        self._placements_by_id: dict[int, int] = {}
 
 
 
@@ -123,6 +127,8 @@ class InGameState(ScreenState):
         self._avatar_send_count = 0
         self._paused_players = {}
         self._pause_heartbeat_elapsed = 0.0
+        self._observing = False
+        self._placements_by_id = {}
         self._seed_remote_players_from_roster(base_start)
         self._send_initial_player_state()
 
@@ -215,8 +221,15 @@ class InGameState(ScreenState):
             elif isinstance(event, nw.EliminationEvent):
                 name = self._name_by_id.get(event.player_id, f"id {event.player_id}")
                 self._elimination_feed.append(f"{name} eliminated — place {event.placement}")
-                self._remote_players.pop(event.player_id, None)
-                self._remote_positions.pop(event.player_id, None)
+                self._placements_by_id[event.player_id] = event.placement
+                my_id = self.context.network.id if self.context.network else -1
+                if event.player_id == my_id:
+                    self._observing = True
+                    self._dead_sent = True
+                    self.context.set_status("Eliminated. Observing the remaining players.", duration=3.0)
+                else:
+                    self._remote_players.pop(event.player_id, None)
+                    self._remote_positions.pop(event.player_id, None)
                 self._paused_players.pop(event.player_id, None)
             elif isinstance(event, nw.GameEndEvent):
                 self.context.reset_lobby_after_game()
@@ -307,6 +320,10 @@ class InGameState(ScreenState):
             self._tick_pause(dt, net)
             return
 
+        if self._observing:
+            self._tick_observer(dt)
+            return
+
         self.hero.update(dt, INTERNAL_WIDTH, INTERNAL_HEIGHT, self.platforms)
 
         for remote in self._remote_players.values():
@@ -331,6 +348,31 @@ class InGameState(ScreenState):
             self._last_pos = self.hero.pos.copy()
             self._last_animation_state = current_state
             self._net_send_elapsed = 0.0
+
+    def _tick_observer(self, dt: float):
+        for remote in self._remote_players.values():
+            remote.animation.update(dt)
+        if self.camera is None:
+            return
+        focus = self._observer_focus_position()
+        if focus is None:
+            return
+        rect = pygame.Rect(0, 0, PLAYER_HITBOX_WIDTH, PLAYER_HITBOX_HEIGHT)
+        rect.center = (int(round(focus[0])), int(round(focus[1])))
+
+        class _Target:
+            pass
+
+        target = _Target()
+        target.rect = rect
+        self.camera.update(target)
+
+    def _observer_focus_position(self) -> tuple[float, float] | None:
+        if self._remote_positions:
+            return min(self._remote_positions.values(), key=lambda pos: pos[1])
+        if self.hero is not None:
+            return (self.hero.pos.x, self.hero.pos.y)
+        return None
 
     def _tick_pause(self, dt: float, net: nw.Network):
         for player_id in list(self._paused_players.keys()):
@@ -379,7 +421,8 @@ class InGameState(ScreenState):
             remote = self._remote_players.get(p_id)
             self._draw_remote_player(surface, camera, p_pos, theme, remote)
 
-        self.hero.draw(surface, camera)
+        if not self._observing:
+            self.hero.draw(surface, camera)
 
         if self.level_renderer is not None:
             self.level_renderer.draw_borders(surface)
@@ -427,7 +470,10 @@ class InGameState(ScreenState):
         if avatar is not None:
             visual_rect = self.hero.visual_rect()
             visual_rect = visual_rect.move(-int(round(self.camera.x)), -int(round(self.camera.y)))
-            self._draw_avatar_overlay(surface, avatar, visual_rect, self.hero.body_image)
+            if not self._observing:
+                self._draw_avatar_overlay(surface, avatar, visual_rect, self.hero.body_image)
+
+        self._draw_border_panels(surface)
 
         if self._paused_players:
             self._draw_pause_overlay(surface)
@@ -484,6 +530,125 @@ class InGameState(ScreenState):
         if body_target.colliderect(surface.get_rect()):
             scaled_body = pygame.transform.scale(body_image, body_target.size)
             surface.blit(scaled_body, body_target)
+
+    def _player_position(self, player_id: int) -> tuple[float, float] | None:
+        my_id = self.context.network.id if self.context.network else -1
+        if player_id == my_id and self.hero is not None and not self._observing:
+            return (self.hero.pos.x, self.hero.pos.y)
+        return self._remote_positions.get(player_id)
+
+    def _standings_rows(self) -> list[tuple[str, str]]:
+        ids = {pid for pid, _ready, _name in self.context.roster}
+        ids.update(self._name_by_id.keys())
+        ids.update(self._placements_by_id.keys())
+
+        live_rows = []
+        placed_rows = []
+        for player_id in ids:
+            name = self._name_by_id.get(player_id, f"P{player_id}")
+            placement = self._placements_by_id.get(player_id)
+            position = self._player_position(player_id)
+            if placement is None and position is not None:
+                live_rows.append((position[1], player_id, name))
+            elif placement is not None:
+                placed_rows.append((placement, player_id, name))
+
+        rows: list[tuple[str, str]] = []
+        for rank, (_y, _pid, name) in enumerate(sorted(live_rows), start=1):
+            rows.append((f"{rank}. {name}", "LIVE"))
+        for placement, _pid, name in sorted(placed_rows):
+            rows.append((f"{placement}. {name}", "OUT"))
+        return rows
+
+    def _platform_gap_info(self) -> tuple[int | None, int | None]:
+        focus = self._observer_focus_position() if self._observing else None
+        if focus is None and self.hero is not None:
+            focus = (self.hero.pos.x, self.hero.pos.y)
+        if focus is None or not self.platforms:
+            return None, None
+        focus_y = focus[1]
+        centers = sorted(float(platform.rect.centery) for platform in self.platforms)
+        above = [y for y in centers if y < focus_y]
+        below = [y for y in centers if y >= focus_y]
+        next_above = max(above) if above else None
+        current_or_below = min(below) if below else None
+        if next_above is None:
+            return None, None
+        next_distance = max(0, int(round(focus_y - next_above)))
+        if current_or_below is None:
+            upper = [y for y in centers if y < next_above]
+            platform_gap = int(round(next_above - max(upper))) if upper else None
+        else:
+            platform_gap = int(round(current_or_below - next_above))
+        return platform_gap, next_distance
+
+    def _fit_text(self, text: str, font: pygame.font.Font, max_width: int) -> str:
+        if font.size(text)[0] <= max_width:
+            return text
+        ellipsis = "."
+        out = text
+        while out and font.size(out + ellipsis)[0] > max_width:
+            out = out[:-1]
+        return (out + ellipsis) if out else ellipsis
+
+    def _draw_panel_text(
+        self,
+        surface: pygame.Surface,
+        font: pygame.font.Font,
+        text: str,
+        pos: tuple[int, int],
+        color: tuple[int, int, int],
+        max_width: int,
+    ) -> int:
+        label = self._fit_text(text, font, max_width)
+        surface.blit(font.render(label, True, color), pos)
+        return font.get_height() + 4
+
+    def _draw_border_panels(self, surface: pygame.Surface):
+        display = self.context.display_manager
+        if display is None:
+            return
+        theme = DEFAULT_THEME
+        scale = display.config.selected_scale
+        panel_w = BORDER_WIDTH * scale
+        if panel_w <= 0:
+            return
+
+        left = pygame.Rect(0, 0, panel_w, surface.get_height())
+        right = pygame.Rect(PLAYABLE_RIGHT * scale, 0, panel_w, surface.get_height())
+        for rect in (left, right):
+            shade = pygame.Surface(rect.size, pygame.SRCALPHA)
+            shade.fill((8, 10, 18, 105))
+            surface.blit(shade, rect.topleft)
+
+        pad = 8
+        y = pad
+        max_text_w = max(24, left.w - (pad * 2))
+        y += self._draw_panel_text(surface, self.context.tiny_font, "STANDINGS", (left.x + pad, y), theme.text_warn, max_text_w)
+        for name, status in self._standings_rows()[:6]:
+            y += self._draw_panel_text(surface, self.context.tiny_font, name, (left.x + pad, y), theme.text, max_text_w)
+            y += self._draw_panel_text(surface, self.context.tiny_font, status, (left.x + pad, y), theme.text_muted, max_text_w)
+
+        avatar = self.context.avatar_window_surface
+        y = pad
+        max_text_w = max(24, right.w - (pad * 2))
+        y += self._draw_panel_text(surface, self.context.tiny_font, "AVATAR", (right.x + pad, y), theme.text_warn, max_text_w)
+        if avatar is not None:
+            avatar_size = min(right.w - (pad * 2), 54)
+            target = pygame.Rect(right.x + (right.w - avatar_size) // 2, y, avatar_size, avatar_size)
+            scaled_avatar = pygame.transform.smoothscale(avatar, target.size)
+            surface.blit(scaled_avatar, target)
+            pygame.draw.rect(surface, theme.border_focus, target, width=1, border_radius=4)
+            y = target.bottom + 10
+        else:
+            y += self._draw_panel_text(surface, self.context.tiny_font, "Default", (right.x + pad, y), theme.text_muted, max_text_w)
+
+        gap, next_distance = self._platform_gap_info()
+        y += self._draw_panel_text(surface, self.context.tiny_font, "PLATFORMS", (right.x + pad, y), theme.text_warn, max_text_w)
+        if gap is not None:
+            y += self._draw_panel_text(surface, self.context.tiny_font, f"Gap {gap}px", (right.x + pad, y), theme.text, max_text_w)
+        if next_distance is not None:
+            self._draw_panel_text(surface, self.context.tiny_font, f"Next {next_distance}px", (right.x + pad, y), theme.text_muted, max_text_w)
 
     def _draw_pause_overlay(self, surface: pygame.Surface):
         theme = DEFAULT_THEME

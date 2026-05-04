@@ -2,6 +2,8 @@ from dataclasses import dataclass
 import logging
 from pathlib import Path
 import queue
+import secrets
+import string
 import subprocess
 import sys
 import time
@@ -11,6 +13,8 @@ import pygame
 
 from app.display import DisplayConfig, DisplayManager
 from network import network_handler as nw
+from network import protocol
+from network.discovery import PresenceBroadcaster
 from ui import components as ui
 from ui.theme import DEFAULT_THEME
 
@@ -24,6 +28,12 @@ from states.results import ResultsState
 
 LOGGER = logging.getLogger(__name__)
 MAX_FRAME_DT = 1.0 / 30.0
+RANDOM_PLAYER_NAME_CHARS = string.ascii_uppercase + string.digits
+
+
+def random_player_name(length: int = 10) -> str:
+    length = max(3, min(10, int(length)))
+    return "P" + "".join(secrets.choice(RANDOM_PLAYER_NAME_CHARS) for _ in range(length - 1))
 
 
 @dataclass
@@ -37,6 +47,17 @@ class ReconnectTicket:
     is_host: bool
 
 
+PRESENCE_BY_STATE = {
+    "menu": protocol.PRESENCE_STATUS_ONLINE,
+    "avatar_setup": protocol.PRESENCE_STATUS_ONLINE,
+    "browse_lobby": protocol.PRESENCE_STATUS_ONLINE,
+    "host_lobby": protocol.PRESENCE_STATUS_LOBBY,
+    "joined_lobby": protocol.PRESENCE_STATUS_LOBBY,
+    "results": protocol.PRESENCE_STATUS_LOBBY,
+    "in_game": protocol.PRESENCE_STATUS_IN_GAME,
+}
+
+
 @dataclass
 class AppContext:
     screen: pygame.Surface
@@ -44,7 +65,7 @@ class AppContext:
     log_level: str
     display_manager: Optional[DisplayManager] = None
     running: bool = True
-    player_name: str = "Player123"
+    player_name: str = ""
     room_name: str = "Room123"
     banner_message: str = ""
     banner_timer: float = 0.0
@@ -66,8 +87,15 @@ class AppContext:
     results_standings: list = None
     return_state_after_results: str = "joined_lobby"
     mouse_pos: tuple[int, int] = (0, 0)
+    presence_instance_id: int = 0
+    presence_status: int = protocol.PRESENCE_STATUS_ONLINE
+    presence_broadcaster: Optional[PresenceBroadcaster] = None
 
     def __post_init__(self):
+        if not self.player_name:
+            self.player_name = random_player_name()
+        if self.presence_instance_id == 0:
+            self.presence_instance_id = secrets.randbits(32) or 1
         t = DEFAULT_THEME
         self.font = pygame.font.SysFont(t.font_body, t.size_large)
         self.small_font = pygame.font.SysFont(t.font_body, t.size_small)
@@ -235,8 +263,26 @@ class AppContext:
         return events
 
     def shutdown(self):
+        self.stop_presence()
         self.detach_network(send_disconnect=True)
         self.stop_server()
+
+    def start_presence(self):
+        if self.presence_broadcaster is not None:
+            return
+        self.presence_broadcaster = PresenceBroadcaster(
+            instance_id=self.presence_instance_id,
+            player_name_provider=lambda: self.player_name,
+            status_provider=lambda: self.presence_status,
+            discovery_port=self.discovery_port,
+        )
+        self.presence_broadcaster.start()
+
+    def stop_presence(self):
+        if self.presence_broadcaster is None:
+            return
+        self.presence_broadcaster.stop()
+        self.presence_broadcaster = None
 
 
 class StateMachine:
@@ -256,11 +302,13 @@ class StateMachine:
     def change(self, state_name: str, **kwargs):
         if self.current_state is not None:
             self.current_state.exit()
+        self.context.presence_status = PRESENCE_BY_STATE.get(state_name, protocol.PRESENCE_STATUS_ONLINE)
         state_cls = self.state_map[state_name]
         self.current_state = state_cls(self, self.context, **kwargs)
         self.current_state.enter()
 
     def run(self, initial_state: str = "menu"):
+        self.context.start_presence()
         self.change(initial_state)
         while self.context.running:
             raw_dt = self.context.clock.tick(60) / 1000.0
