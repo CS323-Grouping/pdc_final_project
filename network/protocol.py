@@ -21,6 +21,10 @@ STATE_COUNTDOWN = 1
 STATE_IN_GAME = 2
 STATE_PAUSED = 3
 
+PRESENCE_STATUS_ONLINE = 0
+PRESENCE_STATUS_LOBBY = 1
+PRESENCE_STATUS_IN_GAME = 2
+
 ROOM_NAME_REGEX = re.compile(r"^[A-Za-z0-9]{3,24}$")
 
 CONNO_REASON_FULL = 0
@@ -55,6 +59,7 @@ DISCONNECT = b"DISC"
 DISCOVER = b"DSCV"
 
 BEACON = b"BCON"
+PRESENCE = b"PRSN"
 CONOK = b"CONO"
 CONNO = b"CNOO"
 LIST = b"LIST"
@@ -109,6 +114,9 @@ AvatarChunkPacket = Tuple[bytes, int, int, int, int, bytes]
 FRMT_BEACON = "!4sBBBBH32s"
 BEACON_PACKET_SIZE = struct.calcsize(FRMT_BEACON)
 BeaconPacket = Tuple[bytes, int, int, int, int, int, str]
+FRMT_PRESENCE = "!4sBIB32s"
+PRESENCE_PACKET_SIZE = struct.calcsize(FRMT_PRESENCE)
+PresencePacket = Tuple[bytes, int, int, int, str]
 
 FRMT_CONN = "!4sB32s"
 FRMT_CONOK = "!4si32s"
@@ -282,6 +290,29 @@ def safe_unpack_beacon(data: bytes) -> Optional[BeaconPacket]:
     if tag != BEACON:
         return None
     return (tag, proto_version, cur_players, max_players, room_state, game_port, _unpack_name(room_name))
+
+
+def pack_presence(proto_version: int, instance_id: int, status: int, player_name: str) -> bytes:
+    return struct.pack(
+        FRMT_PRESENCE,
+        PRESENCE,
+        proto_version,
+        int(instance_id) & UINT32_MAX,
+        max(0, min(255, int(status))),
+        _pack_name(player_name),
+    )
+
+
+def safe_unpack_presence(data: bytes) -> Optional[PresencePacket]:
+    if len(data) != PRESENCE_PACKET_SIZE:
+        return None
+    try:
+        tag, proto_version, instance_id, status, player_name = struct.unpack(FRMT_PRESENCE, data)
+    except struct.error:
+        return None
+    if tag != PRESENCE:
+        return None
+    return (tag, proto_version, instance_id, status, _unpack_name(player_name))
 
 
 def _safe_unpack_exact(data: bytes, fmt: str) -> Optional[Tuple]:

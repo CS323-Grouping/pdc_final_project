@@ -2,8 +2,8 @@ import pygame
 
 from app.display import DisplayConfig
 from network import protocol
+from network.discovery import LobbyBrowser, PresenceEntry, RoomEntry
 from states.common import ScreenState, alnum_only
-from ui import components as ui
 from ui.theme import DEFAULT_THEME
 
 
@@ -16,70 +16,194 @@ RESOLUTION_LABELS = {
 }
 
 
+MENU_ASSET_RECTS = {
+    "background": pygame.Rect(0, 0, 320, 180),
+    "avatar_section": pygame.Rect(10, 75, 68, 92),
+    "avatar_bg": pygame.Rect(21, 94, 46, 46),
+    "avatar_frame": pygame.Rect(19, 92, 50, 50),
+    "avatar_model": pygame.Rect(33, 97, 22, 32),
+    "avatar_platform": pygame.Rect(24, 129, 40, 8),
+    "avatar_button": pygame.Rect(17, 144, 54, 14),
+    "crown": pygame.Rect(145, 10, 30, 22),
+    "title": pygame.Rect(88, 33, 144, 62),
+    "play": pygame.Rect(99, 100, 122, 26),
+    "exit": pygame.Rect(99, 130, 92, 26),
+    "settings": pygame.Rect(195, 130, 26, 26),
+    "online_section": pygame.Rect(242, 14, 68, 152),
+}
+
+ONLINE_CARD_RECTS = (
+    pygame.Rect(249, 39, 54, 24),
+    pygame.Rect(249, 68, 54, 24),
+    pygame.Rect(249, 97, 54, 24),
+    pygame.Rect(249, 126, 54, 24),
+)
+
+
 class MainMenuState(ScreenState):
+    render_to_internal = True
+
     def __init__(self, machine, context, **kwargs):
         super().__init__(machine, context, **kwargs)
         self.name_active = False
         self.name_input = context.player_name
-        self.host_button = ui.Button(pygame.Rect(0, 0, 220, 48), "Host Room")
-        self.join_button = ui.Button(pygame.Rect(0, 0, 220, 48), "Join Room")
-        self.avatar_button = ui.Button(pygame.Rect(0, 0, 140, 38), "Avatar")
-        self.settings_button = ui.Button(pygame.Rect(0, 0, 140, 38), "Settings")
-        self.apply_button = ui.Button(pygame.Rect(0, 0, 120, 38), "Apply")
-        self.close_settings_button = ui.Button(pygame.Rect(0, 0, 120, 38), "Close")
-        self.fullscreen_button = ui.Button(pygame.Rect(0, 0, 170, 38), "Fullscreen: Off")
-        self.name_rect = pygame.Rect(0, 0, 320, 44)
-        self._host_h = False
-        self._join_h = False
-        self._avatar_h = False
-        self._settings_h = False
-        self._apply_h = False
-        self._close_settings_h = False
-        self._fullscreen_h = False
         self._settings_open = False
         self._pending_scale = context.display_manager.config.selected_scale if context.display_manager else 4
         self._pending_fullscreen = context.display_manager.config.fullscreen if context.display_manager else False
         self._resolution_rects: list[tuple[pygame.Rect, int]] = []
+        self._rooms: list[RoomEntry] = []
+        self._presence_entries: list[PresenceEntry] = []
+        self._hovered: str | None = None
+        self._browser: LobbyBrowser | None = None
+        self._assets: dict[str, pygame.Surface] = {}
+        self._menu_font = pygame.font.SysFont("consolas", 8, bold=True)
+        self._menu_font_sm = pygame.font.SysFont("consolas", 7, bold=True)
+        self._menu_font_lg = pygame.font.SysFont("consolas", 13, bold=True)
+        self._window_fonts: dict[tuple[int, bool], pygame.font.Font] = {}
 
     def enter(self):
         self.context.detach_network(send_disconnect=False)
         self.context.stop_server()
+        self._assets = self._load_assets()
+        self._start_browser()
 
-    def _layout(self):
-        width, height = self.context.screen.get_size()
-        center_x = width // 2
-        top = max(64, height // 2 - 170)
-        self.avatar_button.rect.topleft = (16, 16)
-        self.settings_button.rect.topright = (width - 16, 16)
-        self.name_rect.center = (center_x, top + 110)
-        self.host_button.rect.center = (center_x, top + 184)
-        self.join_button.rect.center = (center_x, top + 246)
+    def exit(self):
+        self._stop_browser()
 
-    def _settings_layout(self):
-        width, height = self.context.screen.get_size()
-        box = pygame.Rect(0, 0, min(560, width - 48), min(284, height - 48))
-        box.center = (width // 2, height // 2)
-        self._resolution_rects = []
-        x = box.x + 24
-        y = box.y + 94
-        button_w = max(88, (box.w - 48 - 4 * 8) // 5)
-        for scale in DisplayConfig.SUPPORTED_SCALES:
-            rect = pygame.Rect(x, y, button_w, 36)
-            self._resolution_rects.append((rect, scale))
-            x += button_w + 8
-        self.fullscreen_button.rect.topleft = (box.x + 24, box.y + 154)
-        self.apply_button.rect.bottomright = (box.right - 24, box.bottom - 20)
-        self.close_settings_button.rect.bottomright = (self.apply_button.rect.left - 12, box.bottom - 20)
-        return box
+    def _load_assets(self) -> dict[str, pygame.Surface]:
+        root = self.context.project_root / "assets" / "Menu"
+        names = {
+            "background": "MenuBackground_Image.png",
+            "avatar_section": "AvatarSection_Frame.png",
+            "avatar_bg": "AvatarDisplay_Background.png",
+            "avatar_frame": "AvatarDisplay_Frame.png",
+            "avatar_model": "AvatarDisplay_Model.png",
+            "avatar_platform": "AvatarDisplay_Platform.png",
+            "avatar_button": "AvatarSection_Button.png",
+            "crown": "MenuBanner_Crown.png",
+            "title": "MenuBanner_Title.png",
+            "play": "MenuPlay_Button.png",
+            "exit": "MenuExit_Button.png",
+            "settings": "MenuSettings_Button.png",
+            "online_section": "OnlineSection_Frame.png",
+            "online_card": "OnlineSection_Card.png",
+        }
+        assets: dict[str, pygame.Surface] = {}
+        for key, filename in names.items():
+            path = root / filename
+            try:
+                assets[key] = pygame.image.load(str(path)).convert_alpha()
+            except (FileNotFoundError, pygame.error):
+                fallback = pygame.Surface((max(1, MENU_ASSET_RECTS.get(key, pygame.Rect(0, 0, 16, 16)).w), 16), pygame.SRCALPHA)
+                fallback.fill((35, 42, 58, 255))
+                assets[key] = fallback
+        return assets
+
+    def _start_browser(self):
+        self._stop_browser()
+        try:
+            self._browser = LobbyBrowser(discovery_port=self.context.discovery_port)
+            self._browser.start()
+        except OSError:
+            self._browser = None
+            self.context.set_status("Could not listen for LAN rooms.", duration=3.0)
+
+    def _stop_browser(self):
+        if self._browser is None:
+            return
+        self._browser.stop()
+        self._browser = None
 
     def _is_name_valid(self) -> bool:
         return protocol.is_valid_player_name(self.name_input)
 
+    def _fit_text(self, text: str, font: pygame.font.Font, max_width: int) -> str:
+        if font.size(text)[0] <= max_width:
+            return text
+        out = text
+        while out and font.size(out + ".")[0] > max_width:
+            out = out[:-1]
+        return (out + ".") if out else "."
+
+    def _draw_text_center(
+        self,
+        surface: pygame.Surface,
+        font: pygame.font.Font,
+        text: str,
+        rect: pygame.Rect,
+        color: tuple[int, int, int],
+        shadow: bool = True,
+    ):
+        text = self._fit_text(text, font, rect.w - 4)
+        if shadow:
+            shade = font.render(text, False, (8, 14, 25))
+            surface.blit(shade, shade.get_rect(center=(rect.centerx + 1, rect.centery + 1)))
+        label = font.render(text, False, color)
+        surface.blit(label, label.get_rect(center=rect.center))
+
+    def _window_scale(self) -> int:
+        if self.context.display_manager is None:
+            return 1
+        return self.context.display_manager.config.selected_scale
+
+    def _scale_rect(self, rect: pygame.Rect) -> pygame.Rect:
+        scale = self._window_scale()
+        return pygame.Rect(rect.x * scale, rect.y * scale, rect.w * scale, rect.h * scale)
+
+    def _window_font(self, logical_size: int, bold: bool = True) -> pygame.font.Font:
+        scale = self._window_scale()
+        size = max(10, logical_size * scale)
+        key = (size, bold)
+        font = self._window_fonts.get(key)
+        if font is None:
+            font = pygame.font.SysFont("consolas", size, bold=bold)
+            self._window_fonts[key] = font
+        return font
+
+    def _draw_window_text_center(
+        self,
+        surface: pygame.Surface,
+        logical_size: int,
+        text: str,
+        logical_rect: pygame.Rect,
+        color: tuple[int, int, int],
+        shadow: bool = True,
+    ):
+        rect = self._scale_rect(logical_rect)
+        font = self._window_font(logical_size)
+        text = self._fit_text(text, font, rect.w - (4 * self._window_scale()))
+        if shadow:
+            shade = font.render(text, True, (8, 14, 25))
+            surface.blit(shade, shade.get_rect(center=(rect.centerx + self._window_scale(), rect.centery + self._window_scale())))
+        label = font.render(text, True, color)
+        surface.blit(label, label.get_rect(center=rect.center))
+
+    def _settings_layout(self):
+        box = pygame.Rect(30, 28, 260, 124)
+        self._resolution_rects = []
+        x = box.x + 12
+        y = box.y + 44
+        for scale in DisplayConfig.SUPPORTED_SCALES:
+            rect = pygame.Rect(x, y, 42, 16)
+            self._resolution_rects.append((rect, scale))
+            x += 47
+        fullscreen = pygame.Rect(box.x + 12, box.y + 72, 92, 16)
+        close = pygame.Rect(box.right - 104, box.bottom - 24, 44, 16)
+        apply = pygame.Rect(box.right - 56, box.bottom - 24, 44, 16)
+        return box, fullscreen, close, apply
+
+    def _play(self):
+        if not self._is_name_valid():
+            self.context.set_status("Name must be 3-24 alphanumeric characters.", duration=3.0)
+            return
+        self.context.player_name = self.name_input
+        self.context.room_name = f"{self.context.player_name}Room"
+        self.switch("browse_lobby")
+
     def handle_event(self, event):
         super().handle_event(event)
-        self._layout()
         if self._settings_open:
-            box = self._settings_layout()
+            box, fullscreen, close, apply = self._settings_layout()
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 if not box.collidepoint(event.pos):
                     self._settings_open = False
@@ -88,13 +212,13 @@ class MainMenuState(ScreenState):
                     if rect.collidepoint(event.pos):
                         self._pending_scale = scale
                         return
-                if self.fullscreen_button.rect.collidepoint(event.pos):
+                if fullscreen.collidepoint(event.pos):
                     self._pending_fullscreen = not self._pending_fullscreen
                     return
-                if self.close_settings_button.rect.collidepoint(event.pos):
+                if close.collidepoint(event.pos):
                     self._settings_open = False
                     return
-                if self.apply_button.rect.collidepoint(event.pos):
+                if apply.collidepoint(event.pos):
                     if self.context.apply_display_settings(self._pending_scale, self._pending_fullscreen):
                         self._settings_open = False
                     return
@@ -103,23 +227,22 @@ class MainMenuState(ScreenState):
             return
 
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-            self.name_active = self.name_rect.collidepoint(event.pos)
-            if self.avatar_button.rect.collidepoint(event.pos):
+            self.name_active = MENU_ASSET_RECTS["avatar_frame"].collidepoint(event.pos)
+            if MENU_ASSET_RECTS["avatar_button"].collidepoint(event.pos):
                 self.switch("avatar_setup")
                 return
-            if self.settings_button.rect.collidepoint(event.pos):
+            if MENU_ASSET_RECTS["play"].collidepoint(event.pos):
+                self._play()
+                return
+            if MENU_ASSET_RECTS["exit"].collidepoint(event.pos):
+                self.context.running = False
+                return
+            if MENU_ASSET_RECTS["settings"].collidepoint(event.pos):
                 if self.context.display_manager is not None:
                     self._pending_scale = self.context.display_manager.config.selected_scale
                     self._pending_fullscreen = self.context.display_manager.config.fullscreen
                 self._settings_open = True
                 return
-            if self.host_button.enabled and self.host_button.rect.collidepoint(event.pos):
-                self.context.player_name = self.name_input
-                self.context.room_name = f"{self.context.player_name}Room"
-                self.switch("host_lobby")
-            if self.join_button.enabled and self.join_button.rect.collidepoint(event.pos):
-                self.context.player_name = self.name_input
-                self.switch("browse_lobby")
 
         if event.type == pygame.KEYDOWN and self.name_active:
             if event.key == pygame.K_BACKSPACE:
@@ -129,83 +252,215 @@ class MainMenuState(ScreenState):
 
     def update(self, dt: float):
         _ = dt
-        valid = self._is_name_valid()
-        self.host_button.enabled = valid
-        self.join_button.enabled = valid
+        self._rooms = self._browser.snapshot() if self._browser is not None else []
+        self._presence_entries = self._browser.presence_snapshot() if self._browser is not None else []
+
         mp = self.context.mouse_pos
-        self._host_h = self.host_button.rect.collidepoint(mp)
-        self._join_h = self.join_button.rect.collidepoint(mp)
-        self._avatar_h = self.avatar_button.rect.collidepoint(mp)
-        self._settings_h = self.settings_button.rect.collidepoint(mp)
-        if self._settings_open:
-            self._settings_layout()
-            self._apply_h = self.apply_button.rect.collidepoint(mp)
-            self._close_settings_h = self.close_settings_button.rect.collidepoint(mp)
-            self._fullscreen_h = self.fullscreen_button.rect.collidepoint(mp)
+        self._hovered = None
+        for key in ("avatar_button", "play", "exit", "settings"):
+            if MENU_ASSET_RECTS[key].collidepoint(mp):
+                self._hovered = key
+                return
 
     def draw(self, surface):
-        super().draw(surface)
-        self._layout()
-        theme = DEFAULT_THEME
-        width, height = surface.get_size()
-        top = max(64, height // 2 - 170)
+        background = self._assets.get("background")
+        if background is not None:
+            surface.blit(background, MENU_ASSET_RECTS["background"])
+        else:
+            surface.fill(DEFAULT_THEME.bg)
 
-        title = self.context.title_font.render("Tower Jump LAN", True, theme.text)
-        surface.blit(title, title.get_rect(center=(width // 2, top)))
-        sub = self.context.small_font.render("Multiplayer lobby", True, theme.text_muted)
-        surface.blit(sub, sub.get_rect(center=(width // 2, top + 40)))
-        ui.draw_button(surface, self.context.small_font, self.avatar_button, theme, hovered=self._avatar_h, variant="neutral")
-        ui.draw_button(surface, self.context.small_font, self.settings_button, theme, hovered=self._settings_h, variant="neutral")
+        self._draw_asset(surface, "crown")
+        self._draw_asset(surface, "title")
+        self._draw_avatar_panel(surface)
+        self._draw_center_buttons(surface)
+        self._draw_online_panel(surface)
 
-        inp = ui.TextInput(self.name_rect, "Player name (alphanumeric, 3–24)", self.name_input, self.name_active)
-        ui.draw_text_input(surface, (self.context.font, self.context.tiny_font), inp, theme)
-
-        if not self._is_name_valid():
-            warn = self.context.tiny_font.render(
-                "Name must be 3–24 alphanumeric characters.",
-                True,
-                theme.text_warn,
-            )
-            surface.blit(warn, (self.name_rect.x, self.name_rect.y + self.name_rect.height + 8))
-
-        ui.draw_button(surface, self.context.font, self.host_button, theme, hovered=self._host_h)
-        ui.draw_button(surface, self.context.font, self.join_button, theme, hovered=self._join_h)
         if self._settings_open:
             self._draw_settings(surface)
 
+    def _draw_asset(self, surface: pygame.Surface, key: str):
+        asset = self._assets.get(key)
+        rect = MENU_ASSET_RECTS[key]
+        if asset is None:
+            return
+        surface.blit(asset, rect)
+
+    def _draw_hover_outline(self, surface: pygame.Surface, rect: pygame.Rect):
+        pygame.draw.rect(surface, (115, 190, 255), rect.inflate(2, 2), width=1, border_radius=2)
+
+    def _draw_avatar_panel(self, surface: pygame.Surface):
+        for key in ("avatar_section", "avatar_bg", "avatar_frame"):
+            self._draw_asset(surface, key)
+
+        avatar = self.context.avatar_window_surface
+        if avatar is not None:
+            target = pygame.Rect(33, 98, 22, 22)
+            surface.blit(pygame.transform.scale(avatar, target.size), target)
+        else:
+            self._draw_asset(surface, "avatar_model")
+        self._draw_asset(surface, "avatar_platform")
+        self._draw_asset(surface, "avatar_button")
+        if self._hovered == "avatar_button":
+            self._draw_hover_outline(surface, MENU_ASSET_RECTS["avatar_button"])
+
+    def _draw_center_buttons(self, surface: pygame.Surface):
+        self._draw_asset(surface, "play")
+        self._draw_asset(surface, "exit")
+        self._draw_asset(surface, "settings")
+
+        if self._hovered == "play":
+            self._draw_hover_outline(surface, MENU_ASSET_RECTS["play"])
+        elif self._hovered == "exit":
+            self._draw_hover_outline(surface, MENU_ASSET_RECTS["exit"])
+        elif self._hovered == "settings":
+            self._draw_hover_outline(surface, MENU_ASSET_RECTS["settings"])
+
+    def _draw_online_panel(self, surface: pygame.Surface):
+        self._draw_asset(surface, "online_section")
+
+        card_asset = self._assets.get("online_card")
+        for index, _entry in enumerate(self._online_entries()[: len(ONLINE_CARD_RECTS)]):
+            rect = ONLINE_CARD_RECTS[index]
+            if card_asset is not None:
+                surface.blit(card_asset, rect)
+
+    def _online_entries(self) -> list[tuple[str, str, tuple[int, int, int]]]:
+        entries = []
+        seen_presence_ids = {self.context.presence_instance_id}
+        seen_names = {self.name_input}
+        for entry in self._presence_entries:
+            if entry.instance_id in seen_presence_ids:
+                continue
+            seen_presence_ids.add(entry.instance_id)
+            seen_names.add(entry.player_name)
+            entries.append((entry.player_name, self._presence_status_label(entry.status), self._presence_status_color(entry.status)))
+            if len(entries) >= len(ONLINE_CARD_RECTS):
+                return entries
+        for room in self._rooms:
+            label = self._room_player_label(room)
+            if label in seen_names:
+                continue
+            seen_names.add(label)
+            entries.append((label, self._room_presence_status(room), self._room_presence_color(room)))
+            if len(entries) >= len(ONLINE_CARD_RECTS):
+                break
+        return entries
+
+    def _presence_status_label(self, status: int) -> str:
+        if status == protocol.PRESENCE_STATUS_IN_GAME:
+            return "IN GAME"
+        if status == protocol.PRESENCE_STATUS_LOBBY:
+            return "IN LOBBY"
+        return "ONLINE"
+
+    def _presence_status_color(self, status: int) -> tuple[int, int, int]:
+        if status == protocol.PRESENCE_STATUS_IN_GAME:
+            return (220, 120, 100)
+        if status == protocol.PRESENCE_STATUS_LOBBY:
+            return (120, 180, 255)
+        return (110, 220, 140)
+
+    def _room_player_label(self, room: RoomEntry) -> str:
+        if room.room_name.endswith("Room") and len(room.room_name) > 4:
+            return room.room_name[:-4]
+        return room.room_name
+
+    def _room_presence_status(self, room: RoomEntry) -> str:
+        if room.state == protocol.STATE_PAUSED:
+            return "IN GAME"
+        if room.state == protocol.STATE_IN_GAME:
+            return "IN GAME"
+        if room.state == protocol.STATE_COUNTDOWN:
+            return "IN LOBBY"
+        return "IN LOBBY"
+
+    def _room_presence_color(self, room: RoomEntry) -> tuple[int, int, int]:
+        if room.state in (protocol.STATE_IN_GAME, protocol.STATE_PAUSED):
+            return (220, 120, 100)
+        return (120, 180, 255)
+
     def _draw_settings(self, surface):
         theme = DEFAULT_THEME
-        box = self._settings_layout()
+        box, fullscreen, close, apply = self._settings_layout()
         scrim = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
-        scrim.fill(theme.overlay_scrim)
+        scrim.fill((8, 10, 18, 205))
         surface.blit(scrim, (0, 0))
-        pygame.draw.rect(surface, theme.bg_panel, box, border_radius=8)
-        pygame.draw.rect(surface, theme.border, box, width=2, border_radius=8)
-
-        title = self.context.font.render("Display Settings", True, theme.text)
-        surface.blit(title, (box.x + 24, box.y + 22))
-        current = self.context.display_manager.config if self.context.display_manager else None
-        current_text = "Current: "
-        if current is not None:
-            current_text += f"{RESOLUTION_LABELS[current.selected_scale]} {'Fullscreen' if current.fullscreen else 'Windowed'}"
-        else:
-            current_text += "Windowed"
-        surface.blit(self.context.tiny_font.render(current_text, True, theme.text_muted), (box.x + 24, box.y + 56))
-        surface.blit(self.context.small_font.render("Resolution", True, theme.text), (box.x + 24, box.y + 72))
+        pygame.draw.rect(surface, theme.bg_panel, box, border_radius=4)
+        pygame.draw.rect(surface, theme.border_focus, box, width=1, border_radius=4)
 
         for rect, scale in self._resolution_rects:
             selected = scale == self._pending_scale
-            btn = ui.Button(rect, RESOLUTION_LABELS[scale], True)
-            ui.draw_button(
-                surface,
-                self.context.tiny_font,
-                btn,
-                theme,
-                hovered=rect.collidepoint(self.context.mouse_pos),
-                variant="primary" if selected else "neutral",
-            )
+            fill = theme.accent if selected else theme.bg_input
+            pygame.draw.rect(surface, fill, rect, border_radius=2)
+            pygame.draw.rect(surface, theme.border, rect, width=1, border_radius=2)
 
-        self.fullscreen_button.text = f"Fullscreen: {'On' if self._pending_fullscreen else 'Off'}"
-        ui.draw_button(surface, self.context.small_font, self.fullscreen_button, theme, hovered=self._fullscreen_h, variant="neutral")
-        ui.draw_button(surface, self.context.small_font, self.close_settings_button, theme, hovered=self._close_settings_h, variant="neutral")
-        ui.draw_button(surface, self.context.small_font, self.apply_button, theme, hovered=self._apply_h)
+        pygame.draw.rect(surface, theme.bg_input, fullscreen, border_radius=2)
+        pygame.draw.rect(surface, theme.border, fullscreen, width=1, border_radius=2)
+
+        for rect, label, variant in ((close, "CLOSE", "neutral"), (apply, "APPLY", "primary")):
+            _ = label
+            fill = theme.accent if variant == "primary" else theme.bg_input
+            pygame.draw.rect(surface, fill, rect, border_radius=2)
+            pygame.draw.rect(surface, theme.border, rect, width=1, border_radius=2)
+
+    def draw_window_overlay(self, surface: pygame.Surface):
+        if self._settings_open:
+            self._draw_window_settings_text(surface)
+            self._draw_window_global_messages(surface)
+            return
+        self._draw_window_avatar_text(surface)
+        self._draw_window_center_text(surface)
+        self._draw_window_online_text(surface)
+        self._draw_window_global_messages(surface)
+
+    def _draw_window_avatar_text(self, surface: pygame.Surface):
+        name_rect = pygame.Rect(14, 80, 60, 9)
+        color = (255, 236, 170) if self.name_active else (190, 220, 255)
+        self._draw_window_text_center(surface, 7, self.name_input, name_rect, color)
+        self._draw_window_text_center(surface, 7, "AVATAR", MENU_ASSET_RECTS["avatar_button"], (245, 247, 252))
+
+    def _draw_window_center_text(self, surface: pygame.Surface):
+        play_color = (190, 225, 255) if self._is_name_valid() else (120, 130, 150)
+        self._draw_window_text_center(surface, 13, "PLAY", MENU_ASSET_RECTS["play"], play_color)
+        self._draw_window_text_center(surface, 8, "EXIT", MENU_ASSET_RECTS["exit"], (220, 235, 250))
+
+    def _draw_window_online_text(self, surface: pygame.Surface):
+        self._draw_window_text_center(surface, 7, "ONLINE", pygame.Rect(248, 20, 56, 11), (150, 205, 255))
+        entries = self._online_entries()
+        for index, rect in enumerate(ONLINE_CARD_RECTS):
+            if index >= len(entries):
+                continue
+            name, status, color = entries[index]
+            self._draw_window_text_center(surface, 7, name, pygame.Rect(rect.x + 3, rect.y + 3, rect.w - 6, 8), (245, 247, 252), shadow=False)
+            self._draw_window_text_center(surface, 7, status, pygame.Rect(rect.x + 3, rect.y + 13, rect.w - 6, 8), color, shadow=False)
+
+    def _draw_window_settings_text(self, surface: pygame.Surface):
+        theme = DEFAULT_THEME
+        box, fullscreen, close, apply = self._settings_layout()
+        self._draw_window_text_center(surface, 8, "DISPLAY SETTINGS", pygame.Rect(box.x + 10, box.y + 10, box.w - 20, 12), theme.text, shadow=False)
+        current = self.context.display_manager.config if self.context.display_manager else None
+        current_text = "Current: "
+        if current is not None:
+            current_text += f"{RESOLUTION_LABELS[current.selected_scale]} {'Full' if current.fullscreen else 'Window'}"
+        else:
+            current_text += "Window"
+        self._draw_window_text_center(surface, 7, current_text, pygame.Rect(box.x + 10, box.y + 25, box.w - 20, 10), theme.text_muted, shadow=False)
+        for rect, scale in self._resolution_rects:
+            self._draw_window_text_center(surface, 7, str(scale) + "x", rect, theme.text, shadow=False)
+        self._draw_window_text_center(surface, 7, f"Fullscreen {'ON' if self._pending_fullscreen else 'OFF'}", fullscreen, theme.text, shadow=False)
+        self._draw_window_text_center(surface, 7, "CLOSE", close, theme.text, shadow=False)
+        self._draw_window_text_center(surface, 7, "APPLY", apply, theme.text, shadow=False)
+
+    def _draw_window_global_messages(self, surface: pygame.Surface):
+        scale = self._window_scale()
+        if self.context.banner_message:
+            rect = pygame.Rect(0, 0, surface.get_width(), 30 * scale)
+            pygame.draw.rect(surface, (120, 40, 50), rect)
+            font = self._window_font(7)
+            label = font.render(self.context.banner_message, True, DEFAULT_THEME.text)
+            surface.blit(label, (10 * scale, 5 * scale))
+        if self.context.status_message:
+            y = 34 * scale if self.context.banner_message else 8 * scale
+            font = self._window_font(6)
+            label = font.render(self.context.status_message, True, (255, 230, 120))
+            surface.blit(label, (8 * scale, y))

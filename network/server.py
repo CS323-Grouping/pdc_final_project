@@ -310,6 +310,23 @@ class LobbyServer:
         if self.room_state.state not in (STATE_IN_GAME, STATE_PAUSED):
             self.sock.sendto(pack_reconnect_no(RECONNECT_DENY_NOT_IN_GAME), addr)
             return
+        if player_id < 0 or session_token == 0:
+            reconnected = self.room_state.reconnect_player_by_name(addr, player_name)
+            if reconnected is None:
+                self.sock.sendto(pack_reconnect_no(RECONNECT_DENY_NO_SLOT), addr)
+                return
+
+            reconnected_id, position, restored_token = reconnected
+            LOGGER.info("Reconnected player %s (%s) by name as id %s", player_name, addr, reconnected_id)
+            self.sock.sendto(pack_session(reconnected_id, restored_token), addr)
+            self.sock.sendto(
+                pack_reconnect_ok(reconnected_id, position[0], position[1], self.room_state.room_name),
+                addr,
+            )
+            self.resume_if_ready()
+            if self.room_state.state == STATE_PAUSED:
+                self.broadcast_pause()
+            return
         if not self.room_state.player_exists(player_id):
             self.sock.sendto(pack_reconnect_no(RECONNECT_DENY_NO_SLOT), addr)
             return
@@ -469,6 +486,8 @@ class LobbyServer:
         player_id = self.room_state.get_player_id_by_addr(addr)
         if player_id is None or player_id != recv_id:
             return
+        if not self.room_state.is_alive(player_id):
+            return
         self.room_state.touch_player(player_id)
         if self.room_state.state == STATE_PAUSED:
             return
@@ -484,6 +503,8 @@ class LobbyServer:
             return
         player_id = self.room_state.get_player_id_by_addr(addr)
         if player_id is None or player_id != recv_id:
+            return
+        if not self.room_state.is_alive(player_id):
             return
         self.room_state.touch_player(player_id)
         if self.room_state.state == STATE_PAUSED:

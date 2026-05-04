@@ -1,6 +1,6 @@
 from unittest.mock import patch
 
-from network.discovery import LobbyBrowser, RoomEntry, beacon_to_room_entry
+from network.discovery import LobbyBrowser, PresenceEntry, RoomEntry, beacon_to_room_entry, presence_to_entry
 from network import protocol
 
 
@@ -34,6 +34,22 @@ def test_beacon_to_room_entry_accepts_current_proto():
     assert entry.state == protocol.STATE_IN_GAME
 
 
+def test_presence_to_entry_accepts_current_proto():
+    pkt = protocol.pack_presence(
+        protocol.PROTO_VERSION,
+        instance_id=42,
+        status=protocol.PRESENCE_STATUS_ONLINE,
+        player_name="Alpha",
+    )
+    entry = presence_to_entry(pkt, ("10.0.0.9", 5556))
+
+    assert entry is not None
+    assert entry.addr == "10.0.0.9"
+    assert entry.instance_id == 42
+    assert entry.player_name == "Alpha"
+    assert entry.status == protocol.PRESENCE_STATUS_ONLINE
+
+
 def test_snapshot_evicts_stale_rooms():
     browser = LobbyBrowser(discovery_port=58330, ttl=3.0)
     key = ("203.0.113.10", 5555)
@@ -52,4 +68,23 @@ def test_snapshot_evicts_stale_rooms():
         rooms = browser.snapshot()
 
     assert rooms == []
+    browser.stop()
+
+
+def test_presence_snapshot_evicts_stale_entries():
+    browser = LobbyBrowser(discovery_port=58332, ttl=3.0)
+    key = ("203.0.113.12", 77)
+    with browser._lock:
+        browser._presence[key] = PresenceEntry(
+            addr="203.0.113.12",
+            instance_id=77,
+            player_name="Stale",
+            status=protocol.PRESENCE_STATUS_ONLINE,
+            last_seen=100.0,
+        )
+
+    with patch("network.discovery.time.monotonic", return_value=105.0):
+        entries = browser.presence_snapshot()
+
+    assert entries == []
     browser.stop()

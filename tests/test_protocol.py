@@ -105,6 +105,24 @@ def test_beacon_round_trip():
     assert room_name == "AlphaRoom"
 
 
+def test_presence_round_trip():
+    packet = protocol.pack_presence(
+        protocol.PROTO_VERSION,
+        instance_id=123456,
+        status=protocol.PRESENCE_STATUS_LOBBY,
+        player_name="PlayerOne",
+    )
+    unpacked = protocol.safe_unpack_presence(packet)
+
+    assert unpacked == (
+        protocol.PRESENCE,
+        protocol.PROTO_VERSION,
+        123456,
+        protocol.PRESENCE_STATUS_LOBBY,
+        "PlayerOne",
+    )
+
+
 def test_safe_unpack_beacon_rejects_malformed_packet():
     assert protocol.safe_unpack_beacon(b"bad-data") is None
 

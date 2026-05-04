@@ -201,6 +201,40 @@ class RoomState:
             player.reconnect_deadline = None
             return self._positions.get(player_id, self.start_position)
 
+    def reconnect_player_by_name(
+        self,
+        addr: Address,
+        player_name: str,
+        now: Optional[float] = None,
+    ) -> Optional[Tuple[int, Position, int]]:
+        with self.lock:
+            now = time.monotonic() if now is None else now
+            matches = []
+            for player_id, player in self._players.items():
+                if player.name != player_name:
+                    continue
+                if not player.alive or player.connected:
+                    continue
+                if player.reconnect_deadline is not None and now > player.reconnect_deadline:
+                    continue
+                matches.append(player_id)
+
+            if len(matches) != 1:
+                return None
+
+            player_id = matches[0]
+            player = self._players[player_id]
+            for old_addr, pid in list(self._addr_to_id.items()):
+                if old_addr == addr or pid == player_id:
+                    del self._addr_to_id[old_addr]
+            self._addr_to_id[addr] = player_id
+            player.connected = True
+            player.ready = False
+            player.last_seen = now
+            player.disconnected_at = None
+            player.reconnect_deadline = None
+            return player_id, self._positions.get(player_id, self.start_position), player.session_token
+
     def remove_player(self, player_id: int):
         with self.lock:
             self._players.pop(player_id, None)
