@@ -36,6 +36,13 @@ def parse_args():
         metavar="HOST:PORT",
         help="Emergency direct join (bypass discovery), e.g. 192.168.1.10:5555",
     )
+    parser.add_argument(
+        "--level",
+        type=int,
+        default=1,
+        choices=[1, 2, 3, 4, 5, 6, 7, 8],
+        help="Choose game level/world (1-8, default: 1)",
+    )
     return parser.parse_args()
 
 
@@ -81,6 +88,8 @@ def main():
         LOGGER.error("Player name must be 3–24 alphanumeric characters (use --name).")
         pygame.quit()
         sys.exit(1)
+    
+    ctx.level_number = args.level
 
     initial_state = "menu"
     machine = StateMachine(ctx)

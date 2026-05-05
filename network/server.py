@@ -151,7 +151,9 @@ class LobbyServer:
     def broadcast_roster(self):
         if self.room_state.state == STATE_IN_GAME:
             return
-        payload = pack_list(self.room_state.connected_roster_entries())
+        roster_entries = self.room_state.connected_roster_entries()
+        LOGGER.debug("Broadcasting roster: %s", roster_entries)
+        payload = pack_list(roster_entries)
         self.broadcast(payload)
 
     def close_room(self):
@@ -199,8 +201,6 @@ class LobbyServer:
             LOGGER.info("Accepted player %s (%s) as id %s", player_name, addr, player_id)
         start_x, start_y = self.room_state.start_position
         self.sock.sendto(pack_conok(player_id, self.room_state.room_name), addr)
-        # Legacy client compatibility: existing main.py expects CONN with coordinates.
-        self.sock.sendto(pack_packet(CONNECTION, start_x, start_y, player_id), addr)
         self.broadcast_roster()
 
     def handle_ready(self, data: bytes, addr):
@@ -473,6 +473,7 @@ def create_server(args) -> Optional[LobbyServer]:
         return None
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind((args.host, args.port))
     sock.settimeout(0.1)
 

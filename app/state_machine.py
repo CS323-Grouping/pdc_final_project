@@ -46,6 +46,7 @@ class AppContext:
     start_pos: tuple = (100.0, 100.0)
     results_standings: list = None
     return_state_after_results: str = "joined_lobby"
+    level_number: int = 1
 
     def __post_init__(self):
         t = DEFAULT_THEME

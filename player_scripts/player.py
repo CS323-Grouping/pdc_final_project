@@ -61,12 +61,16 @@ class Player:
         return False
 
     def _resolve_platforms_horizontal(self, platforms):
-        """Side collisions so the player cannot walk through platform edges."""
+        """Side collisions so the player cannot walk through platform edges.
+        One-way: skip if ascending (vel.y < 0) to pass through sides."""
         self._sync_rect_from_pos()
         for _ in range(4):
             moved = False
             for p in platforms:
                 if not self.rect.colliderect(p.rect):
+                    continue
+                # Skip side collisions when jumping up (one-way top-only)
+                if self.vel.y < 0:
                     continue
                 pen_l = self.rect.right - p.rect.left
                 pen_r = p.rect.right - self.rect.left
@@ -144,6 +148,54 @@ class Player:
 
         self._resolve_platforms_vertical(entities)
         self._sync_rect_from_pos()
+
+    def apply_effect(self, effect_type, value=None, duration=5.0):
+        """Apply a powerup effect to the player.
+        
+        Args:
+            effect_type: The type of effect (e.g., "speed", "jump", "shield", etc.)
+            value: Multiplier or modifier value for the effect
+            duration: How long the effect lasts (in seconds)
+        """
+        if effect_type == "speed":
+            # Temporarily increase movement speed
+            self.speed *= value if value else 1.5
+        elif effect_type == "jump":
+            # Temporarily improve jump height
+            self.jump_velocity *= value if value else 1.5
+        elif effect_type == "shield":
+            # Shield effect - would reduce damage (placeholder for now)
+            pass
+        elif effect_type == "double_jump":
+            # Double jump ability - would need to implement in handle_input
+            pass
+        elif effect_type == "lunch_boost":
+            # Boost jump height significantly
+            self.jump_velocity *= value if value else 1.6
+        elif effect_type == "low_gravity":
+            # Reduce gravity temporarily
+            self.gravity *= 0.5
+        elif effect_type == "slowfall":
+            # Reduce gravity for slow descent
+            self.gravity *= 0.3
+        elif effect_type == "dash":
+            # Dash ability - would need special handling
+            pass
+        elif effect_type == "heavy":
+            # Increase gravity (debuff)
+            self.gravity *= 1.5
+        elif effect_type == "slow":
+            # Decrease movement speed (debuff)
+            self.speed *= 0.5
+        elif effect_type == "ice":
+            # Reduce friction/control (debuff)
+            self.speed *= 0.7
+        elif effect_type == "weak_jump":
+            # Reduce jump height (debuff)
+            self.jump_velocity *= 0.6
+        elif effect_type == "reverse_control":
+            # Reverse controls (debuff) - placeholder
+            pass
 
     def draw(self, surface):
         pygame.draw.rect(surface, self.color, self.rect)

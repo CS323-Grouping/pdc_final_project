@@ -77,6 +77,13 @@ class ScreenState:
         return None
 
 
+def unique_roster(entries):
+    """Deduplicate roster by player_id, preserving latest entry."""
+    unique = {pid: entry for pid, ready, name in entries for entry in [(pid, ready, name)]}
+    return list(unique.values())
+
+
 def alnum_only(value: str, max_len: int = 24) -> str:
     filtered = "".join(ch for ch in value if ch.isalnum())
     return filtered[:max_len]
+

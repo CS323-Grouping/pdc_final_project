@@ -5,7 +5,8 @@ import pygame
 
 from network import network_handler as nw
 from network import protocol
-from states.common import ScreenState, alnum_only
+import time
+from states.common import ScreenState, alnum_only, unique_roster
 from ui import components as ui
 from ui.theme import DEFAULT_THEME
 
@@ -64,6 +65,8 @@ class HostLobbyState(ScreenState):
             self.context.set_status("Could not start server (port in use or server exited).", duration=4.0)
             return
         net = nw.Network()
+        # Give server more startup time
+        time.sleep(0.8)
         result = net.connect_to_room(
             self.context.server_host,
             self.context.server_port,
@@ -106,7 +109,7 @@ class HostLobbyState(ScreenState):
             if self.handle_common_network_event(event):
                 continue
             if isinstance(event, nw.RosterEvent):
-                self.context.roster = list(event.entries)
+                self.context.roster = unique_roster(event.entries)
             elif isinstance(event, nw.CountdownEvent):
                 self.context.countdown_remaining = event.seconds_until_start
             elif isinstance(event, nw.CountdownCancelEvent):

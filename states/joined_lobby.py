@@ -3,7 +3,7 @@ import math
 import pygame
 
 from network import network_handler as nw
-from states.common import ScreenState
+from states.common import ScreenState, unique_roster
 from ui import animations as anim
 from ui import components as ui
 from ui.theme import DEFAULT_THEME
@@ -58,8 +58,9 @@ class JoinedLobbyState(ScreenState):
             if self.handle_common_network_event(event):
                 continue
             if isinstance(event, nw.RosterEvent):
-                self._note_roster_change(list(event.entries))
-                self.context.roster = list(event.entries)
+                entries = unique_roster(event.entries)
+                self._note_roster_change(entries)
+                self.context.roster = entries
                 lr = self.local_player_ready()
                 if lr is not None:
                     self._ready_on = lr
