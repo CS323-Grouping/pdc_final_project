@@ -22,6 +22,8 @@ class JoinedLobbyState(ScreenState):
         self.leave_button = ui.Button(pygame.Rect(0, 0, 150, 46), "Leave")
         self._ready_on = False
         self._pulse_t = 0.0
+        self._heartbeat_elapsed = 0.0
+        self._server_silence_elapsed = 0.0
         self._roster_ids: frozenset[int] = frozenset()
         self._row_flash: dict[int, float] = {}
         self._ready_h = self._leave_h = False
@@ -29,6 +31,8 @@ class JoinedLobbyState(ScreenState):
     def enter(self):
         self._ready_on = False
         self._pulse_t = 0.0
+        self._heartbeat_elapsed = 0.0
+        self._server_silence_elapsed = 0.0
         self._row_flash.clear()
         self._roster_ids = frozenset()
         net = self.context.network
@@ -54,9 +58,11 @@ class JoinedLobbyState(ScreenState):
         self._roster_ids = new_ids
 
     def _drain_network(self):
+        heard_server = False
         for event in self.context.drain_network_events():
+            heard_server = True
             if self.handle_common_network_event(event):
-                continue
+                return True
             if isinstance(event, nw.RosterEvent):
                 self._note_roster_change(list(event.entries))
                 self.context.roster = list(event.entries)
@@ -70,14 +76,15 @@ class JoinedLobbyState(ScreenState):
             elif isinstance(event, nw.GameStartEvent):
                 self.context.countdown_remaining = None
                 self.switch("in_game")
-                return
+                return True
             elif isinstance(event, nw.GameEndEvent):
                 self.context.reset_lobby_after_game()
                 self._ready_on = False
                 self.context.results_standings = list(event.standings)
                 self.context.return_state_after_results = "joined_lobby"
                 self.switch("results")
-                return
+                return True
+        return heard_server
 
     def handle_event(self, event):
         super().handle_event(event)
@@ -97,7 +104,21 @@ class JoinedLobbyState(ScreenState):
 
     def update(self, dt: float):
         self._pulse_t += dt
-        self._drain_network()
+        if self._drain_network():
+            self._server_silence_elapsed = 0.0
+        else:
+            self._server_silence_elapsed += dt
+        if self.context.network is None:
+            return
+        self._heartbeat_elapsed += dt
+        if self._heartbeat_elapsed >= 1.0:
+            self._heartbeat_elapsed = 0.0
+            self.context.network.send_ready(self._ready_on)
+        if self._server_silence_elapsed >= 4.0:
+            self.context.set_banner("Host closed the room or stopped responding.", duration=5.0)
+            self.context.detach_network(send_disconnect=False, preserve_reconnect=True)
+            self.switch("browse_lobby")
+            return
         self.ready_button.enabled = self.context.network is not None
         for k in list(self._row_flash.keys()):
             self._row_flash[k] = anim.highlight_decay(self._row_flash[k], dt, rate=3.0)

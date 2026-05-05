@@ -78,6 +78,8 @@ class InGameState(ScreenState):
         self._paused_players: dict[int, float] = {}
         self._pause_heartbeat_elapsed = 0.0
         self._observing = False
+        self._spectate_player_id: int | None = None
+        self._spectate_snap_pending = False
         self._placements_by_id: dict[int, int] = {}
         self.goal: Goal | None = None
         self._goal_reached = False
@@ -131,11 +133,33 @@ class InGameState(ScreenState):
         self._paused_players = {}
         self._pause_heartbeat_elapsed = 0.0
         self._observing = False
+        self._spectate_player_id = None
+        self._spectate_snap_pending = False
         self._placements_by_id = {}
         self.goal = Goal(LEVEL_1_GOAL_CENTER_X, LEVEL_1_GOAL_Y)
         self._goal_reached = False
         self._seed_remote_players_from_roster(base_start)
         self._send_initial_player_state()
+
+    def handle_event(self, event):
+        super().handle_event(event)
+        if not self._observing or self._paused_players:
+            return
+        if event.type == pygame.KEYDOWN:
+            if event.key in (pygame.K_RIGHT, pygame.K_d):
+                self._cycle_spectator_target(1)
+                return
+            if event.key in (pygame.K_LEFT, pygame.K_a):
+                self._cycle_spectator_target(-1)
+                return
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            prev_rect, next_rect = self._spectator_control_rects()
+            if prev_rect.collidepoint(event.pos):
+                self._cycle_spectator_target(-1)
+                return
+            if next_rect.collidepoint(event.pos):
+                self._cycle_spectator_target(1)
+                return
 
     def _spawn_position_for_player(self, player_id: int, base_start: tuple[float, float]) -> tuple[float, float]:
         roster_ids = sorted(pid for pid, _ready, _name in self.context.roster)
@@ -201,11 +225,15 @@ class InGameState(ScreenState):
             if self.handle_common_network_event(event):
                 continue
             if isinstance(event, nw.PositionEvent):
+                if event.player_id in self._placements_by_id:
+                    continue
                 self._remote_positions[event.player_id] = (event.x, event.y)
                 remote = self._get_remote_player(event.player_id, (event.x, event.y))
                 if remote is not None:
                     remote.position = (event.x, event.y)
             elif isinstance(event, nw.PlayerStateEvent):
+                if event.player_id in self._placements_by_id:
+                    continue
                 position = (event.x, event.y)
                 self._remote_positions[event.player_id] = position
                 remote = self._get_remote_player(event.player_id, position)
@@ -218,25 +246,39 @@ class InGameState(ScreenState):
             elif isinstance(event, nw.MatchPauseEvent):
                 self._paused_players[event.player_id] = event.seconds_remaining
                 name = self._name_by_id.get(event.player_id, f"Player {event.player_id}")
+                LOGGER.info(
+                    "Match pause received player_id=%s name=%s remaining=%.2f",
+                    event.player_id,
+                    name,
+                    event.seconds_remaining,
+                )
                 self.context.set_status(f"Match paused: {name} disconnected.", duration=2.0)
             elif isinstance(event, nw.MatchResumeEvent):
                 self._paused_players.clear()
                 self._pause_heartbeat_elapsed = 0.0
+                LOGGER.info("Match resume received")
                 self.context.set_status("Match resumed.", duration=2.0)
             elif isinstance(event, nw.EliminationEvent):
                 name = self._name_by_id.get(event.player_id, f"id {event.player_id}")
+                LOGGER.info("Elimination received player_id=%s name=%s placement=%s", event.player_id, name, event.placement)
                 self._elimination_feed.append(f"{name} eliminated — place {event.placement}")
                 self._placements_by_id[event.player_id] = event.placement
                 my_id = self.context.network.id if self.context.network else -1
                 if event.player_id == my_id:
                     self._observing = True
                     self._dead_sent = True
+                    self._set_spectator_target(self._default_spectator_target(), snap=True)
+                    LOGGER.info("Local player eliminated; switched to observing player_id=%s", event.player_id)
                     self.context.set_status("Eliminated. Observing the remaining players.", duration=3.0)
                 else:
                     self._remote_players.pop(event.player_id, None)
                     self._remote_positions.pop(event.player_id, None)
+                    self._remote_avatar_surfaces.pop(event.player_id, None)
+                    if self._spectate_player_id == event.player_id:
+                        self._set_spectator_target(self._default_spectator_target(), snap=True)
                 self._paused_players.pop(event.player_id, None)
             elif isinstance(event, nw.GameEndEvent):
+                LOGGER.info("Game end received reason=%s standings=%s", event.reason_code, event.standings)
                 self.context.reset_lobby_after_game()
                 self.context.results_standings = list(event.standings)
                 self.context.return_state_after_results = "host_lobby" if self.context.is_host else "joined_lobby"
@@ -250,6 +292,8 @@ class InGameState(ScreenState):
                         self._remote_positions.pop(player_id, None)
                         self._remote_players.pop(player_id, None)
                         self._remote_avatar_surfaces.pop(player_id, None)
+                        if self._spectate_player_id == player_id:
+                            self._set_spectator_target(self._default_spectator_target(), snap=True)
                 for pid, _ready, name in event.entries:
                     self._name_by_id[pid] = name
         return False
@@ -342,6 +386,7 @@ class InGameState(ScreenState):
 
         if not self._dead_sent and self.camera.has_fallen_below(self.hero):
             self._dead_sent = True
+            LOGGER.info("Local player fell below camera; sending DEAD")
             net.send_dead()
 
         if (
@@ -352,6 +397,8 @@ class InGameState(ScreenState):
         ):
             self._goal_reached = True
             self._observing = True
+            self._set_spectator_target(self._default_spectator_target(), snap=True)
+            LOGGER.info("Local player reached goal; sending GOAL and observing")
             net.send_goal()
 
         current_state = self.hero.animation.state
@@ -377,22 +424,74 @@ class InGameState(ScreenState):
         focus = self._observer_focus_position()
         if focus is None:
             return
-        rect = pygame.Rect(0, 0, PLAYER_HITBOX_WIDTH, PLAYER_HITBOX_HEIGHT)
-        rect.center = (int(round(focus[0])), int(round(focus[1])))
+        self._update_observer_camera(focus, dt)
 
-        class _Target:
-            pass
+    def _alive_spectator_ids(self) -> list[int]:
+        my_id = self.context.network.id if self.context.network else -1
+        ids = [
+            player_id
+            for player_id in self._remote_positions
+            if player_id != my_id and player_id not in self._placements_by_id
+        ]
+        return sorted(ids, key=lambda player_id: self._name_by_id.get(player_id, f"P{player_id}").lower())
 
-        target = _Target()
-        target.rect = rect
-        self.camera.update(target)
+    def _default_spectator_target(self) -> int | None:
+        alive_ids = self._alive_spectator_ids()
+        if not alive_ids:
+            return None
+        return min(alive_ids, key=lambda player_id: self._remote_positions[player_id][1])
+
+    def _set_spectator_target(self, player_id: int | None, snap: bool = False):
+        if player_id == self._spectate_player_id:
+            self._spectate_snap_pending = self._spectate_snap_pending or snap
+            return
+        self._spectate_player_id = player_id
+        self._spectate_snap_pending = snap
+        if player_id is None:
+            LOGGER.info("Spectator target cleared")
+            return
+        LOGGER.info(
+            "Spectator target set player_id=%s name=%s snap=%s",
+            player_id,
+            self._name_by_id.get(player_id, f"P{player_id}"),
+            snap,
+        )
+
+    def _cycle_spectator_target(self, direction: int):
+        alive_ids = self._alive_spectator_ids()
+        if not alive_ids:
+            self._set_spectator_target(None, snap=True)
+            return
+        if self._spectate_player_id not in alive_ids:
+            self._set_spectator_target(self._default_spectator_target(), snap=True)
+            return
+        index = alive_ids.index(self._spectate_player_id)
+        self._set_spectator_target(alive_ids[(index + direction) % len(alive_ids)], snap=True)
 
     def _observer_focus_position(self) -> tuple[float, float] | None:
-        if self._remote_positions:
-            return min(self._remote_positions.values(), key=lambda pos: pos[1])
+        alive_ids = self._alive_spectator_ids()
+        if not alive_ids:
+            self._set_spectator_target(None, snap=True)
+        elif self._spectate_player_id not in alive_ids:
+            self._set_spectator_target(self._default_spectator_target(), snap=True)
+        if self._spectate_player_id is not None:
+            position = self._remote_positions.get(self._spectate_player_id)
+            if position is not None:
+                return position
         if self.hero is not None:
             return (self.hero.pos.x, self.hero.pos.y)
         return None
+
+    def _update_observer_camera(self, focus: tuple[float, float], dt: float):
+        if self.camera is None:
+            return
+        target_y = min(0.0, focus[1] - self.camera.upper_follow_threshold)
+        if self._spectate_snap_pending:
+            self.camera.y = target_y
+            self._spectate_snap_pending = False
+            return
+        follow = min(1.0, dt * 12.0)
+        self.camera.y += (target_y - self.camera.y) * follow
 
     def _tick_pause(self, dt: float, net: nw.Network):
         for player_id in list(self._paused_players.keys()):
@@ -498,6 +597,9 @@ class InGameState(ScreenState):
 
         self._draw_border_panels(surface)
 
+        if self._observing:
+            self._draw_spectator_controls(surface)
+
         if self._paused_players:
             self._draw_pause_overlay(surface)
 
@@ -553,6 +655,60 @@ class InGameState(ScreenState):
         if body_target.colliderect(surface.get_rect()):
             scaled_body = pygame.transform.scale(body_image, body_target.size)
             surface.blit(scaled_body, body_target)
+
+    def _spectator_control_rects(self) -> tuple[pygame.Rect, pygame.Rect]:
+        center_x = INTERNAL_WIDTH // 2
+        y = INTERNAL_HEIGHT - 28
+        prev_rect = pygame.Rect(center_x - 64, y, 18, 14)
+        next_rect = pygame.Rect(center_x + 46, y, 18, 14)
+        return prev_rect, next_rect
+
+    def _scale_window_rect(self, rect: pygame.Rect) -> pygame.Rect:
+        display = self.context.display_manager
+        scale = display.config.selected_scale if display is not None else 1
+        return pygame.Rect(rect.x * scale, rect.y * scale, rect.w * scale, rect.h * scale)
+
+    def _draw_spectator_controls(self, surface: pygame.Surface):
+        theme = DEFAULT_THEME
+        prev_rect, next_rect = self._spectator_control_rects()
+        panel_rect = pygame.Rect(prev_rect.right + 4, prev_rect.y, next_rect.left - prev_rect.right - 8, prev_rect.h)
+        prev_window = self._scale_window_rect(prev_rect)
+        next_window = self._scale_window_rect(next_rect)
+        panel_window = self._scale_window_rect(panel_rect)
+
+        alive_ids = self._alive_spectator_ids()
+        target_id = self._spectate_player_id if self._spectate_player_id in alive_ids else None
+        if target_id is None and alive_ids:
+            target_id = self._default_spectator_target()
+            self._set_spectator_target(target_id, snap=True)
+        name = self._name_by_id.get(target_id, f"P{target_id}") if target_id is not None else "No live targets"
+        label = self._fit_text(f"Watching {name}", self.context.small_font, max(24, panel_window.w - 12))
+
+        card = pygame.Surface(panel_window.size, pygame.SRCALPHA)
+        card.fill((*theme.bg_panel, 220))
+        surface.blit(card, panel_window.topleft)
+        pygame.draw.rect(surface, theme.border, panel_window, width=1, border_radius=6)
+        text = self.context.small_font.render(label, True, theme.text_warn)
+        surface.blit(text, text.get_rect(center=panel_window.center))
+
+        enabled = len(alive_ids) > 1
+        mouse_pos = self.context.mouse_pos
+        ui.draw_button(
+            surface,
+            self.context.small_font,
+            ui.Button(prev_window, "<", enabled),
+            theme,
+            hovered=enabled and prev_rect.collidepoint(mouse_pos),
+            variant="neutral",
+        )
+        ui.draw_button(
+            surface,
+            self.context.small_font,
+            ui.Button(next_window, ">", enabled),
+            theme,
+            hovered=enabled and next_rect.collidepoint(mouse_pos),
+            variant="neutral",
+        )
 
     def _player_position(self, player_id: int) -> tuple[float, float] | None:
         my_id = self.context.network.id if self.context.network else -1

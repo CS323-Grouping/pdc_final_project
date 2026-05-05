@@ -3,6 +3,7 @@ import logging
 from pathlib import Path
 import queue
 import secrets
+import socket
 import string
 import subprocess
 import sys
@@ -29,6 +30,7 @@ from states.results import ResultsState
 LOGGER = logging.getLogger(__name__)
 MAX_FRAME_DT = 1.0 / 30.0
 RANDOM_PLAYER_NAME_CHARS = string.ascii_uppercase + string.digits
+GAME_PORT_SEARCH_LIMIT = 50
 
 
 def random_player_name(length: int = 10) -> str:
@@ -90,6 +92,7 @@ class AppContext:
     presence_instance_id: int = 0
     presence_status: int = protocol.PRESENCE_STATUS_ONLINE
     presence_broadcaster: Optional[PresenceBroadcaster] = None
+    log_dir: Optional[Path] = None
 
     def __post_init__(self):
         if not self.player_name:
@@ -163,8 +166,40 @@ class AppContext:
             return pygame.event.Event(event.type, attrs)
         return event
 
+    def _udp_port_available(self, port: int) -> bool:
+        try:
+            probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            probe.bind(("0.0.0.0", port))
+        except OSError:
+            return False
+        finally:
+            try:
+                probe.close()
+            except UnboundLocalError:
+                pass
+        return True
+
+    def _choose_server_port(self) -> int:
+        preferred = max(1, min(65535, int(self.server_port)))
+        for offset in range(GAME_PORT_SEARCH_LIMIT):
+            port = preferred + offset
+            if port > 65535:
+                break
+            if port == self.discovery_port:
+                continue
+            if self._udp_port_available(port):
+                return port
+
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            probe.bind(("0.0.0.0", 0))
+            return int(probe.getsockname()[1])
+        finally:
+            probe.close()
+
     def start_local_server(self, room_name: str) -> bool:
         self.stop_server()
+        self.server_port = self._choose_server_port()
         command = [
             sys.executable,
             str(self.project_root / "network" / "server.py"),
@@ -179,23 +214,45 @@ class AppContext:
             "--log-level",
             self.log_level,
         ]
+        if self.log_dir is not None:
+            command.extend(["--log-dir", str(self.log_dir)])
+        LOGGER.info("Starting local server room=%s command=%s", room_name, command)
         self.server_process = subprocess.Popen(command, cwd=str(self.project_root))
         time.sleep(0.4)
         if self.server_process.poll() is not None:
+            LOGGER.error("Local server exited during startup room=%s", room_name)
             self.server_process = None
             return False
+        LOGGER.info("Local server started room=%s port=%s", room_name, self.server_port)
         return True
 
     def stop_server(self):
         if self.server_process is None:
             return
         if self.server_process.poll() is None:
+            LOGGER.info("Stopping local server")
             self.server_process.terminate()
             try:
                 self.server_process.wait(timeout=3)
             except subprocess.TimeoutExpired:
+                LOGGER.warning("Local server did not stop in time; killing")
                 self.server_process.kill()
         self.server_process = None
+
+    def wait_for_server_exit(self, timeout: float = 0.75) -> bool:
+        if self.server_process is None:
+            return True
+        if self.server_process.poll() is not None:
+            self.server_process = None
+            return True
+        try:
+            self.server_process.wait(timeout=timeout)
+            self.server_process = None
+            LOGGER.info("Local server exited after close-room request")
+            return True
+        except subprocess.TimeoutExpired:
+            LOGGER.warning("Local server did not exit after close-room request")
+            return False
 
     def attach_network(self, network_obj: nw.Network, is_host: bool, room_name: str, start_pos):
         self.detach_network(send_disconnect=False)
@@ -208,6 +265,14 @@ class AppContext:
         self.results_standings = []
         self.remember_reconnect_ticket()
         self.network.start_receiver()
+        LOGGER.info(
+            "Attached network player_id=%s host=%s room=%s addr=%s start_pos=%s",
+            self.network.id,
+            self.is_host,
+            self.room_name,
+            self.network.addr,
+            self.start_pos,
+        )
 
     def remember_reconnect_ticket(self):
         if self.network is None:
@@ -241,8 +306,10 @@ class AppContext:
             return
         try:
             if send_disconnect:
+                LOGGER.info("Sending disconnect player_id=%s addr=%s", self.network.id, self.network.addr)
                 self.network.disconnect()
         finally:
+            LOGGER.info("Detaching network player_id=%s preserve_reconnect=%s", self.network.id, preserve_reconnect)
             self.network.close()
             self.network = None
             self.is_host = False
@@ -263,10 +330,12 @@ class AppContext:
         return events
 
     def shutdown(self):
+        LOGGER.info("App shutdown requested host=%s network=%s", self.is_host, self.network is not None)
         self.stop_presence()
         if self.is_host and self.network is not None:
+            LOGGER.info("Host shutdown: sending close room")
             self.network.close_room()
-            time.sleep(0.15)
+            self.wait_for_server_exit(timeout=0.75)
             self.detach_network(send_disconnect=False)
         else:
             self.detach_network(send_disconnect=True)
@@ -308,6 +377,7 @@ class StateMachine:
         if self.current_state is not None:
             self.current_state.exit()
         self.context.presence_status = PRESENCE_BY_STATE.get(state_name, protocol.PRESENCE_STATUS_ONLINE)
+        LOGGER.info("State change -> %s", state_name)
         state_cls = self.state_map[state_name]
         self.current_state = state_cls(self, self.context, **kwargs)
         self.current_state.enter()
@@ -338,7 +408,8 @@ class StateMachine:
             else:
                 surface = self.context.screen
             self.current_state.draw(surface)
-            self.context.draw_global_messages(surface)
+            if not self.current_state.suppress_internal_global_messages:
+                self.context.draw_global_messages(surface)
             if self.context.display_manager is not None and use_internal:
                 window_surface = self.context.display_manager.blit_internal_to_window()
                 self.current_state.draw_window_overlay(window_surface)
