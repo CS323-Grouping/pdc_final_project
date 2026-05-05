@@ -207,6 +207,7 @@ class LobbyServer:
         self._game_start_time: float = 0.0
         # Maps player_id -> elapsed seconds when they touched the goal.
         self._finish_times: dict[int, float] = {}
+        self._match_player_count: int = 0
 
     def broadcast(self, payload: bytes, exclude_addr=None):
         for other_addr in self.room_state.peers(exclude_addr=exclude_addr):
@@ -427,7 +428,22 @@ class LobbyServer:
         self.room_state.state = STATE_LOBBY
         self.room_state.reset_for_lobby()
         self._finish_times = {}
+        self._match_player_count = 0
+        self.end_policy.clear_elimination_cooldown()
         self.broadcast_roster()
+
+    def _current_match_player_count(self) -> int:
+        if self._match_player_count > 0:
+            return self._match_player_count
+        return len(self.room_state.standings())
+
+    def _placed_count(self) -> int:
+        return sum(1 for _player_id, placement, _name in self.room_state.standings() if placement != 255)
+
+    def _next_elimination_placement(self) -> int:
+        total_players = self._current_match_player_count()
+        bottom_placements_taken = self._placed_count() - len(self._finish_times)
+        return max(1, total_players - bottom_placements_taken)
 
     def handle_goal(self, data: bytes, addr):
         unpacked = safe_unpack_goal(data)
@@ -458,9 +474,9 @@ class LobbyServer:
         if not self.room_state.is_alive(player_id):
             return
 
-        alive_before = self.room_state.alive_count()
-        placement = len(self._finish_times) + max(1, alive_before - len(self._finish_times))
+        placement = self._next_elimination_placement()
         self.room_state.mark_eliminated(player_id, placement)
+        self.end_policy.record_elimination(self.room_state.alive_positions())
         self.broadcast(pack_elim(player_id, placement))
         self._check_game_end()
 
@@ -595,7 +611,7 @@ class LobbyServer:
 
         self.room_state.touch_player(player_id)
 
-        if player_id == self.room_state.host_id and self.room_state.state not in (STATE_IN_GAME, STATE_PAUSED):
+        if player_id == self.room_state.host_id:
             self.close_room()
             return
 
@@ -694,6 +710,8 @@ class LobbyServer:
         self.room_state.state = STATE_IN_GAME
         self.room_state.enter_game()
         self._finish_times = {}
+        self._match_player_count = self.room_state.connected_count()
+        self.end_policy.clear_elimination_cooldown()
         self._game_start_time = time.monotonic()
         self.broadcast(pack_gstart())
         self.broadcast_match_snapshot()
