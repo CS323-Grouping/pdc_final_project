@@ -69,6 +69,7 @@ CDWN = b"CDWN"
 CDWNX = b"CANX"
 GSTART = b"GSTR"
 DEAD = b"DEAD"
+GOAL = b"GOAL"
 ELIM = b"ELIM"
 GEND = b"GEND"
 KICK = b"KICK"
@@ -133,6 +134,7 @@ FRMT_CDWN = "!4sf"
 FRMT_CDWNX = "!4sB"
 FRMT_GSTART = "!4s"
 FRMT_DEAD = "!4siB"
+FRMT_GOAL = "!4si"   # tag, player_id
 FRMT_ELIM = "!4siB"
 FRMT_GEND_HEAD = "!4sBB"
 FRMT_GEND_ITEM = "!iB32s"
@@ -543,6 +545,20 @@ def safe_unpack_dead(data: bytes) -> Optional[Tuple[bytes, int, int]]:
     if tag != DEAD:
         return None
     return tag, player_id, cause
+
+
+def pack_goal(player_id: int) -> bytes:
+    return struct.pack(FRMT_GOAL, GOAL, player_id)
+
+
+def safe_unpack_goal(data: bytes) -> Optional[Tuple[bytes, int]]:
+    unpacked = _safe_unpack_exact(data, FRMT_GOAL)
+    if unpacked is None:
+        return None
+    tag, player_id = unpacked
+    if tag != GOAL:
+        return None
+    return tag, player_id
 
 
 def pack_elim(player_id: int, placement: int) -> bytes:

@@ -24,8 +24,9 @@ from world.constants import (
     PLAYER_HITBOX_HEIGHT,
     PLAYER_HITBOX_WIDTH,
 )
-from world.level_1 import create_level_1
+from world.level_1 import create_level_1, LEVEL_1_GOAL_CENTER_X, LEVEL_1_GOAL_Y
 from world.rendering import LevelRenderer
+from world.shapes.goal import Goal
 from player_scripts import camera
 
 LOGGER = logging.getLogger(__name__)
@@ -78,6 +79,8 @@ class InGameState(ScreenState):
         self._pause_heartbeat_elapsed = 0.0
         self._observing = False
         self._placements_by_id: dict[int, int] = {}
+        self.goal: Goal | None = None
+        self._goal_reached = False
 
 
 
@@ -129,6 +132,8 @@ class InGameState(ScreenState):
         self._pause_heartbeat_elapsed = 0.0
         self._observing = False
         self._placements_by_id = {}
+        self.goal = Goal(LEVEL_1_GOAL_CENTER_X, LEVEL_1_GOAL_Y)
+        self._goal_reached = False
         self._seed_remote_players_from_roster(base_start)
         self._send_initial_player_state()
 
@@ -329,12 +334,25 @@ class InGameState(ScreenState):
         for remote in self._remote_players.values():
             remote.animation.update(dt)
 
+        if self.goal is not None:
+            self.goal.update(dt)
+
         if self.hero and self.camera:
             self.camera.update(self.hero)
 
         if not self._dead_sent and self.camera.has_fallen_below(self.hero):
             self._dead_sent = True
             net.send_dead()
+
+        if (
+            not self._goal_reached
+            and not self._dead_sent
+            and self.goal is not None
+            and self.hero.rect.colliderect(self.goal.rect)
+        ):
+            self._goal_reached = True
+            self._observing = True
+            net.send_goal()
 
         current_state = self.hero.animation.state
         self._net_send_elapsed += dt
@@ -352,6 +370,8 @@ class InGameState(ScreenState):
     def _tick_observer(self, dt: float):
         for remote in self._remote_players.values():
             remote.animation.update(dt)
+        if self.goal is not None:
+            self.goal.update(dt)
         if self.camera is None:
             return
         focus = self._observer_focus_position()
@@ -412,6 +432,9 @@ class InGameState(ScreenState):
 
         for platform in self.platforms:
             platform.draw(surface, camera)
+
+        if self.goal is not None:
+            self.goal.draw(surface, camera)
 
         my_id = self.context.network.id if self.context.network else -1
 

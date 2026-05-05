@@ -24,6 +24,7 @@ try:
         CDWNX_REASON_HOST_LEFT,
         CDWNX_REASON_NOT_ENOUGH_PLAYERS,
         DEAD,
+        GOAL,
         DISCOVER,
         DISCOVERY_PORT,
         DISCONNECT,
@@ -82,6 +83,7 @@ try:
         safe_unpack_avatar_header,
         safe_unpack_conn,
         safe_unpack_dead,
+        safe_unpack_goal,
         safe_unpack_kick,
         safe_unpack_player_state,
         safe_unpack_ready,
@@ -110,6 +112,7 @@ except ModuleNotFoundError:
         CDWNX_REASON_HOST_LEFT,
         CDWNX_REASON_NOT_ENOUGH_PLAYERS,
         DEAD,
+        GOAL,
         DISCOVER,
         DISCOVERY_PORT,
         DISCONNECT,
@@ -168,6 +171,7 @@ except ModuleNotFoundError:
         safe_unpack_avatar_header,
         safe_unpack_conn,
         safe_unpack_dead,
+        safe_unpack_goal,
         safe_unpack_kick,
         safe_unpack_player_state,
         safe_unpack_ready,
@@ -200,6 +204,9 @@ class LobbyServer:
         self.running = True
         self._last_cdwn_broadcast = 0.0
         self._last_pause_broadcast = 0.0
+        self._game_start_time: float = 0.0
+        # Maps player_id -> elapsed seconds when they touched the goal.
+        self._finish_times: dict[int, float] = {}
 
     def broadcast(self, payload: bytes, exclude_addr=None):
         for other_addr in self.room_state.peers(exclude_addr=exclude_addr):
@@ -397,32 +404,66 @@ class LobbyServer:
         if self.room_state.state == STATE_COUNTDOWN:
             self.cancel_countdown(CDWNX_REASON_HOST_CANCELLED)
 
-    def _check_game_end_after_elimination(self):
+    def _check_game_end(self):
+        """End the game when no alive players remain who haven't finished."""
         alive_ids = self.room_state.alive_ids()
-        if len(alive_ids) == 1:
-            winner_id = alive_ids[0]
-            self.room_state.set_placement(winner_id, 1)
-            standings = self.room_state.standings()
-            self.broadcast(pack_gend(GEND_REASON_NORMAL, standings))
-            self.room_state.state = STATE_LOBBY
-            self.room_state.reset_for_lobby()
-            self.broadcast_roster()
+        # Players still alive who haven't touched the goal yet.
+        still_racing = [pid for pid in alive_ids if pid not in self._finish_times]
+
+        if still_racing:
+            # Game continues — at least one player is still climbing.
             return
-        if len(alive_ids) == 0:
+
+        # Everyone still alive has either finished or there's nobody left.
+        if len(alive_ids) == 0 and not self._finish_times:
+            # All eliminated, no one finished — forfeit.
             standings = self.room_state.standings()
             self.broadcast(pack_gend(GEND_REASON_FORFEIT, standings))
-            self.room_state.state = STATE_LOBBY
-            self.room_state.reset_for_lobby()
-            self.broadcast_roster()
+        else:
+            # Normal end: assign 1st place to the last finisher if not yet placed.
+            standings = self.room_state.standings()
+            self.broadcast(pack_gend(GEND_REASON_NORMAL, standings))
+
+        self.room_state.state = STATE_LOBBY
+        self.room_state.reset_for_lobby()
+        self._finish_times = {}
+        self.broadcast_roster()
+
+    def handle_goal(self, data: bytes, addr):
+        unpacked = safe_unpack_goal(data)
+        if unpacked is None:
+            return
+        _tag, player_id = unpacked
+        addr_player_id = self.room_state.get_player_id_by_addr(addr)
+        if addr_player_id != player_id:
+            return
+        self.room_state.touch_player(player_id)
+        if self.room_state.state != STATE_IN_GAME:
+            return
+        if not self.room_state.is_alive(player_id):
+            return
+        if player_id in self._finish_times:
+            return
+
+        elapsed = time.monotonic() - self._game_start_time
+        self._finish_times[player_id] = elapsed
+
+        placement = len(self._finish_times)
+        self.room_state.mark_eliminated(player_id, placement)
+        self.broadcast(pack_elim(player_id, placement))
+        LOGGER.info("Player %s reached the goal in %.2fs (place %d)", player_id, elapsed, placement)
+        self._check_game_end()
 
     def eliminate_player(self, player_id: int):
         if not self.room_state.is_alive(player_id):
             return
+
         alive_before = self.room_state.alive_count()
-        placement = max(1, alive_before)
+        placement = len(self._finish_times) + max(1, alive_before - len(self._finish_times))
         self.room_state.mark_eliminated(player_id, placement)
         self.broadcast(pack_elim(player_id, placement))
-        self._check_game_end_after_elimination()
+        self._check_game_end()
+
 
     def handle_dead(self, data: bytes, addr):
         unpacked = safe_unpack_dead(data)
@@ -606,6 +647,9 @@ class LobbyServer:
         if tag == DEAD:
             self.handle_dead(data, addr)
             return
+        if tag == GOAL:
+            self.handle_goal(data, addr)
+            return
         if tag == POSITION:
             self.handle_position(data, addr)
             return
@@ -649,6 +693,8 @@ class LobbyServer:
 
         self.room_state.state = STATE_IN_GAME
         self.room_state.enter_game()
+        self._finish_times = {}
+        self._game_start_time = time.monotonic()
         self.broadcast(pack_gstart())
         self.broadcast_match_snapshot()
 

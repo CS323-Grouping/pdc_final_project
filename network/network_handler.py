@@ -20,6 +20,7 @@ from network.protocol import (
     CDWN,
     CDWNX,
     DEAD,
+    GOAL,
     DISCOVER,
     DISCONNECT,
     ELIM,
@@ -44,6 +45,7 @@ from network.protocol import (
     pack_avatar_chunk,
     pack_avatar_header,
     pack_dead,
+    pack_goal,
     pack_kick,
     pack_packet,
     pack_player_state,
@@ -475,6 +477,11 @@ class Network:
         if self.id < 0:
             return
         self._sendto(pack_dead(self.id, 0))
+
+    def send_goal(self):
+        if self.id < 0:
+            return
+        self._sendto(pack_goal(self.id))
 
     def close_room(self):
         self.send_kick(-1)

@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 
 from world.shapes import platform as plat
-from world.constants import CHUNK_HEIGHT, PLATFORM_NORMAL_SIZE
+from world.constants import CHUNK_HEIGHT, INTERNAL_WIDTH, PLATFORM_NORMAL_SIZE
 
 
 @dataclass(frozen=True)
@@ -123,6 +123,12 @@ def _build_level_1_platforms() -> tuple[PlatformSpec, ...]:
 
 
 LEVEL_1_PLATFORMS = _build_level_1_platforms()
+
+LEVEL_1_TOP_Y: int = min(spec.y for spec in LEVEL_1_PLATFORMS) - 80
+
+LEVEL_1_GOAL_Y: int = LEVEL_1_TOP_Y
+
+LEVEL_1_GOAL_CENTER_X: int = INTERNAL_WIDTH // 2
 
 
 def create_level_1(platform_image):
