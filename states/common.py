@@ -9,6 +9,7 @@ from ui.theme import DEFAULT_THEME
 
 class ScreenState:
     render_to_internal = False
+    suppress_internal_global_messages = False
 
     def __init__(self, machine, context, **kwargs):
         self.machine = machine
@@ -51,7 +52,10 @@ class ScreenState:
             self.context.remember_reconnect_ticket()
             return True
         if isinstance(event, nw.ConnectionLostEvent):
-            self.context.set_banner(event.message, duration=5.0)
+            message = event.message
+            if "WinError 10054" in message or "forcibly closed" in message:
+                message = "Host closed the room or the connection was lost."
+            self.context.set_banner(message, duration=5.0)
             self.context.detach_network(send_disconnect=False, preserve_reconnect=True)
             self.switch("browse_lobby" if self.context.reconnect_ticket is not None else "menu")
             return True

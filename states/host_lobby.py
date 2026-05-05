@@ -80,6 +80,7 @@ class HostLobbyState(ScreenState):
     def _perform_close_room(self) -> None:
         if self.context.network:
             self.context.network.close_room()
+            self.context.wait_for_server_exit(timeout=0.75)
         self.context.stop_server()
         self.context.detach_network(send_disconnect=False)
         self._session_open = False

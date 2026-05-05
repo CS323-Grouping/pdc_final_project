@@ -1,5 +1,7 @@
 import argparse
 import logging
+from datetime import datetime
+from pathlib import Path
 import socket
 import time
 from typing import Optional
@@ -224,12 +226,16 @@ class LobbyServer:
 
     def close_room(self):
         host_id = self.room_state.host_id
+        LOGGER.info("Closing room host_id=%s peers=%s", host_id, self.room_state.peers())
         for other_addr in self.room_state.peers():
             player_id = self.room_state.get_player_id_by_addr(other_addr)
             if player_id is None or player_id == host_id:
                 continue
             try:
-                self.sock.sendto(pack_kicked(KICKED_REASON_ROOM_CLOSED), other_addr)
+                payload = pack_kicked(KICKED_REASON_ROOM_CLOSED)
+                for _attempt in range(3):
+                    self.sock.sendto(payload, other_addr)
+                LOGGER.info("Notified room closed player_id=%s addr=%s", player_id, other_addr)
             except OSError as error:
                 LOGGER.debug("Failed to notify room closure to %s: %s", other_addr, error)
         self.running = False
@@ -240,12 +246,14 @@ class LobbyServer:
         for player_id in disconnected_ids:
             remaining = self.room_state.disconnect_remaining(player_id, now)
             self.broadcast(pack_match_pause(player_id, remaining))
+            LOGGER.info("Broadcast pause disconnected_player_id=%s remaining=%.2f", player_id, remaining)
         self._last_pause_broadcast = now
 
     def pause_for_disconnect(self, player_id: int, now: Optional[float] = None):
         if not self.room_state.is_alive(player_id):
             return
         now = time.monotonic() if now is None else now
+        LOGGER.warning("Pausing match for disconnected alive player_id=%s", player_id)
         self.room_state.mark_disconnected(player_id, now, self.reconnect_grace_seconds)
         self.room_state.state = STATE_PAUSED
         self.broadcast_pause()
@@ -257,6 +265,7 @@ class LobbyServer:
             return
         self.room_state.state = STATE_IN_GAME
         self._last_pause_broadcast = 0.0
+        LOGGER.info("Match resumed")
         self.broadcast(pack_match_resume())
 
     def broadcast_match_snapshot(self):
@@ -294,6 +303,8 @@ class LobbyServer:
         player_id, is_new = self.room_state.add_or_get_player(addr, player_name)
         if is_new:
             LOGGER.info("Accepted player %s (%s) as id %s", player_name, addr, player_id)
+        else:
+            LOGGER.info("Existing player %s (%s) reused id %s", player_name, addr, player_id)
         start_x, start_y = self.room_state.start_position
         session_token = self.room_state.session_token(player_id) or 0
         self.sock.sendto(pack_session(player_id, session_token), addr)
@@ -399,10 +410,12 @@ class LobbyServer:
 
         if self.room_state.state == STATE_LOBBY:
             if self.room_state.can_start():
+                LOGGER.info("Host %s started countdown", host_id)
                 self.start_countdown()
             return
 
         if self.room_state.state == STATE_COUNTDOWN:
+            LOGGER.info("Host %s cancelled countdown", host_id)
             self.cancel_countdown(CDWNX_REASON_HOST_CANCELLED)
 
     def _check_game_end(self):
@@ -419,10 +432,12 @@ class LobbyServer:
         if len(alive_ids) == 0 and not self._finish_times:
             # All eliminated, no one finished — forfeit.
             standings = self.room_state.standings()
+            LOGGER.info("Game ended by forfeit standings=%s", standings)
             self.broadcast(pack_gend(GEND_REASON_FORFEIT, standings))
         else:
             # Normal end: assign 1st place to the last finisher if not yet placed.
             standings = self.room_state.standings()
+            LOGGER.info("Game ended normally standings=%s", standings)
             self.broadcast(pack_gend(GEND_REASON_NORMAL, standings))
 
         self.room_state.state = STATE_LOBBY
@@ -477,6 +492,7 @@ class LobbyServer:
         placement = self._next_elimination_placement()
         self.room_state.mark_eliminated(player_id, placement)
         self.end_policy.record_elimination(self.room_state.alive_positions())
+        LOGGER.info("Eliminated player_id=%s placement=%s standings=%s", player_id, placement, self.room_state.standings())
         self.broadcast(pack_elim(player_id, placement))
         self._check_game_end()
 
@@ -492,12 +508,14 @@ class LobbyServer:
         self.room_state.touch_player(player_id)
         if self.room_state.state != STATE_IN_GAME:
             return
+        LOGGER.info("Received DEAD player_id=%s addr=%s", player_id, addr)
         self.eliminate_player(player_id)
 
     def kick_player(self, target_player_id: int, reason_code: int):
         target_addr = self.room_state.get_addr_by_player_id(target_player_id)
         if target_addr is not None:
             self.sock.sendto(pack_kicked(reason_code), target_addr)
+            LOGGER.info("Kicked player_id=%s reason=%s addr=%s", target_player_id, reason_code, target_addr)
 
         target_name = self.room_state.player_name(target_player_id)
         if target_name:
@@ -520,6 +538,7 @@ class LobbyServer:
         self.room_state.touch_player(host_id)
 
         if target_player_id == CLOSE_ROOM_TARGET:
+            LOGGER.info("Host %s requested close room", host_id)
             self.close_room()
             return
         if target_player_id == self.room_state.host_id:
@@ -549,6 +568,7 @@ class LobbyServer:
         if self.room_state.state == STATE_PAUSED:
             return
         self.room_state.update_position(player_id, x, y)
+        LOGGER.debug("Sync position player_id=%s x=%.1f y=%.1f addr=%s", player_id, x, y, addr)
         self.broadcast(pack_packet(POSITION, x, y, player_id), exclude_addr=addr)
 
     def handle_player_state(self, data: bytes, addr):
@@ -567,6 +587,14 @@ class LobbyServer:
         if self.room_state.state == STATE_PAUSED:
             return
         self.room_state.update_position(player_id, x, y)
+        LOGGER.debug(
+            "Sync player_state player_id=%s x=%.1f y=%.1f state=%s addr=%s",
+            player_id,
+            x,
+            y,
+            state_id,
+            addr,
+        )
         self.broadcast(pack_player_state(x, y, player_id, state_id), exclude_addr=addr)
 
     def handle_avatar_header(self, data: bytes, addr):
@@ -610,6 +638,14 @@ class LobbyServer:
             return
 
         self.room_state.touch_player(player_id)
+        LOGGER.info(
+            "Received DISCONNECT player_id=%s addr=%s state=%s alive=%s host=%s",
+            player_id,
+            addr,
+            self.room_state.state,
+            self.room_state.is_alive(player_id),
+            player_id == self.room_state.host_id,
+        )
 
         if player_id == self.room_state.host_id:
             self.close_room()
@@ -620,6 +656,7 @@ class LobbyServer:
                 self.pause_for_disconnect(player_id)
             else:
                 self.room_state.mark_disconnected(player_id)
+                LOGGER.info("Marked eliminated player disconnected player_id=%s", player_id)
             return
 
         self.room_state.remove_player(player_id)
@@ -701,6 +738,7 @@ class LobbyServer:
             target_addr = self.room_state.get_addr_by_player_id(player_id)
             if target_addr is not None:
                 self.sock.sendto(pack_kicked(KICKED_REASON_NOT_READY), target_addr)
+                LOGGER.info("Kicked not-ready player_id=%s addr=%s", player_id, target_addr)
             self.room_state.remove_player(player_id)
 
         if self.room_state.connected_count() < MIN_PLAYERS:
@@ -713,6 +751,7 @@ class LobbyServer:
         self._match_player_count = self.room_state.connected_count()
         self.end_policy.clear_elimination_cooldown()
         self._game_start_time = time.monotonic()
+        LOGGER.info("Game started players=%s", self.room_state.connected_roster_entries())
         self.broadcast(pack_gstart())
         self.broadcast_match_snapshot()
 
@@ -722,6 +761,7 @@ class LobbyServer:
         now = time.monotonic()
         timed_out = self.room_state.timed_out_connected_alive_ids(now, self.player_timeout_seconds)
         if timed_out:
+            LOGGER.warning("Timed out connected alive players=%s", timed_out)
             self.pause_for_disconnect(timed_out[0], now)
             return
         alive_positions = self.room_state.alive_positions()
@@ -780,11 +820,46 @@ def parse_args():
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
         help="Logging verbosity",
     )
+    parser.add_argument(
+        "--log-dir",
+        default="",
+        help="Directory for server.log. If omitted, a server log instance folder is created under logs/.",
+    )
     return parser.parse_args()
 
 
-def configure_logging(log_level: str):
-    logging.basicConfig(level=getattr(logging, log_level), format="[%(levelname)s] %(name)s: %(message)s")
+def _safe_log_name(value: str, fallback: str = "server") -> str:
+    safe = "".join(ch for ch in value.strip() if ch.isalnum() or ch in ("-", "_"))
+    return safe or fallback
+
+
+def _next_available_log_dir(folder: Path) -> Path:
+    candidate = folder
+    suffix = 2
+    while candidate.exists():
+        candidate = folder.with_name(f"{folder.name}-{suffix}")
+        suffix += 1
+    return candidate
+
+
+def configure_logging(log_level: str, log_dir: str, room_name: str):
+    if log_dir:
+        folder = Path(log_dir)
+    else:
+        stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+        folder = _next_available_log_dir(
+            Path(__file__).resolve().parents[1] / "logs" / f"{stamp}-server-{_safe_log_name(room_name)}"
+        )
+    folder.mkdir(parents=True, exist_ok=True)
+    log_file = folder / "server.log"
+    logging.basicConfig(
+        level=getattr(logging, log_level),
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        handlers=[logging.StreamHandler(), logging.FileHandler(log_file, encoding="utf-8")],
+        force=True,
+    )
+    LOGGER.info("Server log initialized dir=%s", folder)
 
 
 def create_server(args) -> Optional[LobbyServer]:
@@ -817,7 +892,7 @@ def create_server(args) -> Optional[LobbyServer]:
 
 def main():
     args = parse_args()
-    configure_logging(args.log_level)
+    configure_logging(args.log_level, args.log_dir, args.room)
 
     server = create_server(args)
     if server is None:

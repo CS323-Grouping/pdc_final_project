@@ -5,6 +5,7 @@ import sys
 import pygame
 
 from app.display import DisplayManager
+from app.logging_setup import configure_logging, create_instance_log_dir
 from app.state_machine import AppContext, StateMachine
 from network import network_handler as nw
 from network import protocol
@@ -40,13 +41,6 @@ def parse_args():
     return parser.parse_args()
 
 
-def configure_logging(log_level: str):
-    logging.basicConfig(
-        level=getattr(logging, log_level),
-        format="[%(levelname)s] %(name)s: %(message)s",
-    )
-
-
 def _parse_server_option(value: str) -> tuple[str, int] | None:
     value = (value or "").strip()
     if not value:
@@ -69,7 +63,6 @@ def _parse_server_option(value: str) -> tuple[str, int] | None:
 
 def main():
     args = parse_args()
-    configure_logging(args.log_level)
 
     pygame.init()
     display_manager = DisplayManager.create_default()
@@ -83,6 +76,11 @@ def main():
 
     if args.name:
         ctx.player_name = args.name.strip() or ctx.player_name
+
+    ctx.log_dir = create_instance_log_dir(ctx.project_root, ctx.player_name)
+    configure_logging(args.log_level, ctx.log_dir / "client.log")
+    LOGGER.info("Client log initialized for player=%s dir=%s", ctx.player_name, ctx.log_dir)
+
     if not protocol.is_valid_player_name(ctx.player_name):
         LOGGER.error("Player name must be 3–24 alphanumeric characters (use --name).")
         pygame.quit()

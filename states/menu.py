@@ -3,8 +3,11 @@ import pygame
 from app.display import DisplayConfig
 from network import protocol
 from network.discovery import LobbyBrowser, PresenceEntry, RoomEntry
+from player_scripts.animation import load_spritesheet_frames
+from player_scripts.avatar_sprite import AVATAR_RECT, crop_square, make_default_avatar
 from states.common import ScreenState, alnum_only
 from ui.theme import DEFAULT_THEME
+from world.constants import PLAYER_FRAME_HEIGHT, PLAYER_FRAME_WIDTH
 
 
 RESOLUTION_LABELS = {
@@ -18,12 +21,12 @@ RESOLUTION_LABELS = {
 
 MENU_ASSET_RECTS = {
     "background": pygame.Rect(0, 0, 320, 180),
-    "avatar_section": pygame.Rect(10, 75, 68, 92),
-    "avatar_bg": pygame.Rect(21, 94, 46, 46),
-    "avatar_frame": pygame.Rect(19, 92, 50, 50),
-    "avatar_model": pygame.Rect(33, 97, 22, 32),
-    "avatar_platform": pygame.Rect(24, 129, 40, 8),
-    "avatar_button": pygame.Rect(17, 144, 54, 14),
+    "avatar_section": pygame.Rect(10, 66, 68, 100),
+    "avatar_bg": pygame.Rect(21, 88, 46, 46),
+    "avatar_frame": pygame.Rect(19, 86, 50, 50),
+    "avatar_model": pygame.Rect(33, 91, 22, 32),
+    "avatar_platform": pygame.Rect(24, 123, 40, 8),
+    "avatar_button": pygame.Rect(17, 141, 54, 18),
     "crown": pygame.Rect(145, 10, 30, 22),
     "title": pygame.Rect(88, 33, 144, 62),
     "play": pygame.Rect(99, 100, 122, 26),
@@ -42,6 +45,7 @@ ONLINE_CARD_RECTS = (
 
 class MainMenuState(ScreenState):
     render_to_internal = True
+    suppress_internal_global_messages = True
 
     def __init__(self, machine, context, **kwargs):
         super().__init__(machine, context, **kwargs)
@@ -60,11 +64,13 @@ class MainMenuState(ScreenState):
         self._menu_font_sm = pygame.font.SysFont("consolas", 7, bold=True)
         self._menu_font_lg = pygame.font.SysFont("consolas", 13, bold=True)
         self._window_fonts: dict[tuple[int, bool], pygame.font.Font] = {}
+        self._idle_body_frame: pygame.Surface | None = None
 
     def enter(self):
         self.context.detach_network(send_disconnect=False)
         self.context.stop_server()
         self._assets = self._load_assets()
+        self._load_player_preview_frame()
         self._start_browser()
 
     def exit(self):
@@ -98,6 +104,17 @@ class MainMenuState(ScreenState):
                 fallback.fill((35, 42, 58, 255))
                 assets[key] = fallback
         return assets
+
+    def _load_player_preview_frame(self):
+        if self._idle_body_frame is not None:
+            return
+        sprite = self.context.project_root / "assets" / "player" / "animation" / "playerAnimationNormal_Blue.png"
+        try:
+            frames = load_spritesheet_frames(sprite)
+        except (FileNotFoundError, pygame.error):
+            self._idle_body_frame = None
+            return
+        self._idle_body_frame = frames["idle_front"][0]
 
     def _start_browser(self):
         self._stop_browser()
@@ -292,11 +309,7 @@ class MainMenuState(ScreenState):
         for key in ("avatar_section", "avatar_bg", "avatar_frame"):
             self._draw_asset(surface, key)
 
-        avatar = self.context.avatar_window_surface
-        if avatar is not None:
-            target = pygame.Rect(33, 98, 22, 22)
-            surface.blit(pygame.transform.scale(avatar, target.size), target)
-        else:
+        if self._idle_body_frame is None:
             self._draw_asset(surface, "avatar_model")
         self._draw_asset(surface, "avatar_platform")
         self._draw_asset(surface, "avatar_button")
@@ -414,10 +427,34 @@ class MainMenuState(ScreenState):
         self._draw_window_global_messages(surface)
 
     def _draw_window_avatar_text(self, surface: pygame.Surface):
-        name_rect = pygame.Rect(14, 80, 60, 9)
+        name_rect = pygame.Rect(14, 74, 60, 10)
         color = (255, 236, 170) if self.name_active else (190, 220, 255)
-        self._draw_window_text_center(surface, 7, self.name_input, name_rect, color)
+        self._draw_window_text_center(surface, 6, self.name_input, name_rect, color)
         self._draw_window_text_center(surface, 7, "AVATAR", MENU_ASSET_RECTS["avatar_button"], (245, 247, 252))
+        self._draw_window_avatar_preview(surface)
+
+    def _current_avatar_source(self) -> pygame.Surface:
+        if self.context.avatar_window_surface is not None:
+            return self.context.avatar_window_surface
+        if self.context.avatar_surface is not None:
+            return self.context.avatar_surface
+        return make_default_avatar()
+
+    def _draw_window_avatar_preview(self, surface: pygame.Surface):
+        if self._idle_body_frame is None:
+            return
+        frame_rect = self._scale_rect(pygame.Rect(32, 91, PLAYER_FRAME_WIDTH, PLAYER_FRAME_HEIGHT))
+        avatar_logical = pygame.Rect(
+            32 + AVATAR_RECT.x,
+            91 + AVATAR_RECT.y,
+            AVATAR_RECT.w,
+            AVATAR_RECT.h,
+        )
+        avatar_rect = self._scale_rect(avatar_logical)
+        avatar = pygame.transform.smoothscale(crop_square(self._current_avatar_source()), avatar_rect.size)
+        body = pygame.transform.scale(self._idle_body_frame, frame_rect.size)
+        surface.blit(avatar, avatar_rect)
+        surface.blit(body, frame_rect)
 
     def _draw_window_center_text(self, surface: pygame.Surface):
         play_color = (190, 225, 255) if self._is_name_valid() else (120, 130, 150)

@@ -75,6 +75,71 @@ from network.protocol import (
 LOGGER = logging.getLogger(__name__)
 
 
+def _packet_tag_name(payload: bytes) -> str:
+    tag = tag_of(payload)
+    if tag is None:
+        return "UNKNOWN"
+    try:
+        return tag.decode("ascii")
+    except UnicodeDecodeError:
+        return repr(tag)
+
+
+def _event_log_level(event: "NetworkEvent") -> int:
+    if isinstance(event, (PositionEvent, PlayerStateEvent, AvatarChunkEvent)):
+        return logging.DEBUG
+    if isinstance(event, ErrorEvent):
+        return logging.WARNING
+    return logging.INFO
+
+
+def _event_summary(event: "NetworkEvent") -> str:
+    if isinstance(event, RosterEvent):
+        return f"RosterEvent entries={event.entries}"
+    if isinstance(event, CountdownEvent):
+        return f"CountdownEvent seconds={event.seconds_until_start:.2f}"
+    if isinstance(event, CountdownCancelEvent):
+        return f"CountdownCancelEvent reason={event.reason_code}"
+    if isinstance(event, GameStartEvent):
+        return "GameStartEvent"
+    if isinstance(event, EliminationEvent):
+        return f"EliminationEvent player_id={event.player_id} placement={event.placement}"
+    if isinstance(event, GameEndEvent):
+        return f"GameEndEvent reason={event.reason_code} standings={event.standings}"
+    if isinstance(event, KickedEvent):
+        return f"KickedEvent reason={event.reason_code}"
+    if isinstance(event, PositionEvent):
+        return f"PositionEvent player_id={event.player_id} x={event.x:.1f} y={event.y:.1f}"
+    if isinstance(event, PlayerStateEvent):
+        return (
+            f"PlayerStateEvent player_id={event.player_id} "
+            f"x={event.x:.1f} y={event.y:.1f} state={event.animation_state_id}"
+        )
+    if isinstance(event, AvatarHeaderEvent):
+        return (
+            f"AvatarHeaderEvent player_id={event.player_id} avatar_id={event.avatar_id} "
+            f"chunks={event.total_chunks} bytes={event.payload_size}"
+        )
+    if isinstance(event, AvatarChunkEvent):
+        return (
+            f"AvatarChunkEvent player_id={event.player_id} avatar_id={event.avatar_id} "
+            f"chunk={event.chunk_index + 1}/{event.total_chunks} bytes={len(event.payload)}"
+        )
+    if isinstance(event, SessionEvent):
+        return f"SessionEvent player_id={event.player_id} token={event.session_token}"
+    if isinstance(event, MatchPauseEvent):
+        return f"MatchPauseEvent player_id={event.player_id} remaining={event.seconds_remaining:.2f}"
+    if isinstance(event, MatchResumeEvent):
+        return "MatchResumeEvent"
+    if isinstance(event, ConnectDeniedEvent):
+        return f"ConnectDeniedEvent reason={event.reason_code} extra={event.extra}"
+    if isinstance(event, ConnectionLostEvent):
+        return f"ConnectionLostEvent message={event.message}"
+    if isinstance(event, ErrorEvent):
+        return f"ErrorEvent message={event.message}"
+    return event.__class__.__name__
+
+
 @dataclass(frozen=True)
 class ConnectResult:
     ok: bool
@@ -225,22 +290,28 @@ class Network:
         self.events: "queue.Queue[NetworkEvent]" = queue.Queue()
         self._recv_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
+        LOGGER.info("Network socket initialized default_addr=%s", self.addr)
 
     @property
     def is_open(self) -> bool:
         return not self._closed
 
     def _mark_connection_lost(self, message: str) -> ConnectionLostEvent:
+        LOGGER.warning("Connection lost: %s", message)
         self._closed = True
         return ConnectionLostEvent(message)
 
     def _sendto(self, payload: bytes, addr: Optional[Tuple[str, int]] = None, report_error: bool = True) -> bool:
         if self._closed:
             return False
+        target = addr or self.addr
+        tag = _packet_tag_name(payload)
         try:
-            self.client.sendto(payload, addr or self.addr)
+            self.client.sendto(payload, target)
+            LOGGER.debug("send packet tag=%s bytes=%s target=%s player_id=%s", tag, len(payload), target, self.id)
             return True
         except OSError as error:
+            LOGGER.warning("send failed tag=%s target=%s error=%s", tag, target, error)
             if report_error:
                 self.events.put(self._mark_connection_lost(f"Network send failed: {error}"))
             else:
@@ -248,6 +319,7 @@ class Network:
             return False
 
     def close(self):
+        LOGGER.info("Closing network socket player_id=%s addr=%s", self.id, self.addr)
         self.stop_receiver()
         self._closed = True
         try:
@@ -256,6 +328,7 @@ class Network:
             pass
 
     def _recv_event_loop(self):
+        LOGGER.info("Network receiver started player_id=%s addr=%s", self.id, self.addr)
         while not self._stop_event.is_set() and not self._closed:
             event = self.receive_one()
             if event is None:
@@ -263,7 +336,9 @@ class Network:
             if isinstance(event, SessionEvent):
                 self.id = event.player_id
                 self.session_token = event.session_token
+            LOGGER.log(_event_log_level(event), "recv %s", _event_summary(event))
             self.events.put(event)
+        LOGGER.info("Network receiver stopped player_id=%s addr=%s", self.id, self.addr)
 
     def start_receiver(self):
         if self._closed:
@@ -273,6 +348,7 @@ class Network:
         self._stop_event.clear()
         self._recv_thread = threading.Thread(target=self._recv_event_loop, daemon=True, name="network-receiver")
         self._recv_thread.start()
+        LOGGER.info("Started network receiver thread addr=%s", self.addr)
 
     def stop_receiver(self, timeout: float = 2.0):
         self._stop_event.set()
@@ -310,6 +386,7 @@ class Network:
     def connect_to_room(self, addr: str, port: int, player_name: str) -> ConnectResult:
         self.addr = (addr, port)
         self.client.settimeout(2.0)
+        LOGGER.info("Connecting to room addr=%s player_name=%s", self.addr, player_name)
         if not self._sendto(pack_conn(player_name, PROTO_VERSION), report_error=False):
             return ConnectResult(ok=False, reason_code=CONNO_REASON_VERSION)
 
@@ -339,6 +416,13 @@ class Network:
                     if start_pos is None:
                         start_pos = (100.0, 100.0)
                     self.client.settimeout(0.1)
+                    LOGGER.info(
+                        "Connected to room=%s player_id=%s token=%s start_pos=%s",
+                        room_name,
+                        player_id,
+                        self.session_token,
+                        start_pos,
+                    )
                     return ConnectResult(
                         ok=True,
                         player_id=player_id,
@@ -353,6 +437,7 @@ class Network:
                         return ConnectResult(ok=False, reason_code=CONNO_REASON_VERSION)
                     _tag, reason_code, extra = unpacked
                     self.client.settimeout(0.1)
+                    LOGGER.info("Connection denied reason=%s extra=%s", reason_code, extra)
                     return ConnectResult(ok=False, reason_code=reason_code, extra=extra)
 
                 # Legacy compatibility response carrying spawn coordinates.
@@ -368,6 +453,7 @@ class Network:
                     self.events.put(parsed)
         except socket.timeout:
             self.client.settimeout(0.1)
+            LOGGER.warning("Connection timed out addr=%s", self.addr)
             return ConnectResult(ok=False, reason_code=CONNO_REASON_VERSION)
 
     def reconnect_to_room(
@@ -381,6 +467,13 @@ class Network:
         self.addr = (addr, port)
         self.client.settimeout(2.0)
         payload = pack_reconnect(player_id, session_token, player_name, PROTO_VERSION)
+        LOGGER.info(
+            "Reconnecting to room addr=%s player_id=%s token=%s player_name=%s",
+            self.addr,
+            player_id,
+            session_token,
+            player_name,
+        )
         if not self._sendto(payload, report_error=False):
             return ConnectResult(ok=False, reason_code=CONNO_REASON_VERSION)
 
@@ -409,6 +502,14 @@ class Network:
                     if self.session_token == 0:
                         self.session_token = session_token
                     self.client.settimeout(0.1)
+                    LOGGER.info(
+                        "Reconnect accepted room=%s player_id=%s token=%s start_pos=(%.1f, %.1f)",
+                        room_name,
+                        reconnected_id,
+                        self.session_token,
+                        x,
+                        y,
+                    )
                     return ConnectResult(
                         ok=True,
                         player_id=reconnected_id,
@@ -421,6 +522,7 @@ class Network:
                     unpacked = safe_unpack_reconnect_no(data)
                     reason = unpacked[1] if unpacked is not None else CONNO_REASON_VERSION
                     self.client.settimeout(0.1)
+                    LOGGER.info("Reconnect denied reason=%s", reason)
                     return ConnectResult(ok=False, reason_code=reason)
 
                 parsed = self._parse_event(data)
@@ -428,6 +530,7 @@ class Network:
                     self.events.put(parsed)
         except socket.timeout:
             self.client.settimeout(0.1)
+            LOGGER.warning("Reconnect timed out addr=%s", self.addr)
             return ConnectResult(ok=False, reason_code=CONNO_REASON_VERSION)
 
     def connect(self):
@@ -458,11 +561,13 @@ class Network:
     def send_ready(self, flag: bool):
         if self.id < 0:
             return
+        LOGGER.info("send READY player_id=%s ready=%s", self.id, flag)
         self._sendto(pack_ready(self.id, flag))
 
     def send_start(self):
         if self.id < 0:
             return
+        LOGGER.info("send START/CANCEL player_id=%s", self.id)
         self._sendto(pack_start(self.id))
 
     def cancel_countdown(self):
@@ -471,16 +576,19 @@ class Network:
     def send_kick(self, target_id: int):
         if self.id < 0:
             return
+        LOGGER.info("send KICK host_id=%s target_id=%s", self.id, target_id)
         self._sendto(pack_kick(self.id, target_id))
 
     def send_dead(self):
         if self.id < 0:
             return
+        LOGGER.info("send DEAD player_id=%s", self.id)
         self._sendto(pack_dead(self.id, 0))
 
     def send_goal(self):
         if self.id < 0:
             return
+        LOGGER.info("send GOAL player_id=%s", self.id)
         self._sendto(pack_goal(self.id))
 
     def close_room(self):
@@ -499,6 +607,7 @@ class Network:
     def send_avatar(self, avatar_id: int, payload: bytes):
         if self.id < 0 or not payload:
             return
+        LOGGER.info("send AVATAR player_id=%s avatar_id=%s bytes=%s", self.id, avatar_id, len(payload))
         chunks = [
             payload[index : index + AVATAR_CHUNK_PAYLOAD_SIZE]
             for index in range(0, len(payload), AVATAR_CHUNK_PAYLOAD_SIZE)
@@ -626,6 +735,7 @@ class Network:
             if self._stop_event.is_set() or self._closed:
                 return None
             return self._mark_connection_lost(f"Network receive failed: {error}")
+        LOGGER.debug("recv packet tag=%s bytes=%s", _packet_tag_name(data), len(data))
         return self._parse_event(data)
 
     # Legacy receive API for existing gameplay loop.
@@ -642,6 +752,7 @@ class Network:
             if self.id < 0 or not self.addr[0]:
                 return
             msg = pack_packet(DISCONNECT, 0.0, 0.0, self.id)
+            LOGGER.info("send DISCONNECT player_id=%s addr=%s", self.id, self.addr)
             self._sendto(msg, report_error=False)
         except OSError as error:
             LOGGER.error("Error disconnecting: %s", error)
