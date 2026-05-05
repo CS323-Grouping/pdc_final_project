@@ -264,7 +264,12 @@ class AppContext:
 
     def shutdown(self):
         self.stop_presence()
-        self.detach_network(send_disconnect=True)
+        if self.is_host and self.network is not None:
+            self.network.close_room()
+            time.sleep(0.15)
+            self.detach_network(send_disconnect=False)
+        else:
+            self.detach_network(send_disconnect=True)
         self.stop_server()
 
     def start_presence(self):

@@ -11,7 +11,7 @@ class PlatformSpec:
     kind: str = "normal"
 
 
-LEVEL_1_CHUNKS = 10
+LEVEL_1_CHUNKS = 20
 LEVEL_1_TARGET_HEIGHT = LEVEL_1_CHUNKS * CHUNK_HEIGHT
 LEVEL_1_MIN_PLATFORM_GAP = 38
 LEVEL_1_MAX_PLATFORM_GAP = 44
@@ -113,12 +113,17 @@ LEVEL_1_PLATFORM_GAPS = (
 
 
 def _build_level_1_platforms() -> tuple[PlatformSpec, ...]:
-    y = 152
+    start_y = 152
+    y = start_y
     platforms = []
-    for index, x in enumerate(LEVEL_1_X_SEQUENCE):
+    index = 0
+    while True:
+        x = LEVEL_1_X_SEQUENCE[index % len(LEVEL_1_X_SEQUENCE)]
         platforms.append(PlatformSpec(x, y))
-        if index < len(LEVEL_1_PLATFORM_GAPS):
-            y -= LEVEL_1_PLATFORM_GAPS[index]
+        if (start_y - y) >= LEVEL_1_TARGET_HEIGHT:
+            break
+        y -= LEVEL_1_PLATFORM_GAPS[index % len(LEVEL_1_PLATFORM_GAPS)]
+        index += 1
     return tuple(platforms)
 
 

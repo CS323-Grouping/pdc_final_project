@@ -29,9 +29,9 @@ def test_level_1_platform_gaps_stay_jumpable_and_not_too_dense():
     assert max(gaps) <= LEVEL_1_MAX_PLATFORM_GAP
 
 
-def test_level_1_spans_about_ten_chunks():
+def test_level_1_spans_about_twenty_chunks():
     y_values = [spec.y for spec in LEVEL_1_PLATFORMS]
     height = max(y_values) - min(y_values)
 
-    assert LEVEL_1_CHUNKS == 10
+    assert LEVEL_1_CHUNKS == 20
     assert height >= LEVEL_1_TARGET_HEIGHT - 20

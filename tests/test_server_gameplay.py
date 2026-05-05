@@ -53,3 +53,66 @@ def test_eliminated_player_state_is_not_rebroadcast():
 
     assert room_state.get_position(player_id) == (20.0, 20.0)
     assert not any(protocol.tag_of(payload) == protocol.PLAYER_STATE and sent_addr == other_addr for payload, sent_addr in sock.sent)
+
+
+def test_tick_in_game_eliminates_left_behind_player():
+    server, room_state, sock, (leader_id, _leader_addr), (_near_id, _near_addr), (behind_id, _behind_addr) = _server_with_started_room()
+    room_state.update_position(leader_id, 100.0, 100.0)
+    room_state.update_position(_near_id, 100.0, 260.0)
+    room_state.update_position(behind_id, 100.0, 1100.0)
+    sock.sent.clear()
+
+    server.tick_in_game()
+
+    assert not room_state.is_alive(behind_id)
+    assert any(
+        protocol.safe_unpack_elim(payload) == (protocol.ELIM, behind_id, 3)
+        for payload, _addr in sock.sent
+    )
+
+
+def test_goal_finish_and_later_elimination_use_distinct_placements():
+    room_state = RoomState(room_name="TestRoom", game_port=5555)
+    players = []
+    for index, name in enumerate(("Alpha", "Bravo", "Charlie", "Delta")):
+        addr = ("127.0.0.1", 12100 + index)
+        player_id, _ = room_state.add_or_get_player(addr, name)
+        players.append((player_id, addr))
+    room_state.state = protocol.STATE_IN_GAME
+    room_state.enter_game()
+    sock = FakeSocket()
+    server = LobbyServer(sock, room_state, countdown_seconds=0.0)
+    server._match_player_count = 4
+
+    first_id, first_addr = players[0]
+    fallen_id, _fallen_addr = players[1]
+    behind_id, _behind_addr = players[3]
+
+    server.eliminate_player(fallen_id)
+    server.handle_goal(protocol.pack_goal(first_id), first_addr)
+    server.eliminate_player(behind_id)
+
+    placements = {player_id: placement for player_id, placement, _name in room_state.standings()}
+    assert placements[first_id] == 1
+    assert placements[fallen_id] == 4
+    assert placements[behind_id] == 3
+
+
+def test_eliminated_host_disconnect_closes_room_for_remaining_clients():
+    server, room_state, sock, (host_id, host_addr), (alive_id, alive_addr), (
+        observer_id,
+        observer_addr,
+    ) = _server_with_started_room()
+    server.eliminate_player(host_id)
+    server.eliminate_player(observer_id)
+    sock.sent.clear()
+
+    server.handle_disconnect(protocol.pack_packet(protocol.DISCONNECT, 0.0, 0.0, host_id), host_addr)
+
+    assert not server.running
+    sent_by_addr = {
+        addr: [protocol.tag_of(payload) for payload, sent_addr in sock.sent if sent_addr == addr]
+        for addr in (alive_addr, observer_addr)
+    }
+    assert protocol.KICKED in sent_by_addr[alive_addr]
+    assert protocol.KICKED in sent_by_addr[observer_addr]
