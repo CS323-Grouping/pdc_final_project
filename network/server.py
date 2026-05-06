@@ -20,6 +20,7 @@ try:
         CONNO_REASON_FULL,
         CONNO_REASON_IN_GAME,
         CONNO_REASON_INVALID_NAME,
+        CONNO_REASON_NAME_TAKEN,
         CONNO_REASON_VERSION,
         COUNTDOWN_SECONDS,
         CDWNX_REASON_HOST_CANCELLED,
@@ -54,6 +55,8 @@ try:
         RECONNECT_DENY_NOT_IN_GAME,
         RECONNECT_DENY_NO_SLOT,
         RECONNECT_GRACE_SECONDS,
+        ROOM_NAME_MAX_LEN,
+        ROOM_NAME_MIN_LEN,
         START,
         STATE_COUNTDOWN,
         STATE_IN_GAME,
@@ -108,6 +111,7 @@ except ModuleNotFoundError:
         CONNO_REASON_FULL,
         CONNO_REASON_IN_GAME,
         CONNO_REASON_INVALID_NAME,
+        CONNO_REASON_NAME_TAKEN,
         CONNO_REASON_VERSION,
         COUNTDOWN_SECONDS,
         CDWNX_REASON_HOST_CANCELLED,
@@ -142,6 +146,8 @@ except ModuleNotFoundError:
         RECONNECT_DENY_NOT_IN_GAME,
         RECONNECT_DENY_NO_SLOT,
         RECONNECT_GRACE_SECONDS,
+        ROOM_NAME_MAX_LEN,
+        ROOM_NAME_MIN_LEN,
         START,
         STATE_COUNTDOWN,
         STATE_IN_GAME,
@@ -210,6 +216,8 @@ class LobbyServer:
         # Maps player_id -> elapsed seconds when they touched the goal.
         self._finish_times: dict[int, float] = {}
         self._match_player_count: int = 0
+        self._avatar_headers: dict[int, tuple[int, int, int]] = {}
+        self._avatar_chunks: dict[tuple[int, int], dict[int, bytes]] = {}
 
     def broadcast(self, payload: bytes, exclude_addr=None):
         for other_addr in self.room_state.peers(exclude_addr=exclude_addr):
@@ -223,6 +231,73 @@ class LobbyServer:
             return
         payload = pack_list(self.room_state.connected_roster_entries())
         self.broadcast(payload)
+
+    def _drop_avatar_cache(self, player_id: int):
+        self._avatar_headers.pop(player_id, None)
+        for key in list(self._avatar_chunks.keys()):
+            if key[0] == player_id:
+                self._avatar_chunks.pop(key, None)
+
+    def _cache_avatar_header(self, player_id: int, avatar_id: int, total_chunks: int, payload_size: int):
+        if total_chunks <= 0 or payload_size <= 0:
+            return
+        previous = self._avatar_headers.get(player_id)
+        if previous is not None and previous[0] != avatar_id:
+            self._avatar_chunks.pop((player_id, previous[0]), None)
+        self._avatar_headers[player_id] = (avatar_id, total_chunks, payload_size)
+        self._avatar_chunks.setdefault((player_id, avatar_id), {})
+
+    def _cache_avatar_chunk(
+        self,
+        player_id: int,
+        avatar_id: int,
+        chunk_index: int,
+        total_chunks: int,
+        payload: bytes,
+    ):
+        if total_chunks <= 0 or chunk_index < 0 or chunk_index >= total_chunks:
+            return
+        header = self._avatar_headers.get(player_id)
+        if header is None or header[0] != avatar_id:
+            self._avatar_headers[player_id] = (avatar_id, total_chunks, 0)
+        self._avatar_chunks.setdefault((player_id, avatar_id), {})[chunk_index] = payload
+
+    def _avatar_cache_complete(self, player_id: int) -> bool:
+        header = self._avatar_headers.get(player_id)
+        if header is None:
+            return False
+        avatar_id, total_chunks, payload_size = header
+        if total_chunks <= 0 or payload_size <= 0:
+            return False
+        chunks = self._avatar_chunks.get((player_id, avatar_id), {})
+        return len(chunks) >= total_chunks
+
+    def replay_cached_avatars(self, addr, exclude_player_id: Optional[int] = None):
+        for player_id in sorted(self._avatar_headers.keys()):
+            if player_id == exclude_player_id:
+                continue
+            if self.room_state.get_addr_by_player_id(player_id) is None:
+                continue
+            if not self._avatar_cache_complete(player_id):
+                continue
+            avatar_id, total_chunks, payload_size = self._avatar_headers[player_id]
+            chunks = self._avatar_chunks.get((player_id, avatar_id), {})
+            try:
+                self.sock.sendto(pack_avatar_header(player_id, avatar_id, total_chunks, payload_size), addr)
+                for chunk_index in range(total_chunks):
+                    self.sock.sendto(
+                        pack_avatar_chunk(
+                            player_id,
+                            avatar_id,
+                            chunk_index,
+                            total_chunks,
+                            chunks[chunk_index],
+                        ),
+                        addr,
+                    )
+                LOGGER.debug("Replayed avatar player_id=%s avatar_id=%s to addr=%s", player_id, avatar_id, addr)
+            except (KeyError, OSError) as error:
+                LOGGER.debug("Failed to replay avatar player_id=%s to addr=%s: %s", player_id, addr, error)
 
     def close_room(self):
         host_id = self.room_state.host_id
@@ -291,6 +366,10 @@ class LobbyServer:
         if self.room_state.state in (STATE_COUNTDOWN, STATE_IN_GAME, STATE_PAUSED):
             self.reject_connection(addr, CONNO_REASON_IN_GAME, 0)
             return
+        if self.room_state.connected_player_name_taken(player_name, exclude_addr=addr):
+            self.reject_connection(addr, CONNO_REASON_NAME_TAKEN, 0)
+            LOGGER.info("Rejected duplicate player name %s from %s", player_name, addr)
+            return
         if self.room_state.connected_count() >= self.room_state.max_players:
             self.reject_connection(addr, CONNO_REASON_FULL, 0)
             return
@@ -312,6 +391,7 @@ class LobbyServer:
         # Legacy client compatibility: existing main.py expects CONN with coordinates.
         self.sock.sendto(pack_packet(CONNECTION, start_x, start_y, player_id), addr)
         self.broadcast_roster()
+        self.replay_cached_avatars(addr, exclude_player_id=player_id)
 
     def handle_reconnect(self, data: bytes, addr):
         unpacked = safe_unpack_reconnect(data)
@@ -342,6 +422,7 @@ class LobbyServer:
                 pack_reconnect_ok(reconnected_id, position[0], position[1], self.room_state.room_name),
                 addr,
             )
+            self.replay_cached_avatars(addr, exclude_player_id=reconnected_id)
             self.resume_if_ready()
             if self.room_state.state == STATE_PAUSED:
                 self.broadcast_pause()
@@ -365,6 +446,7 @@ class LobbyServer:
         LOGGER.info("Reconnected player %s (%s) as id %s", player_name, addr, player_id)
         self.sock.sendto(pack_session(player_id, session_token), addr)
         self.sock.sendto(pack_reconnect_ok(player_id, position[0], position[1], self.room_state.room_name), addr)
+        self.replay_cached_avatars(addr, exclude_player_id=player_id)
         self.resume_if_ready()
         if self.room_state.state == STATE_PAUSED:
             self.broadcast_pause()
@@ -522,6 +604,7 @@ class LobbyServer:
             self.cooldowns.register_kick(target_name)
 
         self.room_state.remove_player(target_player_id)
+        self._drop_avatar_cache(target_player_id)
         if self.room_state.state == STATE_COUNTDOWN and self.room_state.connected_count() < MIN_PLAYERS:
             self.cancel_countdown(CDWNX_REASON_NOT_ENOUGH_PLAYERS)
         else:
@@ -606,6 +689,7 @@ class LobbyServer:
         if player_id is None or player_id != recv_id:
             return
         self.room_state.touch_player(player_id)
+        self._cache_avatar_header(player_id, avatar_id, total_chunks, payload_size)
         self.broadcast(
             pack_avatar_header(player_id, avatar_id, total_chunks, payload_size),
             exclude_addr=addr,
@@ -620,6 +704,7 @@ class LobbyServer:
         if player_id is None or player_id != recv_id:
             return
         self.room_state.touch_player(player_id)
+        self._cache_avatar_chunk(player_id, avatar_id, chunk_index, total_chunks, payload)
         self.broadcast(
             pack_avatar_chunk(player_id, avatar_id, chunk_index, total_chunks, payload),
             exclude_addr=addr,
@@ -660,6 +745,7 @@ class LobbyServer:
             return
 
         self.room_state.remove_player(player_id)
+        self._drop_avatar_cache(player_id)
         if self.room_state.state == STATE_COUNTDOWN and self.room_state.connected_count() < MIN_PLAYERS:
             self.cancel_countdown(CDWNX_REASON_NOT_ENOUGH_PLAYERS)
         else:
@@ -740,6 +826,7 @@ class LobbyServer:
                 self.sock.sendto(pack_kicked(KICKED_REASON_NOT_READY), target_addr)
                 LOGGER.info("Kicked not-ready player_id=%s addr=%s", player_id, target_addr)
             self.room_state.remove_player(player_id)
+            self._drop_avatar_cache(player_id)
 
         if self.room_state.connected_count() < MIN_PLAYERS:
             self.cancel_countdown(CDWNX_REASON_NOT_ENOUGH_PLAYERS)
@@ -864,7 +951,12 @@ def configure_logging(log_level: str, log_dir: str, room_name: str):
 
 def create_server(args) -> Optional[LobbyServer]:
     if not is_valid_room_name(args.room):
-        LOGGER.error("Invalid room name '%s'. Room names must match ^[A-Za-z0-9]{3,24}$", args.room)
+        LOGGER.error(
+            "Invalid room name '%s'. Room names must be %s-%s chars and may contain letters, numbers, spaces, _ or -.",
+            args.room,
+            ROOM_NAME_MIN_LEN,
+            ROOM_NAME_MAX_LEN,
+        )
         return None
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)

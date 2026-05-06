@@ -74,11 +74,21 @@ def test_room_state_reconnects_disconnected_alive_player_by_name():
     room_state.update_position(player_id, 88.0, 42.0)
     room_state.mark_disconnected(player_id, now=10.0, grace_seconds=30.0)
 
-    reconnected = room_state.reconnect_player_by_name(("127.0.0.1", 12044), "Alpha", now=18.0)
+    reconnected = room_state.reconnect_player_by_name(("127.0.0.1", 12044), "alpha", now=18.0)
 
     assert reconnected == (player_id, (88.0, 42.0), token)
     assert room_state.get_player_id_by_addr(("127.0.0.1", 12044)) == player_id
     assert room_state.disconnected_alive_ids() == []
+
+
+def test_room_state_checks_connected_names_case_insensitively():
+    room_state = RoomState(room_name="TestRoom", game_port=5555)
+    addr = ("127.0.0.1", 12001)
+
+    room_state.add_or_get_player(addr, "Alpha")
+
+    assert room_state.connected_player_name_taken("alpha")
+    assert not room_state.connected_player_name_taken("alpha", exclude_addr=addr)
 
 
 def test_enter_game_resets_connected_player_positions_for_rematch():

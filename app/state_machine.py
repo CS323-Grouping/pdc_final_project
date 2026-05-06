@@ -33,8 +33,8 @@ RANDOM_PLAYER_NAME_CHARS = string.ascii_uppercase + string.digits
 GAME_PORT_SEARCH_LIMIT = 50
 
 
-def random_player_name(length: int = 10) -> str:
-    length = max(3, min(10, int(length)))
+def random_player_name(length: int = protocol.PLAYER_NAME_MAX_LEN) -> str:
+    length = max(protocol.PLAYER_NAME_MIN_LEN, min(protocol.PLAYER_NAME_MAX_LEN, int(length)))
     return "P" + "".join(secrets.choice(RANDOM_PLAYER_NAME_CHARS) for _ in range(length - 1))
 
 

@@ -6,6 +6,10 @@ PROTO_VERSION = 1
 MAX_PLAYERS = 5
 MIN_PLAYERS = 2
 MAX_NAME_LEN = 32
+PLAYER_NAME_MIN_LEN = 3
+PLAYER_NAME_MAX_LEN = 11
+ROOM_NAME_MIN_LEN = 3
+ROOM_NAME_MAX_LEN = 16
 RECV_BUF = 1024
 
 DISCOVERY_PORT = 5556
@@ -26,13 +30,19 @@ PRESENCE_STATUS_ONLINE = 0
 PRESENCE_STATUS_LOBBY = 1
 PRESENCE_STATUS_IN_GAME = 2
 
-ROOM_NAME_REGEX = re.compile(r"^[A-Za-z0-9]{3,24}$")
+PLAYER_NAME_REGEX = re.compile(
+    rf"^[A-Za-z0-9](?:[A-Za-z0-9_-]{{{PLAYER_NAME_MIN_LEN - 2},{PLAYER_NAME_MAX_LEN - 2}}}[A-Za-z0-9])$"
+)
+ROOM_NAME_REGEX = re.compile(
+    rf"^(?!.* {{2}})[A-Za-z0-9](?:[A-Za-z0-9 _-]{{{ROOM_NAME_MIN_LEN - 2},{ROOM_NAME_MAX_LEN - 2}}}[A-Za-z0-9])$"
+)
 
 CONNO_REASON_FULL = 0
 CONNO_REASON_VERSION = 1
 CONNO_REASON_IN_GAME = 2
 CONNO_REASON_COOLDOWN = 3
 CONNO_REASON_INVALID_NAME = 4
+CONNO_REASON_NAME_TAKEN = 5
 UINT32_MAX = 0xFFFFFFFF
 
 CDWNX_REASON_HOST_CANCELLED = 0
@@ -159,7 +169,45 @@ def is_valid_room_name(name: str) -> bool:
 
 
 def is_valid_player_name(name: str) -> bool:
-    return is_valid_room_name(name)
+    return PLAYER_NAME_REGEX.fullmatch(name or "") is not None
+
+
+def normalize_player_name(name: str) -> str:
+    return (name or "").casefold()
+
+
+def _is_ascii_alnum(char: str) -> bool:
+    return len(char) == 1 and char.isascii() and char.isalnum()
+
+
+def sanitize_player_name_input(value: str) -> str:
+    chars: list[str] = []
+    for char in value or "":
+        if not (_is_ascii_alnum(char) or char in "_-"):
+            continue
+        if not chars and not _is_ascii_alnum(char):
+            continue
+        chars.append(char)
+        if len(chars) >= PLAYER_NAME_MAX_LEN:
+            break
+    return "".join(chars)
+
+
+def sanitize_room_name_input(value: str) -> str:
+    chars: list[str] = []
+    previous_space = False
+    for char in value or "":
+        if not (_is_ascii_alnum(char) or char in " _-"):
+            continue
+        if not chars and not _is_ascii_alnum(char):
+            continue
+        if char == " " and previous_space:
+            continue
+        chars.append(char)
+        previous_space = char == " "
+        if len(chars) >= ROOM_NAME_MAX_LEN:
+            break
+    return "".join(chars)
 
 
 def tag_of(data: bytes) -> Optional[bytes]:

@@ -15,6 +15,7 @@ from network.protocol import (
     CONNO_REASON_FULL,
     CONNO_REASON_IN_GAME,
     CONNO_REASON_INVALID_NAME,
+    CONNO_REASON_NAME_TAKEN,
     CONNO_REASON_VERSION,
     CONOK,
     CDWN,
@@ -553,6 +554,8 @@ class Network:
                     LOGGER.error("Connection rejected: cooldown (%ss remaining)", result.extra)
             elif result.reason_code == CONNO_REASON_INVALID_NAME:
                 LOGGER.error("Connection rejected: invalid player name")
+            elif result.reason_code == CONNO_REASON_NAME_TAKEN:
+                LOGGER.error("Connection rejected: player name already in room")
             else:
                 LOGGER.error("Connection rejected.")
             return None

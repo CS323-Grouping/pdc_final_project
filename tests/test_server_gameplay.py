@@ -43,6 +43,71 @@ def test_name_only_reconnect_claims_single_disconnected_slot():
     assert protocol.RECONNECT_OK in tags
 
 
+def test_handle_conn_rejects_case_insensitive_duplicate_player_name():
+    room_state = RoomState(room_name="TestRoom", game_port=5555)
+    room_state.add_or_get_player(("127.0.0.1", 12001), "Alpha")
+    sock = FakeSocket()
+    server = LobbyServer(sock, room_state, countdown_seconds=0.0)
+    duplicate_addr = ("127.0.0.1", 12002)
+
+    server.handle_conn(protocol.pack_conn("alpha"), duplicate_addr)
+
+    assert room_state.connected_count() == 1
+    assert protocol.safe_unpack_conno(sock.sent[0][0]) == (
+        protocol.CONNO,
+        protocol.CONNO_REASON_NAME_TAKEN,
+        0,
+    )
+
+
+def test_lobby_replays_cached_avatar_to_late_joiner():
+    room_state = RoomState(room_name="TestRoom", game_port=5555)
+    alpha_addr = ("127.0.0.1", 12001)
+    bravo_addr = ("127.0.0.1", 12002)
+    alpha_id, _ = room_state.add_or_get_player(alpha_addr, "Alpha")
+    _bravo_id, _ = room_state.add_or_get_player(bravo_addr, "Bravo")
+    sock = FakeSocket()
+    server = LobbyServer(sock, room_state, countdown_seconds=0.0)
+    avatar_id = 77
+    payload = b"avatar-payload"
+
+    server.handle_avatar_header(
+        protocol.pack_avatar_header(alpha_id, avatar_id, 1, len(payload)),
+        alpha_addr,
+    )
+    server.handle_avatar_chunk(
+        protocol.pack_avatar_chunk(alpha_id, avatar_id, 0, 1, payload),
+        alpha_addr,
+    )
+    late_addr = ("127.0.0.1", 12003)
+    sock.sent.clear()
+
+    server.handle_conn(protocol.pack_conn("Charlie"), late_addr)
+
+    late_packets = [packet for packet, addr in sock.sent if addr == late_addr]
+    assert any(
+        protocol.safe_unpack_avatar_header(packet) == (
+            protocol.AVATAR_HEADER,
+            alpha_id,
+            avatar_id,
+            1,
+            len(payload),
+        )
+        for packet in late_packets
+    )
+    assert any(
+        protocol.safe_unpack_avatar_chunk(packet) == (
+            protocol.AVATAR_CHUNK,
+            alpha_id,
+            avatar_id,
+            0,
+            1,
+            payload,
+        )
+        for packet in late_packets
+    )
+
+
 def test_eliminated_player_state_is_not_rebroadcast():
     server, room_state, sock, (player_id, addr), (_other_id, other_addr), (_third_id, _third_addr) = _server_with_started_room()
     room_state.update_position(player_id, 20.0, 20.0)

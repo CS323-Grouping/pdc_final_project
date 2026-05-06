@@ -5,9 +5,9 @@ import time
 from typing import Dict, List, Optional, Tuple
 
 try:
-    from network.protocol import MAX_PLAYERS, MIN_PLAYERS, RECONNECT_GRACE_SECONDS, STATE_LOBBY
+    from network.protocol import MAX_PLAYERS, MIN_PLAYERS, RECONNECT_GRACE_SECONDS, STATE_LOBBY, normalize_player_name
 except ModuleNotFoundError:
-    from protocol import MAX_PLAYERS, MIN_PLAYERS, RECONNECT_GRACE_SECONDS, STATE_LOBBY  # type: ignore
+    from protocol import MAX_PLAYERS, MIN_PLAYERS, RECONNECT_GRACE_SECONDS, STATE_LOBBY, normalize_player_name  # type: ignore
 
 Address = Tuple[str, int]
 Position = Tuple[float, float]
@@ -74,6 +74,17 @@ class RoomState:
     def get_player_id_by_addr(self, addr: Address) -> Optional[int]:
         with self.lock:
             return self._addr_to_id.get(addr)
+
+    def connected_player_name_taken(self, name: str, exclude_addr: Optional[Address] = None) -> bool:
+        with self.lock:
+            requested_name = normalize_player_name(name)
+            excluded_player_id = self._addr_to_id.get(exclude_addr) if exclude_addr is not None else None
+            for player_id, player in self._players.items():
+                if player_id == excluded_player_id:
+                    continue
+                if player.connected and normalize_player_name(player.name) == requested_name:
+                    return True
+            return False
 
     def get_addr_by_player_id(self, player_id: int) -> Optional[Address]:
         with self.lock:
@@ -209,9 +220,10 @@ class RoomState:
     ) -> Optional[Tuple[int, Position, int]]:
         with self.lock:
             now = time.monotonic() if now is None else now
+            requested_name = normalize_player_name(player_name)
             matches = []
             for player_id, player in self._players.items():
-                if player.name != player_name:
+                if normalize_player_name(player.name) != requested_name:
                     continue
                 if not player.alive or player.connected:
                     continue

@@ -303,6 +303,23 @@ def test_kick_kicked_round_trip():
 
 def test_room_and_player_name_validation():
     assert protocol.is_valid_room_name("Room123")
-    assert not protocol.is_valid_room_name("Room 123")
+    assert protocol.is_valid_room_name("Room 123")
+    assert protocol.is_valid_room_name("Room_123-Alpha")
     assert not protocol.is_valid_room_name("ab")
+    assert not protocol.is_valid_room_name("Room  123")
+    assert not protocol.is_valid_room_name("Room1234567890123")
+    assert not protocol.is_valid_room_name("_Room123")
+    assert not protocol.is_valid_room_name("Room123_")
     assert protocol.is_valid_player_name("Player123")
+    assert protocol.is_valid_player_name("Player_123")
+    assert protocol.is_valid_player_name("Player-123")
+    assert not protocol.is_valid_player_name("Player123456")
+    assert not protocol.is_valid_player_name("_Player123")
+    assert not protocol.is_valid_player_name("Player123_")
+    assert not protocol.is_valid_player_name("Player 123")
+
+
+def test_name_input_sanitizers_match_validation_limits():
+    assert protocol.sanitize_player_name_input("_Player 123456") == "Player12345"
+    assert protocol.sanitize_room_name_input("_Room  123456789012345") == "Room 12345678901"
+    assert protocol.normalize_player_name("Player_One") == protocol.normalize_player_name("PLAYER_ONE")

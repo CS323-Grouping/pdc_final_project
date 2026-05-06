@@ -2,10 +2,10 @@ import pygame
 
 from app.display import DisplayConfig
 from network import protocol
-from network.discovery import LobbyBrowser, PresenceEntry, RoomEntry
+from network.discovery import LobbyBrowser, PresenceEntry
 from player_scripts.animation import load_spritesheet_frames
 from player_scripts.avatar_sprite import AVATAR_RECT, crop_square, make_default_avatar
-from states.common import ScreenState, alnum_only
+from states.common import ScreenState, event_has_ctrl_modifier, filter_player_name_input, remove_previous_input_token
 from ui.theme import DEFAULT_THEME
 from world.constants import PLAYER_FRAME_HEIGHT, PLAYER_FRAME_WIDTH
 
@@ -55,7 +55,6 @@ class MainMenuState(ScreenState):
         self._pending_scale = context.display_manager.config.selected_scale if context.display_manager else 4
         self._pending_fullscreen = context.display_manager.config.fullscreen if context.display_manager else False
         self._resolution_rects: list[tuple[pygame.Rect, int]] = []
-        self._rooms: list[RoomEntry] = []
         self._presence_entries: list[PresenceEntry] = []
         self._hovered: str | None = None
         self._browser: LobbyBrowser | None = None
@@ -211,7 +210,10 @@ class MainMenuState(ScreenState):
 
     def _play(self):
         if not self._is_name_valid():
-            self.context.set_status("Name must be 3-24 alphanumeric characters.", duration=3.0)
+            self.context.set_status(
+                f"Name must be {protocol.PLAYER_NAME_MIN_LEN}-{protocol.PLAYER_NAME_MAX_LEN} chars: letters, numbers, _ or -.",
+                duration=3.0,
+            )
             return
         self.context.player_name = self.name_input
         self.context.room_name = f"{self.context.player_name}Room"
@@ -262,14 +264,20 @@ class MainMenuState(ScreenState):
                 return
 
         if event.type == pygame.KEYDOWN and self.name_active:
-            if event.key == pygame.K_BACKSPACE:
-                self.name_input = self.name_input[:-1]
-            else:
-                self.name_input = alnum_only(self.name_input + event.unicode, max_len=24)
+            if event.key == pygame.K_ESCAPE:
+                self.name_active = False
+            elif event.key == pygame.K_RETURN:
+                self.name_active = False
+            elif event.key == pygame.K_BACKSPACE:
+                if event_has_ctrl_modifier(event):
+                    self.name_input = remove_previous_input_token(self.name_input, separators="_-")
+                else:
+                    self.name_input = self.name_input[:-1]
+            elif event.unicode and event.unicode.isprintable():
+                self.name_input = filter_player_name_input(self.name_input + event.unicode)
 
     def update(self, dt: float):
         _ = dt
-        self._rooms = self._browser.snapshot() if self._browser is not None else []
         self._presence_entries = self._browser.presence_snapshot() if self._browser is not None else []
 
         mp = self.context.mouse_pos
@@ -344,17 +352,11 @@ class MainMenuState(ScreenState):
         for entry in self._presence_entries:
             if entry.instance_id in seen_presence_ids:
                 continue
+            if entry.player_name in seen_names:
+                continue
             seen_presence_ids.add(entry.instance_id)
             seen_names.add(entry.player_name)
             entries.append((entry.player_name, self._presence_status_label(entry.status), self._presence_status_color(entry.status)))
-            if len(entries) >= len(ONLINE_CARD_RECTS):
-                return entries
-        for room in self._rooms:
-            label = self._room_player_label(room)
-            if label in seen_names:
-                continue
-            seen_names.add(label)
-            entries.append((label, self._room_presence_status(room), self._room_presence_color(room)))
             if len(entries) >= len(ONLINE_CARD_RECTS):
                 break
         return entries
@@ -372,25 +374,6 @@ class MainMenuState(ScreenState):
         if status == protocol.PRESENCE_STATUS_LOBBY:
             return (120, 180, 255)
         return (110, 220, 140)
-
-    def _room_player_label(self, room: RoomEntry) -> str:
-        if room.room_name.endswith("Room") and len(room.room_name) > 4:
-            return room.room_name[:-4]
-        return room.room_name
-
-    def _room_presence_status(self, room: RoomEntry) -> str:
-        if room.state == protocol.STATE_PAUSED:
-            return "IN GAME"
-        if room.state == protocol.STATE_IN_GAME:
-            return "IN GAME"
-        if room.state == protocol.STATE_COUNTDOWN:
-            return "IN LOBBY"
-        return "IN LOBBY"
-
-    def _room_presence_color(self, room: RoomEntry) -> tuple[int, int, int]:
-        if room.state in (protocol.STATE_IN_GAME, protocol.STATE_PAUSED):
-            return (220, 120, 100)
-        return (120, 180, 255)
 
     def _draw_settings(self, surface):
         theme = DEFAULT_THEME

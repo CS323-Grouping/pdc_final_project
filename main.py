@@ -26,11 +26,18 @@ def parse_args():
         action="store_true",
         help="Skip main menu and go straight to host lobby",
     )
-    parser.add_argument("--name", default="", help="Player name (alphanumeric, 3–24 chars)")
+    parser.add_argument(
+        "--name",
+        default="",
+        help=f"Player name ({protocol.PLAYER_NAME_MIN_LEN}-{protocol.PLAYER_NAME_MAX_LEN} chars; letters, numbers, _ or -)",
+    )
     parser.add_argument(
         "--room",
         default="GameRoom",
-        help="Room name when using --host (alphanumeric, 3–24 chars)",
+        help=(
+            f"Room name when using --host ({protocol.ROOM_NAME_MIN_LEN}-{protocol.ROOM_NAME_MAX_LEN} chars; "
+            "letters, numbers, spaces, _ or -)"
+        ),
     )
     parser.add_argument(
         "--server",
@@ -65,6 +72,7 @@ def main():
     args = parse_args()
 
     pygame.init()
+    pygame.key.set_repeat(350, 35)
     display_manager = DisplayManager.create_default()
     clock = pygame.time.Clock()
     ctx = AppContext(
@@ -82,7 +90,11 @@ def main():
     LOGGER.info("Client log initialized for player=%s dir=%s", ctx.player_name, ctx.log_dir)
 
     if not protocol.is_valid_player_name(ctx.player_name):
-        LOGGER.error("Player name must be 3–24 alphanumeric characters (use --name).")
+        LOGGER.error(
+            "Player name must be %s-%s chars and may contain letters, numbers, _ or -.",
+            protocol.PLAYER_NAME_MIN_LEN,
+            protocol.PLAYER_NAME_MAX_LEN,
+        )
         pygame.quit()
         sys.exit(1)
 
@@ -91,7 +103,11 @@ def main():
 
     if args.host:
         if not protocol.is_valid_room_name(args.room):
-            LOGGER.error("Room name for --host must match ^[A-Za-z0-9]{3,24}$")
+            LOGGER.error(
+                "Room name must be %s-%s chars and may contain letters, numbers, spaces, _ or -.",
+                protocol.ROOM_NAME_MIN_LEN,
+                protocol.ROOM_NAME_MAX_LEN,
+            )
             pygame.quit()
             sys.exit(1)
         ctx.room_name = args.room

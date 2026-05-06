@@ -1,11 +1,11 @@
-import math
 from typing import Optional
 
 import pygame
 
 from network import network_handler as nw
 from network import protocol
-from states.common import ScreenState, alnum_only
+from states.common import ScreenState, event_has_ctrl_modifier, filter_room_name_input, remove_previous_input_token
+from states.room_lobby_ui import RoomLobbyUi
 from ui import components as ui
 from ui.theme import DEFAULT_THEME
 
@@ -17,6 +17,9 @@ def _host_player_id(roster: list) -> int | None:
 
 
 class HostLobbyState(ScreenState):
+    render_to_internal = True
+    suppress_internal_global_messages = True
+
     def __init__(self, machine, context, **kwargs):
         super().__init__(machine, context, **kwargs)
         self.room_active = False
@@ -28,28 +31,42 @@ class HostLobbyState(ScreenState):
         self.room_rect = pygame.Rect(0, 0, 360, 44)
         self.kick_rects: list[tuple[pygame.Rect, int, str]] = []
         self._session_open = False
-        self._confirm: Optional[ui.ConfirmDialog] = None
+        self._confirm_close_room = False
+        self._confirm_hovered = None
         self._pulse_t = 0.0
         self._open_h = self._start_h = self._cancel_h = self._close_h = False
         self._kick_hover: Optional[int] = None
+        self._kick_mode_on = False
+        self._hovered = None
+        self._room_ui = RoomLobbyUi(context)
 
     def enter(self):
+        self._room_ui.enter()
         net = self.context.network
         self._session_open = net is not None and net.id >= 0
-        self._confirm = None
+        self._confirm_close_room = False
+        self._confirm_hovered = None
+        self._kick_mode_on = False
+        self._hovered = None
         if not self._session_open:
             self.room_input = self.context.room_name or self.room_input
 
     def _cancel_dialog(self) -> None:
-        self._confirm = None
+        self._confirm_close_room = False
+        self._confirm_hovered = None
+
+    def _render_size(self) -> tuple[int, int]:
+        if self.context.display_manager is not None and self.render_to_internal:
+            return self.context.display_manager.config.internal_size
+        return self.context.screen.get_size()
 
     def _layout_setup(self):
-        w, h = self.context.screen.get_size()
+        w, h = self._render_size()
         self.room_rect.center = (w // 2, h // 2 - 40)
         self.open_button.rect.center = (w // 2, h // 2 + 36)
 
     def _layout_session(self):
-        w, h = self.context.screen.get_size()
+        w, h = self._render_size()
         self.start_button.rect.topright = (w - 16, 16)
         self.cancel_button.rect.topright = (w - 16, 16)
         self.close_button.rect.topleft = (16, h - 52)
@@ -57,7 +74,10 @@ class HostLobbyState(ScreenState):
     def _open_room(self):
         name = self.room_input.strip()
         if not protocol.is_valid_room_name(name):
-            self.context.set_status("Room name must be 3–24 alphanumeric characters.", duration=3.0)
+            self.context.set_status(
+                f"Room name must be {protocol.ROOM_NAME_MIN_LEN}-{protocol.ROOM_NAME_MAX_LEN} valid characters.",
+                duration=3.0,
+            )
             return
         self.context.room_name = name
         if not self.context.start_local_server(name):
@@ -100,11 +120,20 @@ class HostLobbyState(ScreenState):
         return ""
 
     def _drain_network(self):
+        my_id = self.context.network.id if self.context.network else -1
         for event in self.context.drain_network_events():
             if self.handle_common_network_event(event):
                 continue
+            if self._room_ui.handle_avatar_event(event, my_id):
+                continue
             if isinstance(event, nw.RosterEvent):
-                self.context.roster = list(event.entries)
+                entries = list(event.entries)
+                old_ids = {player_id for player_id, _ready, _name in self.context.roster}
+                new_ids = {player_id for player_id, _ready, _name in entries}
+                if new_ids - old_ids:
+                    self._room_ui.restart_avatar_broadcast()
+                self.context.roster = entries
+                self._room_ui.retain_remote_avatars(new_ids)
             elif isinstance(event, nw.CountdownEvent):
                 self.context.countdown_remaining = event.seconds_until_start
             elif isinstance(event, nw.CountdownCancelEvent):
@@ -122,11 +151,15 @@ class HostLobbyState(ScreenState):
 
     def handle_event(self, event):
         super().handle_event(event)
-        if self._confirm is not None:
+        if self._confirm_close_room:
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                w, h = self.context.screen.get_size()
-                _box, yes_r, no_r = self._confirm.layout(w, h)
-                self._confirm.handle_click(event.pos, yes_r, no_r)
+                action = self._room_ui.close_confirmation_hit_test(event.pos)
+                if action == "close":
+                    self._perform_close_room()
+                elif action == "cancel":
+                    self._cancel_dialog()
+            elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                self._cancel_dialog()
             return
 
         if not self._session_open:
@@ -136,62 +169,61 @@ class HostLobbyState(ScreenState):
                 if self.open_button.enabled and self.open_button.rect.collidepoint(event.pos):
                     self._open_room()
             if event.type == pygame.KEYDOWN and self.room_active:
-                if event.key == pygame.K_BACKSPACE:
-                    self.room_input = self.room_input[:-1]
-                else:
-                    self.room_input = alnum_only(self.room_input + event.unicode, max_len=24)
+                if event.key == pygame.K_ESCAPE:
+                    self.room_active = False
+                elif event.key == pygame.K_RETURN:
+                    if self.open_button.enabled:
+                        self._open_room()
+                elif event.key == pygame.K_BACKSPACE:
+                    if event_has_ctrl_modifier(event):
+                        self.room_input = remove_previous_input_token(self.room_input, separators=" _-")
+                    else:
+                        self.room_input = self.room_input[:-1]
+                elif event.unicode and event.unicode.isprintable():
+                    self.room_input = filter_room_name_input(self.room_input + event.unicode)
             return
 
         self._layout_session()
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-            if self.close_button.rect.collidepoint(event.pos):
-
-                def go():
-                    self._perform_close_room()
-
-                self._confirm = ui.ConfirmDialog(
-                    title="Close room?",
-                    message="All players will be disconnected and the server will stop.",
-                    on_confirm=go,
-                    on_cancel=self._cancel_dialog,
-                    confirm_label="Close",
-                    cancel_label="Cancel",
-                )
+            hid = _host_player_id(self.context.roster)
+            action = self._room_ui.hit_test(
+                event.pos,
+                self.context.roster,
+                host_id=hid,
+                host_view=True,
+                kick_mode=self._kick_mode_on,
+            )
+            if action == "secondary":
+                self._confirm_close_room = True
+                self._confirm_hovered = None
                 return
 
             in_cd = self.context.countdown_remaining is not None
-            if in_cd:
-                if self.cancel_button.enabled and self.cancel_button.rect.collidepoint(event.pos):
+            if action == "primary":
+                if in_cd:
                     self.context.network.cancel_countdown()
-            else:
-                if self.start_button.enabled and self.start_button.rect.collidepoint(event.pos):
+                    return
+                if self.host_and_non_host_ready():
                     self.context.network.send_start()
+                else:
+                    self.context.set_status(self._start_disable_reason(), duration=2.0)
+                return
 
-            for rect, pid, pname in self.kick_rects:
-                if rect.collidepoint(event.pos):
+            if action == "kick_toggle":
+                self._kick_mode_on = not self._kick_mode_on
+                return
 
-                    def make_kick(target_id: int):
-                        def _inner():
-                            if self.context.network:
-                                self.context.network.send_kick(target_id)
-                            self._cancel_dialog()
-
-                        return _inner
-
-                    self._confirm = ui.ConfirmDialog(
-                        title="Kick player?",
-                        message=f"Remove {pname} from this room?",
-                        on_confirm=make_kick(pid),
-                        on_cancel=self._cancel_dialog,
-                        confirm_label="Kick",
-                        cancel_label="Cancel",
-                    )
-                    break
+            if isinstance(action, tuple) and action[0] == "kick":
+                _kind, target_id, _name = action
+                if self.context.network:
+                    self.context.network.send_kick(target_id)
+                return
 
     def update(self, dt: float):
         self._pulse_t += dt
         mp = self.context.mouse_pos
-        if self._confirm is not None:
+        if self._confirm_close_room:
+            self._confirm_hovered = self._room_ui.close_confirmation_hit_test(mp)
             return
         if self._session_open:
             self._drain_network()
@@ -199,39 +231,41 @@ class HostLobbyState(ScreenState):
             self.start_button.enabled = (not in_cd) and self.host_and_non_host_ready()
             self.cancel_button.enabled = in_cd
             self.close_button.enabled = True
+            self._room_ui.update(dt, self.context.network)
             self._layout_session()
-            self._start_h = self.start_button.rect.collidepoint(mp) and self.start_button.enabled
-            self._cancel_h = self.cancel_button.rect.collidepoint(mp) and self.cancel_button.enabled
-            self._close_h = self.close_button.rect.collidepoint(mp)
-            self._kick_hover = None
-            for rect, pid, _name in self.kick_rects:
-                if rect.collidepoint(mp):
-                    self._kick_hover = pid
+            action = self._room_ui.hit_test(
+                mp,
+                self.context.roster,
+                host_id=_host_player_id(self.context.roster),
+                host_view=True,
+                kick_mode=self._kick_mode_on,
+            )
+            self._hovered = ("kick", action[1]) if isinstance(action, tuple) and action[0] == "kick" else action
         else:
             self._layout_setup()
             self.open_button.enabled = protocol.is_valid_room_name(self.room_input)
             self._open_h = self.open_button.rect.collidepoint(mp)
 
     def draw(self, surface):
-        super().draw(surface)
         theme = DEFAULT_THEME
 
-        if self._confirm is not None:
-            fonts = (self.context.title_font, self.context.font, self.context.small_font)
-            self._confirm.draw(surface, fonts, theme)
-            return
-
         if not self._session_open:
+            super().draw(surface)
             self._layout_setup()
             title = self.context.title_font.render("Host a room", True, theme.text)
             surface.blit(title, title.get_rect(center=(surface.get_width() // 2, 76)))
 
-            inp = ui.TextInput(self.room_rect, "Room name (alphanumeric, 3–24)", self.room_input, self.room_active)
+            inp = ui.TextInput(
+                self.room_rect,
+                f"Room name ({protocol.ROOM_NAME_MIN_LEN}-{protocol.ROOM_NAME_MAX_LEN} chars)",
+                self.room_input,
+                self.room_active,
+            )
             ui.draw_text_input(surface, (self.context.font, self.context.tiny_font), inp, theme)
 
             if not protocol.is_valid_room_name(self.room_input):
                 warn = self.context.tiny_font.render(
-                    "Room name must be 3–24 alphanumeric characters.",
+                    f"Room name must be {protocol.ROOM_NAME_MIN_LEN}-{protocol.ROOM_NAME_MAX_LEN} chars; no edge symbols.",
                     True,
                     theme.text_warn,
                 )
@@ -240,55 +274,42 @@ class HostLobbyState(ScreenState):
             ui.draw_button(surface, self.context.small_font, self.open_button, theme, hovered=self._open_h)
             return
 
-        self._layout_session()
-        hdr = self.context.font.render(f"Hosting: {self.context.room_name}", True, theme.text)
-        surface.blit(hdr, (16, 22))
-
-        if self.context.countdown_remaining is not None:
-            sec = max(0, int(math.ceil(max(0.0, self.context.countdown_remaining))))
-            ui.draw_countdown_overlay(
-                surface,
-                self.context.title_font,
-                self.context.small_font,
-                sec,
-                self._pulse_t,
-                theme,
-            )
-            ui.draw_button(surface, self.context.small_font, self.cancel_button, theme, hovered=self._cancel_h)
-        else:
-            ui.draw_button(surface, self.context.small_font, self.start_button, theme, hovered=self._start_h)
-            if not self.start_button.enabled and self.start_button.rect.collidepoint(self.context.mouse_pos):
-                ui.draw_tooltip(
-                    surface,
-                    self.context.tiny_font,
-                    self._start_disable_reason(),
-                    self.start_button.rect.bottomleft,
-                    theme,
-                )
-
-        ui.draw_button(surface, self.context.small_font, self.close_button, theme, variant="danger", hovered=self._close_h)
-
-        y = 104
         hid = _host_player_id(self.context.roster)
-        self.kick_rects = []
-        row_font = self.context.small_font
-        for player_id, ready, name in self.context.roster:
-            if hid is not None and player_id == hid:
-                line = f"{name}  ·  HOST"
-            else:
-                line = f"{name}  ·  {'READY' if ready else 'not ready'}"
-            row_rect = pygame.Rect(20, y, surface.get_width() - 40, 34)
-            ui.draw_roster_row(surface, row_font, row_rect, line, highlight=0.0, theme=theme)
-            if hid is not None and player_id != hid:
-                kick = pygame.Rect(row_rect.right - 92, row_rect.y + 5, 80, 24)
-                kh = self._kick_hover == player_id
-                ui.draw_button(
-                    surface,
-                    self.context.tiny_font,
-                    ui.Button(kick, "Kick", True),
-                    theme,
-                    hovered=kh,
-                    variant="danger",
-                )
-                self.kick_rects.append((kick, player_id, name))
-            y += 42
+        primary_enabled = self.context.countdown_remaining is not None or self.host_and_non_host_ready()
+        self._room_ui.draw_base(
+            surface,
+            self.context.roster,
+            host_id=hid,
+            host_view=True,
+            kick_mode=self._kick_mode_on,
+            hovered=self._hovered,
+            primary_enabled=primary_enabled,
+        )
+
+        if self._confirm_close_room:
+            self._room_ui.draw_close_confirmation_base(surface, self._confirm_hovered)
+
+    def draw_window_overlay(self, surface: pygame.Surface):
+        if not self._session_open:
+            return
+        if self._confirm_close_room:
+            self._room_ui.draw_close_confirmation_window_overlay(surface)
+            return
+        network = self.context.network
+        local_id = network.id if network is not None else None
+        in_cd = self.context.countdown_remaining is not None
+        primary_enabled = in_cd or self.host_and_non_host_ready()
+        self._room_ui.draw_window_overlay(
+            surface,
+            self.context.roster,
+            room_name=self.context.room_name,
+            host_id=_host_player_id(self.context.roster),
+            local_player_id=local_id,
+            host_view=True,
+            kick_mode=self._kick_mode_on,
+            primary_enabled=primary_enabled,
+            primary_label="CANCEL" if in_cd else "START",
+            secondary_label="CLOSE ROOM",
+            countdown_remaining=self.context.countdown_remaining,
+            pulse_t=self._pulse_t,
+        )

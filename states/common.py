@@ -94,6 +94,22 @@ class ScreenState:
         return None
 
 
-def alnum_only(value: str, max_len: int = 24) -> str:
-    filtered = "".join(ch for ch in value if ch.isalnum())
-    return filtered[:max_len]
+def filter_player_name_input(value: str) -> str:
+    return protocol.sanitize_player_name_input(value)
+
+
+def filter_room_name_input(value: str) -> str:
+    return protocol.sanitize_room_name_input(value)
+
+
+def event_has_ctrl_modifier(event) -> bool:
+    return bool(getattr(event, "mod", 0) & pygame.KMOD_CTRL)
+
+
+def remove_previous_input_token(value: str, separators: str = " _-.") -> str:
+    end = len(value)
+    while end > 0 and value[end - 1] in separators:
+        end -= 1
+    while end > 0 and value[end - 1] not in separators:
+        end -= 1
+    return value[:end]
