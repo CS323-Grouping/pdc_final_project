@@ -218,7 +218,9 @@ class InGameState(ScreenState):
         self._last_animation_state = self.hero.animation.state
 
     def _make_avatar_payload(self) -> bytes | None:
-        avatar = self.context.current_avatar_source()
+        avatar = self.context.avatar_window_surface or self.context.avatar_surface
+        if avatar is None:
+            return None
         network_avatar = pygame.transform.smoothscale(
             avatar,
             (protocol.NETWORK_AVATAR_SIZE, protocol.NETWORK_AVATAR_SIZE),

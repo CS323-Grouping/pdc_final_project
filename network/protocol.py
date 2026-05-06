@@ -233,20 +233,6 @@ def normalize_player_name(name: str) -> str:
     return (name or "").casefold()
 
 
-def normalize_level_id(level_id: int) -> int:
-    level_id = int(level_id)
-    if level_id in LEVEL_IDS:
-        return level_id
-    return DEFAULT_LEVEL_ID
-
-
-def cycle_level_id(current_level_id: int, step: int) -> int:
-    current = normalize_level_id(current_level_id)
-    direction = -1 if int(step) < 0 else 1
-    index = LEVEL_IDS.index(current)
-    return LEVEL_IDS[(index + direction) % len(LEVEL_IDS)]
-
-
 def _is_ascii_alnum(char: str) -> bool:
     return len(char) == 1 and char.isascii() and char.isalnum()
 

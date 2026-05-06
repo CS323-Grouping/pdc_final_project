@@ -63,7 +63,6 @@ try:
         RECONNECT_DENY_NOT_IN_GAME,
         RECONNECT_DENY_NO_SLOT,
         RECONNECT_GRACE_SECONDS,
-        ROOM_NAME_UPDATE,
         ROOM_NAME_MAX_LEN,
         ROOM_NAME_MIN_LEN,
         START,
@@ -175,7 +174,6 @@ except ModuleNotFoundError:
         RECONNECT_DENY_NOT_IN_GAME,
         RECONNECT_DENY_NO_SLOT,
         RECONNECT_GRACE_SECONDS,
-        ROOM_NAME_UPDATE,
         ROOM_NAME_MAX_LEN,
         ROOM_NAME_MIN_LEN,
         START,
@@ -270,8 +268,7 @@ class LobbyServer:
         self._player_elapsed_at_result: dict[int, float] = {}
         self._player_platform_max: dict[int, int] = {}
         self._match_player_count: int = 0
-        self._match_level_seed: int = 0
-        self._avatar_headers: dict[int, tuple[int, int, int, str, str]] = {}
+        self._avatar_headers: dict[int, tuple[int, int, int]] = {}
         self._avatar_chunks: dict[tuple[int, int], dict[int, bytes]] = {}
 
     def broadcast(self, payload: bytes, exclude_addr=None):
@@ -336,21 +333,13 @@ class LobbyServer:
             if key[0] == player_id:
                 self._avatar_chunks.pop(key, None)
 
-    def _cache_avatar_header(
-        self,
-        player_id: int,
-        avatar_id: int,
-        total_chunks: int,
-        payload_size: int,
-        model_type: str,
-        model_color: str,
-    ):
+    def _cache_avatar_header(self, player_id: int, avatar_id: int, total_chunks: int, payload_size: int):
         if total_chunks <= 0 or payload_size <= 0:
             return
         previous = self._avatar_headers.get(player_id)
         if previous is not None and previous[0] != avatar_id:
             self._avatar_chunks.pop((player_id, previous[0]), None)
-        self._avatar_headers[player_id] = (avatar_id, total_chunks, payload_size, model_type, model_color)
+        self._avatar_headers[player_id] = (avatar_id, total_chunks, payload_size)
         self._avatar_chunks.setdefault((player_id, avatar_id), {})
 
     def _cache_avatar_chunk(
@@ -365,20 +354,14 @@ class LobbyServer:
             return
         header = self._avatar_headers.get(player_id)
         if header is None or header[0] != avatar_id:
-            self._avatar_headers[player_id] = (
-                avatar_id,
-                total_chunks,
-                0,
-                DEFAULT_MODEL_TYPE,
-                DEFAULT_MODEL_COLOR,
-            )
+            self._avatar_headers[player_id] = (avatar_id, total_chunks, 0)
         self._avatar_chunks.setdefault((player_id, avatar_id), {})[chunk_index] = payload
 
     def _avatar_cache_complete(self, player_id: int) -> bool:
         header = self._avatar_headers.get(player_id)
         if header is None:
             return False
-        avatar_id, total_chunks, payload_size, _model_type, _model_color = header
+        avatar_id, total_chunks, payload_size = header
         if total_chunks <= 0 or payload_size <= 0:
             return False
         chunks = self._avatar_chunks.get((player_id, avatar_id), {})
@@ -392,13 +375,10 @@ class LobbyServer:
                 continue
             if not self._avatar_cache_complete(player_id):
                 continue
-            avatar_id, total_chunks, payload_size, model_type, model_color = self._avatar_headers[player_id]
+            avatar_id, total_chunks, payload_size = self._avatar_headers[player_id]
             chunks = self._avatar_chunks.get((player_id, avatar_id), {})
             try:
-                self.sock.sendto(
-                    pack_avatar_header(player_id, avatar_id, total_chunks, payload_size, model_type, model_color),
-                    addr,
-                )
+                self.sock.sendto(pack_avatar_header(player_id, avatar_id, total_chunks, payload_size), addr)
                 for chunk_index in range(total_chunks):
                     self.sock.sendto(
                         pack_avatar_chunk(
@@ -570,10 +550,6 @@ class LobbyServer:
                 pack_reconnect_ok(reconnected_id, position[0], position[1], self.room_state.room_name),
                 addr,
             )
-            self.sock.sendto(
-                pack_level_select(self.room_state.host_id or reconnected_id, self.room_state.get_selected_level()),
-                addr,
-            )
             self.replay_cached_avatars(addr, exclude_player_id=reconnected_id)
             self.resume_if_ready()
             if self.room_state.state == STATE_PAUSED:
@@ -598,7 +574,6 @@ class LobbyServer:
         LOGGER.info("Reconnected player %s (%s) as id %s", player_name, addr, player_id)
         self.sock.sendto(pack_session(player_id, session_token), addr)
         self.sock.sendto(pack_reconnect_ok(player_id, position[0], position[1], self.room_state.room_name), addr)
-        self.sock.sendto(pack_level_select(self.room_state.host_id or player_id, self.room_state.get_selected_level()), addr)
         self.replay_cached_avatars(addr, exclude_player_id=player_id)
         self.resume_if_ready()
         if self.room_state.state == STATE_PAUSED:
@@ -950,7 +925,7 @@ class LobbyServer:
         if player_id is None or player_id != recv_id:
             return
         self.room_state.touch_player(player_id)
-        self._cache_avatar_header(player_id, avatar_id, total_chunks, payload_size, model_type, model_color)
+        self._cache_avatar_header(player_id, avatar_id, total_chunks, payload_size)
         self.broadcast(
             pack_avatar_header(player_id, avatar_id, total_chunks, payload_size, model_type, model_color),
             exclude_addr=addr,

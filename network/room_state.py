@@ -5,25 +5,9 @@ import time
 from typing import Dict, List, Optional, Tuple
 
 try:
-    from network.protocol import (
-        DEFAULT_LEVEL_ID,
-        MAX_PLAYERS,
-        MIN_PLAYERS,
-        RECONNECT_GRACE_SECONDS,
-        STATE_LOBBY,
-        normalize_level_id,
-        normalize_player_name,
-    )
+    from network.protocol import MAX_PLAYERS, MIN_PLAYERS, RECONNECT_GRACE_SECONDS, STATE_LOBBY, normalize_player_name
 except ModuleNotFoundError:
-    from protocol import (  # type: ignore
-        DEFAULT_LEVEL_ID,
-        MAX_PLAYERS,
-        MIN_PLAYERS,
-        RECONNECT_GRACE_SECONDS,
-        STATE_LOBBY,
-        normalize_level_id,
-        normalize_player_name,
-    )
+    from protocol import MAX_PLAYERS, MIN_PLAYERS, RECONNECT_GRACE_SECONDS, STATE_LOBBY, normalize_player_name  # type: ignore
 
 Address = Tuple[str, int]
 Position = Tuple[float, float]

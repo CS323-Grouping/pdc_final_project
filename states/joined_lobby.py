@@ -60,9 +60,7 @@ class JoinedLobbyState(ScreenState):
         for event in self.context.drain_network_events():
             heard_server = True
             if self.handle_common_network_event(event):
-                if self.context.network is None:
-                    return True
-                continue
+                return True
             if self._room_ui.handle_avatar_event(event, my_id):
                 continue
             if isinstance(event, nw.RosterEvent):
@@ -105,12 +103,6 @@ class JoinedLobbyState(ScreenState):
             self.switch("menu")
             return
 
-        if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-            if self.context.countdown_remaining is not None:
-                return
-            self._leave_room()
-            return
-
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             action = self._room_ui.hit_test(
                 event.pos,
@@ -119,10 +111,9 @@ class JoinedLobbyState(ScreenState):
                 host_view=False,
                 kick_mode=False,
             )
-            if self.context.countdown_remaining is not None:
-                return
             if action == "secondary":
-                self._leave_room()
+                self.context.detach_network(send_disconnect=True)
+                self.switch("browse_lobby")
                 return
             if action == "primary":
                 self._ready_on = not self._ready_on
@@ -154,8 +145,6 @@ class JoinedLobbyState(ScreenState):
             host_view=False,
             kick_mode=False,
         )
-        if self.context.countdown_remaining is not None:
-            self._hovered = None
 
     def draw(self, surface):
         hid = _host_player_id(self.context.roster)
@@ -185,5 +174,4 @@ class JoinedLobbyState(ScreenState):
             secondary_label="LEAVE",
             countdown_remaining=self.context.countdown_remaining,
             pulse_t=self._pulse_t,
-            selected_level=self.context.selected_level,
         )
