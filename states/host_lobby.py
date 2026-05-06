@@ -52,7 +52,7 @@ class HostLobbyState(ScreenState):
         w, h = self.context.screen.get_size()
         self.start_button.rect.topright = (w - 16, 16)
         self.cancel_button.rect.topright = (w - 16, 16)
-        self.close_button.rect.topleft = (16, h - 52)
+        self.close_button.rect.topleft = (16, h - 58)
 
     def _open_room(self):
         name = self.room_input.strip()
@@ -72,7 +72,10 @@ class HostLobbyState(ScreenState):
         if not result.ok:
             self.context.stop_server()
             self.context.set_status("Failed to connect to local server.", duration=3.0)
-            net.close()
+            try:
+                net.client.close()
+            except OSError:
+                pass
             return
         self.context.attach_network(net, is_host=True, room_name=result.room_name, start_pos=result.start_pos)
         self._session_open = True
@@ -80,7 +83,6 @@ class HostLobbyState(ScreenState):
     def _perform_close_room(self) -> None:
         if self.context.network:
             self.context.network.close_room()
-            self.context.wait_for_server_exit(timeout=0.75)
         self.context.stop_server()
         self.context.detach_network(send_disconnect=False)
         self._session_open = False
@@ -110,11 +112,9 @@ class HostLobbyState(ScreenState):
             elif isinstance(event, nw.CountdownCancelEvent):
                 self.context.countdown_remaining = None
             elif isinstance(event, nw.GameStartEvent):
-                self.context.countdown_remaining = None
                 self.switch("in_game")
                 return
             elif isinstance(event, nw.GameEndEvent):
-                self.context.reset_lobby_after_game()
                 self.context.results_standings = list(event.standings)
                 self.context.return_state_after_results = "host_lobby"
                 self.switch("results")
@@ -190,7 +190,7 @@ class HostLobbyState(ScreenState):
 
     def update(self, dt: float):
         self._pulse_t += dt
-        mp = self.context.mouse_pos
+        mp = pygame.mouse.get_pos()
         if self._confirm is not None:
             return
         if self._session_open:
@@ -257,7 +257,7 @@ class HostLobbyState(ScreenState):
             ui.draw_button(surface, self.context.small_font, self.cancel_button, theme, hovered=self._cancel_h)
         else:
             ui.draw_button(surface, self.context.small_font, self.start_button, theme, hovered=self._start_h)
-            if not self.start_button.enabled and self.start_button.rect.collidepoint(self.context.mouse_pos):
+            if not self.start_button.enabled and self.start_button.rect.collidepoint(pygame.mouse.get_pos()):
                 ui.draw_tooltip(
                     surface,
                     self.context.tiny_font,
@@ -268,19 +268,19 @@ class HostLobbyState(ScreenState):
 
         ui.draw_button(surface, self.context.small_font, self.close_button, theme, variant="danger", hovered=self._close_h)
 
-        y = 104
+        y = 118
         hid = _host_player_id(self.context.roster)
         self.kick_rects = []
         row_font = self.context.small_font
         for player_id, ready, name in self.context.roster:
+            tag = ""
             if hid is not None and player_id == hid:
-                line = f"{name}  ·  HOST"
-            else:
-                line = f"{name}  ·  {'READY' if ready else 'not ready'}"
-            row_rect = pygame.Rect(20, y, surface.get_width() - 40, 34)
+                tag = " · HOST"
+            line = f"{name}{tag}  ·  {'READY' if ready else 'not ready'}"
+            row_rect = pygame.Rect(20, y, surface.get_width() - 40, 40)
             ui.draw_roster_row(surface, row_font, row_rect, line, highlight=0.0, theme=theme)
             if hid is not None and player_id != hid:
-                kick = pygame.Rect(row_rect.right - 92, row_rect.y + 5, 80, 24)
+                kick = pygame.Rect(row_rect.right - 108, row_rect.y + 6, 96, 28)
                 kh = self._kick_hover == player_id
                 ui.draw_button(
                     surface,
@@ -291,4 +291,4 @@ class HostLobbyState(ScreenState):
                     variant="danger",
                 )
                 self.kick_rects.append((kick, player_id, name))
-            y += 42
+            y += 48

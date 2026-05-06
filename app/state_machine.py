@@ -2,9 +2,6 @@ from dataclasses import dataclass
 import logging
 from pathlib import Path
 import queue
-import secrets
-import socket
-import string
 import subprocess
 import sys
 import time
@@ -12,14 +9,10 @@ from typing import Dict, Optional, Type
 
 import pygame
 
-from app.display import DisplayConfig, DisplayManager
 from network import network_handler as nw
-from network import protocol
-from network.discovery import PresenceBroadcaster
 from ui import components as ui
 from ui.theme import DEFAULT_THEME
 
-from states.avatar_setup import AvatarSetupState
 from states.browse_lobby import BrowseLobbyState
 from states.host_lobby import HostLobbyState
 from states.in_game import InGameState
@@ -28,36 +21,6 @@ from states.menu import MainMenuState
 from states.results import ResultsState
 
 LOGGER = logging.getLogger(__name__)
-MAX_FRAME_DT = 1.0 / 30.0
-RANDOM_PLAYER_NAME_CHARS = string.ascii_uppercase + string.digits
-GAME_PORT_SEARCH_LIMIT = 50
-
-
-def random_player_name(length: int = 10) -> str:
-    length = max(3, min(10, int(length)))
-    return "P" + "".join(secrets.choice(RANDOM_PLAYER_NAME_CHARS) for _ in range(length - 1))
-
-
-@dataclass
-class ReconnectTicket:
-    addr: str
-    port: int
-    room_name: str
-    player_id: int
-    session_token: int
-    player_name: str
-    is_host: bool
-
-
-PRESENCE_BY_STATE = {
-    "menu": protocol.PRESENCE_STATUS_ONLINE,
-    "avatar_setup": protocol.PRESENCE_STATUS_ONLINE,
-    "browse_lobby": protocol.PRESENCE_STATUS_ONLINE,
-    "host_lobby": protocol.PRESENCE_STATUS_LOBBY,
-    "joined_lobby": protocol.PRESENCE_STATUS_LOBBY,
-    "results": protocol.PRESENCE_STATUS_LOBBY,
-    "in_game": protocol.PRESENCE_STATUS_IN_GAME,
-}
 
 
 @dataclass
@@ -65,19 +28,14 @@ class AppContext:
     screen: pygame.Surface
     clock: pygame.time.Clock
     log_level: str
-    display_manager: Optional[DisplayManager] = None
     running: bool = True
-    player_name: str = ""
+    player_name: str = "Player123"
     room_name: str = "Room123"
     banner_message: str = ""
     banner_timer: float = 0.0
     status_message: str = ""
     status_timer: float = 0.0
-    avatar_surface: Optional[pygame.Surface] = None
-    avatar_window_surface: Optional[pygame.Surface] = None
-    avatar_source_name: str = "Default avatar"
     network: Optional[nw.Network] = None
-    reconnect_ticket: Optional[ReconnectTicket] = None
     is_host: bool = False
     server_process: Optional[subprocess.Popen] = None
     server_host: str = "127.0.0.1"
@@ -88,17 +46,8 @@ class AppContext:
     start_pos: tuple = (100.0, 100.0)
     results_standings: list = None
     return_state_after_results: str = "joined_lobby"
-    mouse_pos: tuple[int, int] = (0, 0)
-    presence_instance_id: int = 0
-    presence_status: int = protocol.PRESENCE_STATUS_ONLINE
-    presence_broadcaster: Optional[PresenceBroadcaster] = None
-    log_dir: Optional[Path] = None
 
     def __post_init__(self):
-        if not self.player_name:
-            self.player_name = random_player_name()
-        if self.presence_instance_id == 0:
-            self.presence_instance_id = secrets.randbits(32) or 1
         t = DEFAULT_THEME
         self.font = pygame.font.SysFont(t.font_body, t.size_large)
         self.small_font = pygame.font.SysFont(t.font_body, t.size_small)
@@ -130,76 +79,17 @@ class AppContext:
         if self.countdown_remaining is not None:
             self.countdown_remaining = max(0.0, self.countdown_remaining - dt)
 
-    def draw_global_messages(self, surface: Optional[pygame.Surface] = None):
-        surface = surface or self.screen
+    def draw_global_messages(self):
+        width, _height = self.screen.get_size()
         if self.banner_message:
-            ui.draw_banner_bar(surface, self.small_font, self.banner_message)
+            ui.draw_banner_bar(self.screen, self.small_font, self.banner_message)
         if self.status_message:
             y = 34 if self.banner_message else 8
             status_surface = self.tiny_font.render(self.status_message, True, (255, 230, 120))
-            surface.blit(status_surface, (8, y))
-
-    def update_mouse_pos(self, use_internal: bool = False):
-        pos = pygame.mouse.get_pos()
-        if use_internal and self.display_manager is not None:
-            self.mouse_pos = self.display_manager.window_to_internal(pos)
-        else:
-            self.mouse_pos = pos
-
-    def apply_display_settings(self, selected_scale: int, fullscreen: bool):
-        if self.display_manager is None:
-            return False
-        config = DisplayConfig(selected_scale=selected_scale, fullscreen=fullscreen)
-        try:
-            self.screen = self.display_manager.apply_config(config)
-        except pygame.error as err:
-            self.set_status(f"Could not apply display mode: {err}", duration=4.0)
-            return False
-        return True
-
-    def to_render_event(self, event, use_internal: bool = False):
-        if not use_internal or self.display_manager is None:
-            return event
-        if hasattr(event, "pos"):
-            attrs = dict(event.__dict__)
-            attrs["pos"] = self.display_manager.window_to_internal(event.pos)
-            return pygame.event.Event(event.type, attrs)
-        return event
-
-    def _udp_port_available(self, port: int) -> bool:
-        try:
-            probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            probe.bind(("0.0.0.0", port))
-        except OSError:
-            return False
-        finally:
-            try:
-                probe.close()
-            except UnboundLocalError:
-                pass
-        return True
-
-    def _choose_server_port(self) -> int:
-        preferred = max(1, min(65535, int(self.server_port)))
-        for offset in range(GAME_PORT_SEARCH_LIMIT):
-            port = preferred + offset
-            if port > 65535:
-                break
-            if port == self.discovery_port:
-                continue
-            if self._udp_port_available(port):
-                return port
-
-        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            probe.bind(("0.0.0.0", 0))
-            return int(probe.getsockname()[1])
-        finally:
-            probe.close()
+            self.screen.blit(status_surface, (8, y))
 
     def start_local_server(self, room_name: str) -> bool:
         self.stop_server()
-        self.server_port = self._choose_server_port()
         command = [
             sys.executable,
             str(self.project_root / "network" / "server.py"),
@@ -214,45 +104,23 @@ class AppContext:
             "--log-level",
             self.log_level,
         ]
-        if self.log_dir is not None:
-            command.extend(["--log-dir", str(self.log_dir)])
-        LOGGER.info("Starting local server room=%s command=%s", room_name, command)
         self.server_process = subprocess.Popen(command, cwd=str(self.project_root))
         time.sleep(0.4)
         if self.server_process.poll() is not None:
-            LOGGER.error("Local server exited during startup room=%s", room_name)
             self.server_process = None
             return False
-        LOGGER.info("Local server started room=%s port=%s", room_name, self.server_port)
         return True
 
     def stop_server(self):
         if self.server_process is None:
             return
         if self.server_process.poll() is None:
-            LOGGER.info("Stopping local server")
             self.server_process.terminate()
             try:
                 self.server_process.wait(timeout=3)
             except subprocess.TimeoutExpired:
-                LOGGER.warning("Local server did not stop in time; killing")
                 self.server_process.kill()
         self.server_process = None
-
-    def wait_for_server_exit(self, timeout: float = 0.75) -> bool:
-        if self.server_process is None:
-            return True
-        if self.server_process.poll() is not None:
-            self.server_process = None
-            return True
-        try:
-            self.server_process.wait(timeout=timeout)
-            self.server_process = None
-            LOGGER.info("Local server exited after close-room request")
-            return True
-        except subprocess.TimeoutExpired:
-            LOGGER.warning("Local server did not exit after close-room request")
-            return False
 
     def attach_network(self, network_obj: nw.Network, is_host: bool, room_name: str, start_pos):
         self.detach_network(send_disconnect=False)
@@ -263,60 +131,27 @@ class AppContext:
         self.roster = []
         self.countdown_remaining = None
         self.results_standings = []
-        self.remember_reconnect_ticket()
         self.network.start_receiver()
-        LOGGER.info(
-            "Attached network player_id=%s host=%s room=%s addr=%s start_pos=%s",
-            self.network.id,
-            self.is_host,
-            self.room_name,
-            self.network.addr,
-            self.start_pos,
-        )
 
-    def remember_reconnect_ticket(self):
-        if self.network is None:
-            return
-        if self.network.id < 0 or self.network.session_token == 0:
-            return
-        addr, port = self.network.addr
-        if not addr or port <= 0:
-            return
-        self.reconnect_ticket = ReconnectTicket(
-            addr=addr,
-            port=port,
-            room_name=self.room_name,
-            player_id=self.network.id,
-            session_token=self.network.session_token,
-            player_name=self.player_name,
-            is_host=self.is_host,
-        )
-
-    def reset_lobby_after_game(self):
-        self.countdown_remaining = None
-        self.roster = [(player_id, False, name) for player_id, _ready, name in self.roster]
-
-    def detach_network(self, send_disconnect: bool = True, preserve_reconnect: bool = False):
+    def detach_network(self, send_disconnect: bool = True):
         if self.network is None:
             self.is_host = False
             self.roster = []
             self.countdown_remaining = None
-            if not preserve_reconnect:
-                self.reconnect_ticket = None
             return
         try:
             if send_disconnect:
-                LOGGER.info("Sending disconnect player_id=%s addr=%s", self.network.id, self.network.addr)
                 self.network.disconnect()
         finally:
-            LOGGER.info("Detaching network player_id=%s preserve_reconnect=%s", self.network.id, preserve_reconnect)
-            self.network.close()
+            self.network.stop_receiver()
+            try:
+                self.network.client.close()
+            except OSError:
+                pass
             self.network = None
             self.is_host = False
             self.roster = []
             self.countdown_remaining = None
-            if not preserve_reconnect:
-                self.reconnect_ticket = None
 
     def drain_network_events(self):
         if self.network is None:
@@ -330,33 +165,8 @@ class AppContext:
         return events
 
     def shutdown(self):
-        LOGGER.info("App shutdown requested host=%s network=%s", self.is_host, self.network is not None)
-        self.stop_presence()
-        if self.is_host and self.network is not None:
-            LOGGER.info("Host shutdown: sending close room")
-            self.network.close_room()
-            self.wait_for_server_exit(timeout=0.75)
-            self.detach_network(send_disconnect=False)
-        else:
-            self.detach_network(send_disconnect=True)
+        self.detach_network(send_disconnect=True)
         self.stop_server()
-
-    def start_presence(self):
-        if self.presence_broadcaster is not None:
-            return
-        self.presence_broadcaster = PresenceBroadcaster(
-            instance_id=self.presence_instance_id,
-            player_name_provider=lambda: self.player_name,
-            status_provider=lambda: self.presence_status,
-            discovery_port=self.discovery_port,
-        )
-        self.presence_broadcaster.start()
-
-    def stop_presence(self):
-        if self.presence_broadcaster is None:
-            return
-        self.presence_broadcaster.stop()
-        self.presence_broadcaster = None
 
 
 class StateMachine:
@@ -365,7 +175,6 @@ class StateMachine:
         self.current_state = None
         self.state_map: Dict[str, Type] = {
             "menu": MainMenuState,
-            "avatar_setup": AvatarSetupState,
             "browse_lobby": BrowseLobbyState,
             "host_lobby": HostLobbyState,
             "joined_lobby": JoinedLobbyState,
@@ -376,48 +185,23 @@ class StateMachine:
     def change(self, state_name: str, **kwargs):
         if self.current_state is not None:
             self.current_state.exit()
-        self.context.presence_status = PRESENCE_BY_STATE.get(state_name, protocol.PRESENCE_STATUS_ONLINE)
-        LOGGER.info("State change -> %s", state_name)
         state_cls = self.state_map[state_name]
         self.current_state = state_cls(self, self.context, **kwargs)
         self.current_state.enter()
 
     def run(self, initial_state: str = "menu"):
-        self.context.start_presence()
         self.change(initial_state)
         while self.context.running:
-            raw_dt = self.context.clock.tick(60) / 1000.0
-            dt = min(raw_dt, MAX_FRAME_DT)
-            use_internal = (
-                self.context.display_manager is not None
-                and self.current_state is not None
-                and self.current_state.render_to_internal
-            )
-            self.context.update_mouse_pos(use_internal=use_internal)
+            dt = self.context.clock.tick(60) / 1000.0
             for event in pygame.event.get():
-                event = self.context.to_render_event(event, use_internal=use_internal)
                 self.current_state.handle_event(event)
 
             self.current_state.update(dt)
             self.context.tick_timers(dt)
 
-            if self.context.display_manager is not None and use_internal:
-                surface = self.context.display_manager.begin_frame()
-            elif self.context.display_manager is not None:
-                surface = self.context.display_manager.begin_window_frame()
-            else:
-                surface = self.context.screen
-            self.current_state.draw(surface)
-            if not self.current_state.suppress_internal_global_messages:
-                self.context.draw_global_messages(surface)
-            if self.context.display_manager is not None and use_internal:
-                window_surface = self.context.display_manager.blit_internal_to_window()
-                self.current_state.draw_window_overlay(window_surface)
-                pygame.display.flip()
-            elif self.context.display_manager is not None:
-                self.context.display_manager.present_window()
-            else:
-                pygame.display.flip()
+            self.current_state.draw(self.context.screen)
+            self.context.draw_global_messages()
+            pygame.display.flip()
 
         if self.current_state is not None:
             self.current_state.exit()

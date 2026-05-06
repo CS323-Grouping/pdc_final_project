@@ -8,9 +8,6 @@ from ui.theme import DEFAULT_THEME
 
 
 class ScreenState:
-    render_to_internal = False
-    suppress_internal_global_messages = False
-
     def __init__(self, machine, context, **kwargs):
         self.machine = machine
         self.context = context
@@ -32,9 +29,6 @@ class ScreenState:
     def draw(self, surface: pygame.Surface):
         surface.fill(DEFAULT_THEME.bg)
 
-    def draw_window_overlay(self, surface: pygame.Surface):
-        pass
-
     def switch(self, state_name: str, **kwargs):
         self.machine.change(state_name, **kwargs)
 
@@ -48,17 +42,6 @@ class ScreenState:
         return "Disconnected from room."
 
     def handle_common_network_event(self, event) -> bool:
-        if isinstance(event, nw.SessionEvent):
-            self.context.remember_reconnect_ticket()
-            return True
-        if isinstance(event, nw.ConnectionLostEvent):
-            message = event.message
-            if "WinError 10054" in message or "forcibly closed" in message:
-                message = "Host closed the room or the connection was lost."
-            self.context.set_banner(message, duration=5.0)
-            self.context.detach_network(send_disconnect=False, preserve_reconnect=True)
-            self.switch("browse_lobby" if self.context.reconnect_ticket is not None else "menu")
-            return True
         if isinstance(event, nw.KickedEvent):
             self.context.set_banner(self._kicked_banner_message(event.reason_code))
             self.context.detach_network(send_disconnect=False)
