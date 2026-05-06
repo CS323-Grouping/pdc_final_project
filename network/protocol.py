@@ -13,10 +13,18 @@ BEACON_INTERVAL = 1.0
 BEACON_TTL = 3.0
 COUNTDOWN_SECONDS = 5.0
 LEFT_BEHIND_DISTANCE = 720.0
+LEFT_BEHIND_COOLDOWN_DISTANCE = 200.0
+PLAYER_TIMEOUT_SECONDS = 3.0
+RECONNECT_GRACE_SECONDS = 30.0
 
 STATE_LOBBY = 0
 STATE_COUNTDOWN = 1
 STATE_IN_GAME = 2
+STATE_PAUSED = 3
+
+PRESENCE_STATUS_ONLINE = 0
+PRESENCE_STATUS_LOBBY = 1
+PRESENCE_STATUS_IN_GAME = 2
 
 ROOM_NAME_REGEX = re.compile(r"^[A-Za-z0-9]{3,24}$")
 
@@ -38,12 +46,21 @@ KICKED_REASON_NOT_READY = 2
 GEND_REASON_NORMAL = 0
 GEND_REASON_FORFEIT = 1
 
+RECONNECT_DENY_NO_SLOT = 0
+RECONNECT_DENY_BAD_TOKEN = 1
+RECONNECT_DENY_EXPIRED = 2
+RECONNECT_DENY_NOT_IN_GAME = 3
+
 CONNECTION = b"CONN"  # Legacy handshake response compatibility
 POSITION = b"POSI"
+PLAYER_STATE = b"PSTA"
+AVATAR_HEADER = b"AVHD"
+AVATAR_CHUNK = b"AVCK"
 DISCONNECT = b"DISC"
 DISCOVER = b"DSCV"
 
 BEACON = b"BCON"
+PRESENCE = b"PRSN"
 CONOK = b"CONO"
 CONNO = b"CNOO"
 LIST = b"LIST"
@@ -53,22 +70,63 @@ CDWN = b"CDWN"
 CDWNX = b"CANX"
 GSTART = b"GSTR"
 DEAD = b"DEAD"
+GOAL = b"GOAL"
 ELIM = b"ELIM"
 GEND = b"GEND"
 KICK = b"KICK"
 KICKED = b"KDED"
+SESSION = b"SESS"
+RECONNECT = b"RECN"
+RECONNECT_OK = b"RCOK"
+RECONNECT_NO = b"RCNO"
+MATCH_PAUSE = b"PAUS"
+MATCH_RESUME = b"RSUM"
 
 FRMT_PACKET = "!4sffi"  # Legacy packet: command, x, y, player_id
 PACKET_SIZE = struct.calcsize(FRMT_PACKET)
 Packet = Tuple[bytes, float, float, int]
 
+ANIMATION_STATE_NAMES = (
+    "idle_front",
+    "walk_left",
+    "walk_right",
+    "jump_front",
+    "jump_left",
+    "jump_right",
+)
+ANIMATION_STATE_IDS = {name: index for index, name in enumerate(ANIMATION_STATE_NAMES)}
+
+FRMT_PLAYER_STATE = "!4sffiB"
+PLAYER_STATE_PACKET_SIZE = struct.calcsize(FRMT_PLAYER_STATE)
+PlayerStatePacket = Tuple[bytes, float, float, int, int]
+
+NETWORK_AVATAR_SIZE = 84
+NETWORK_AVATAR_BYTES = NETWORK_AVATAR_SIZE * NETWORK_AVATAR_SIZE * 4
+AVATAR_CHUNK_PAYLOAD_SIZE = 900
+AVATAR_MAX_CHUNKS = 64
+
+FRMT_AVATAR_HEADER = "!4siHHI"
+AVATAR_HEADER_PACKET_SIZE = struct.calcsize(FRMT_AVATAR_HEADER)
+AvatarHeaderPacket = Tuple[bytes, int, int, int, int]
+
+FRMT_AVATAR_CHUNK_HEAD = "!4siHHH"
+AVATAR_CHUNK_HEAD_SIZE = struct.calcsize(FRMT_AVATAR_CHUNK_HEAD)
+AvatarChunkPacket = Tuple[bytes, int, int, int, int, bytes]
+
 FRMT_BEACON = "!4sBBBBH32s"
 BEACON_PACKET_SIZE = struct.calcsize(FRMT_BEACON)
 BeaconPacket = Tuple[bytes, int, int, int, int, int, str]
+FRMT_PRESENCE = "!4sBIB32s"
+PRESENCE_PACKET_SIZE = struct.calcsize(FRMT_PRESENCE)
+PresencePacket = Tuple[bytes, int, int, int, str]
 
 FRMT_CONN = "!4sB32s"
 FRMT_CONOK = "!4si32s"
 FRMT_CONNO = "!4sBI"
+FRMT_SESSION = "!4siI"
+FRMT_RECONNECT = "!4sBiI32s"
+FRMT_RECONNECT_OK = "!4siff32s"
+FRMT_RECONNECT_NO = "!4sB"
 FRMT_LIST_HEAD = "!4sB"
 FRMT_LIST_ITEM = "!iB32s"
 FRMT_READY = "!4siB"
@@ -77,11 +135,14 @@ FRMT_CDWN = "!4sf"
 FRMT_CDWNX = "!4sB"
 FRMT_GSTART = "!4s"
 FRMT_DEAD = "!4siB"
+FRMT_GOAL = "!4si"   # tag, player_id
 FRMT_ELIM = "!4siB"
 FRMT_GEND_HEAD = "!4sBB"
 FRMT_GEND_ITEM = "!iB32s"
 FRMT_KICK = "!4sii"
 FRMT_KICKED = "!4sB"
+FRMT_MATCH_PAUSE = "!4sif"
+FRMT_MATCH_RESUME = "!4s"
 
 
 def _pack_name(name: str) -> bytes:
@@ -120,6 +181,95 @@ def safe_unpack(data: bytes) -> Optional[Packet]:
         return None
 
 
+def animation_state_id(state_name: str) -> int:
+    return ANIMATION_STATE_IDS.get(state_name, 0)
+
+
+def animation_state_name(state_id: int) -> str:
+    if 0 <= state_id < len(ANIMATION_STATE_NAMES):
+        return ANIMATION_STATE_NAMES[state_id]
+    return ANIMATION_STATE_NAMES[0]
+
+
+def pack_player_state(x: float, y: float, player_id: int, animation_state: str | int) -> bytes:
+    if isinstance(animation_state, str):
+        state_id = animation_state_id(animation_state)
+    else:
+        state_id = int(animation_state)
+    state_id = max(0, min(len(ANIMATION_STATE_NAMES) - 1, state_id))
+    return struct.pack(FRMT_PLAYER_STATE, PLAYER_STATE, x, y, player_id, state_id)
+
+
+def safe_unpack_player_state(data: bytes) -> Optional[PlayerStatePacket]:
+    if len(data) != PLAYER_STATE_PACKET_SIZE:
+        return None
+    try:
+        unpacked = struct.unpack(FRMT_PLAYER_STATE, data)
+    except struct.error:
+        return None
+    tag, x, y, player_id, state_id = unpacked
+    if tag != PLAYER_STATE:
+        return None
+    return tag, x, y, player_id, state_id
+
+
+def pack_avatar_header(player_id: int, avatar_id: int, total_chunks: int, payload_size: int) -> bytes:
+    avatar_id = int(avatar_id) & 0xFFFF
+    total_chunks = max(0, min(AVATAR_MAX_CHUNKS, int(total_chunks)))
+    payload_size = max(0, min(NETWORK_AVATAR_BYTES, int(payload_size)))
+    return struct.pack(FRMT_AVATAR_HEADER, AVATAR_HEADER, player_id, avatar_id, total_chunks, payload_size)
+
+
+def safe_unpack_avatar_header(data: bytes) -> Optional[AvatarHeaderPacket]:
+    if len(data) != AVATAR_HEADER_PACKET_SIZE:
+        return None
+    try:
+        tag, player_id, avatar_id, total_chunks, payload_size = struct.unpack(FRMT_AVATAR_HEADER, data)
+    except struct.error:
+        return None
+    if tag != AVATAR_HEADER:
+        return None
+    if total_chunks > AVATAR_MAX_CHUNKS or payload_size > NETWORK_AVATAR_BYTES:
+        return None
+    return tag, player_id, avatar_id, total_chunks, payload_size
+
+
+def pack_avatar_chunk(player_id: int, avatar_id: int, chunk_index: int, total_chunks: int, payload: bytes) -> bytes:
+    avatar_id = int(avatar_id) & 0xFFFF
+    chunk_index = max(0, min(AVATAR_MAX_CHUNKS - 1, int(chunk_index)))
+    total_chunks = max(1, min(AVATAR_MAX_CHUNKS, int(total_chunks)))
+    return struct.pack(
+        FRMT_AVATAR_CHUNK_HEAD,
+        AVATAR_CHUNK,
+        player_id,
+        avatar_id,
+        chunk_index,
+        total_chunks,
+    ) + payload[:AVATAR_CHUNK_PAYLOAD_SIZE]
+
+
+def safe_unpack_avatar_chunk(data: bytes) -> Optional[AvatarChunkPacket]:
+    if len(data) < AVATAR_CHUNK_HEAD_SIZE:
+        return None
+    try:
+        tag, player_id, avatar_id, chunk_index, total_chunks = struct.unpack(
+            FRMT_AVATAR_CHUNK_HEAD,
+            data[:AVATAR_CHUNK_HEAD_SIZE],
+        )
+    except struct.error:
+        return None
+    if tag != AVATAR_CHUNK:
+        return None
+    if total_chunks <= 0 or total_chunks > AVATAR_MAX_CHUNKS:
+        return None
+    if chunk_index >= total_chunks:
+        return None
+    payload = data[AVATAR_CHUNK_HEAD_SIZE:]
+    if len(payload) > AVATAR_CHUNK_PAYLOAD_SIZE:
+        return None
+    return tag, player_id, avatar_id, chunk_index, total_chunks, payload
+
+
 def pack_beacon(proto_version: int, cur_players: int, max_players: int, room_state: int, game_port: int, room_name: str) -> bytes:
     return struct.pack(
         FRMT_BEACON,
@@ -143,6 +293,29 @@ def safe_unpack_beacon(data: bytes) -> Optional[BeaconPacket]:
     if tag != BEACON:
         return None
     return (tag, proto_version, cur_players, max_players, room_state, game_port, _unpack_name(room_name))
+
+
+def pack_presence(proto_version: int, instance_id: int, status: int, player_name: str) -> bytes:
+    return struct.pack(
+        FRMT_PRESENCE,
+        PRESENCE,
+        proto_version,
+        int(instance_id) & UINT32_MAX,
+        max(0, min(255, int(status))),
+        _pack_name(player_name),
+    )
+
+
+def safe_unpack_presence(data: bytes) -> Optional[PresencePacket]:
+    if len(data) != PRESENCE_PACKET_SIZE:
+        return None
+    try:
+        tag, proto_version, instance_id, status, player_name = struct.unpack(FRMT_PRESENCE, data)
+    except struct.error:
+        return None
+    if tag != PRESENCE:
+        return None
+    return (tag, proto_version, instance_id, status, _unpack_name(player_name))
 
 
 def _safe_unpack_exact(data: bytes, fmt: str) -> Optional[Tuple]:
@@ -194,6 +367,69 @@ def safe_unpack_conno(data: bytes) -> Optional[Tuple[bytes, int, int]]:
     if tag != CONNO:
         return None
     return tag, reason_code, extra
+
+
+def pack_session(player_id: int, session_token: int) -> bytes:
+    return struct.pack(FRMT_SESSION, SESSION, player_id, int(session_token) & UINT32_MAX)
+
+
+def safe_unpack_session(data: bytes) -> Optional[Tuple[bytes, int, int]]:
+    unpacked = _safe_unpack_exact(data, FRMT_SESSION)
+    if unpacked is None:
+        return None
+    tag, player_id, session_token = unpacked
+    if tag != SESSION:
+        return None
+    return tag, player_id, session_token
+
+
+def pack_reconnect(player_id: int, session_token: int, player_name: str, proto_version: int = PROTO_VERSION) -> bytes:
+    return struct.pack(
+        FRMT_RECONNECT,
+        RECONNECT,
+        proto_version,
+        player_id,
+        int(session_token) & UINT32_MAX,
+        _pack_name(player_name),
+    )
+
+
+def safe_unpack_reconnect(data: bytes) -> Optional[Tuple[bytes, int, int, int, str]]:
+    unpacked = _safe_unpack_exact(data, FRMT_RECONNECT)
+    if unpacked is None:
+        return None
+    tag, proto_version, player_id, session_token, raw_name = unpacked
+    if tag != RECONNECT:
+        return None
+    return tag, proto_version, player_id, session_token, _unpack_name(raw_name)
+
+
+def pack_reconnect_ok(player_id: int, x: float, y: float, room_name: str) -> bytes:
+    return struct.pack(FRMT_RECONNECT_OK, RECONNECT_OK, player_id, x, y, _pack_name(room_name))
+
+
+def safe_unpack_reconnect_ok(data: bytes) -> Optional[Tuple[bytes, int, float, float, str]]:
+    unpacked = _safe_unpack_exact(data, FRMT_RECONNECT_OK)
+    if unpacked is None:
+        return None
+    tag, player_id, x, y, raw_room_name = unpacked
+    if tag != RECONNECT_OK:
+        return None
+    return tag, player_id, x, y, _unpack_name(raw_room_name)
+
+
+def pack_reconnect_no(reason_code: int) -> bytes:
+    return struct.pack(FRMT_RECONNECT_NO, RECONNECT_NO, reason_code)
+
+
+def safe_unpack_reconnect_no(data: bytes) -> Optional[Tuple[bytes, int]]:
+    unpacked = _safe_unpack_exact(data, FRMT_RECONNECT_NO)
+    if unpacked is None:
+        return None
+    tag, reason_code = unpacked
+    if tag != RECONNECT_NO:
+        return None
+    return tag, reason_code
 
 
 def pack_list(entries: List[Tuple[int, bool, str]]) -> bytes:
@@ -312,6 +548,20 @@ def safe_unpack_dead(data: bytes) -> Optional[Tuple[bytes, int, int]]:
     return tag, player_id, cause
 
 
+def pack_goal(player_id: int) -> bytes:
+    return struct.pack(FRMT_GOAL, GOAL, player_id)
+
+
+def safe_unpack_goal(data: bytes) -> Optional[Tuple[bytes, int]]:
+    unpacked = _safe_unpack_exact(data, FRMT_GOAL)
+    if unpacked is None:
+        return None
+    tag, player_id = unpacked
+    if tag != GOAL:
+        return None
+    return tag, player_id
+
+
 def pack_elim(player_id: int, placement: int) -> bytes:
     return struct.pack(FRMT_ELIM, ELIM, player_id, placement)
 
@@ -384,3 +634,31 @@ def safe_unpack_kicked(data: bytes) -> Optional[Tuple[bytes, int]]:
     if tag != KICKED:
         return None
     return tag, reason_code
+
+
+def pack_match_pause(player_id: int, seconds_remaining: float) -> bytes:
+    return struct.pack(FRMT_MATCH_PAUSE, MATCH_PAUSE, player_id, max(0.0, float(seconds_remaining)))
+
+
+def safe_unpack_match_pause(data: bytes) -> Optional[Tuple[bytes, int, float]]:
+    unpacked = _safe_unpack_exact(data, FRMT_MATCH_PAUSE)
+    if unpacked is None:
+        return None
+    tag, player_id, seconds_remaining = unpacked
+    if tag != MATCH_PAUSE:
+        return None
+    return tag, player_id, seconds_remaining
+
+
+def pack_match_resume() -> bytes:
+    return struct.pack(FRMT_MATCH_RESUME, MATCH_RESUME)
+
+
+def safe_unpack_match_resume(data: bytes) -> Optional[Tuple[bytes]]:
+    unpacked = _safe_unpack_exact(data, FRMT_MATCH_RESUME)
+    if unpacked is None:
+        return None
+    (tag,) = unpacked
+    if tag != MATCH_RESUME:
+        return None
+    return (tag,)

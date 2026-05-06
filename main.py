@@ -4,6 +4,8 @@ import sys
 
 import pygame
 
+from app.display import DisplayManager
+from app.logging_setup import configure_logging, create_instance_log_dir
 from app.state_machine import AppContext, StateMachine
 from network import network_handler as nw
 from network import protocol
@@ -39,13 +41,6 @@ def parse_args():
     return parser.parse_args()
 
 
-def configure_logging(log_level: str):
-    logging.basicConfig(
-        level=getattr(logging, log_level),
-        format="[%(levelname)s] %(name)s: %(message)s",
-    )
-
-
 def _parse_server_option(value: str) -> tuple[str, int] | None:
     value = (value or "").strip()
     if not value:
@@ -68,15 +63,24 @@ def _parse_server_option(value: str) -> tuple[str, int] | None:
 
 def main():
     args = parse_args()
-    configure_logging(args.log_level)
 
     pygame.init()
-    screen = pygame.display.set_mode((640, 640), pygame.RESIZABLE)
+    display_manager = DisplayManager.create_default()
     clock = pygame.time.Clock()
-    ctx = AppContext(screen=screen, clock=clock, log_level=args.log_level)
+    ctx = AppContext(
+        screen=display_manager.screen,
+        clock=clock,
+        log_level=args.log_level,
+        display_manager=display_manager,
+    )
 
     if args.name:
         ctx.player_name = args.name.strip() or ctx.player_name
+
+    ctx.log_dir = create_instance_log_dir(ctx.project_root, ctx.player_name)
+    configure_logging(args.log_level, ctx.log_dir / "client.log")
+    LOGGER.info("Client log initialized for player=%s dir=%s", ctx.player_name, ctx.log_dir)
+
     if not protocol.is_valid_player_name(ctx.player_name):
         LOGGER.error("Player name must be 3–24 alphanumeric characters (use --name).")
         pygame.quit()
@@ -102,10 +106,7 @@ def main():
         result = net.connect_to_room(host, port, ctx.player_name)
         if not result.ok:
             LOGGER.error("Direct join failed (reason=%s extra=%s)", result.reason_code, result.extra)
-            try:
-                net.client.close()
-            except OSError:
-                pass
+            net.close()
             pygame.quit()
             sys.exit(1)
         ctx.attach_network(net, is_host=False, room_name=result.room_name, start_pos=result.start_pos)
