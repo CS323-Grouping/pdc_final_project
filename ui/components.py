@@ -8,7 +8,7 @@ import pygame
 from ui import animations as anim
 from ui.theme import DEFAULT_THEME, Theme
 
-BadgeKind = Literal["lobby", "starting", "full", "ingame"]
+BadgeKind = Literal["lobby", "starting", "full", "ingame", "paused", "reconnect"]
 
 
 @dataclass
@@ -75,6 +75,10 @@ def badge_color(kind: BadgeKind, theme: Theme = DEFAULT_THEME) -> Tuple[int, int
         return theme.badge_starting
     if kind == "full":
         return theme.badge_full
+    if kind == "paused":
+        return theme.badge_starting
+    if kind == "reconnect":
+        return theme.badge_lobby
     return theme.badge_ingame
 
 
@@ -127,7 +131,7 @@ def draw_room_card(
     title = body_font.render(f"{room_name}  {cur}/{max_p}", True, tcol)
     card.blit(title, (title_x, by + 2))
 
-    if badge_kind == "ingame":
+    if badge_kind in ("ingame", "paused"):
         lock_r = pygame.Rect(rect.w - 38, 8, 22, 26)
         draw_lock_icon(card, lock_r, theme.text_muted)
 

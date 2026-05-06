@@ -45,6 +45,7 @@ venv.bak/
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt
+logs/
 
 # Unit test / coverage
 .pytest_cache/
