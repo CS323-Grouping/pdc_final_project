@@ -22,8 +22,6 @@ class JoinedLobbyState(ScreenState):
         self.leave_button = ui.Button(pygame.Rect(0, 0, 150, 46), "Leave")
         self._ready_on = False
         self._pulse_t = 0.0
-        self._heartbeat_elapsed = 0.0
-        self._server_silence_elapsed = 0.0
         self._roster_ids: frozenset[int] = frozenset()
         self._row_flash: dict[int, float] = {}
         self._ready_h = self._leave_h = False
@@ -31,8 +29,6 @@ class JoinedLobbyState(ScreenState):
     def enter(self):
         self._ready_on = False
         self._pulse_t = 0.0
-        self._heartbeat_elapsed = 0.0
-        self._server_silence_elapsed = 0.0
         self._row_flash.clear()
         self._roster_ids = frozenset()
         net = self.context.network
@@ -46,8 +42,8 @@ class JoinedLobbyState(ScreenState):
 
     def _layout(self):
         w, h = self.context.screen.get_size()
-        self.ready_button.rect.topleft = (w // 2 - 165, h - 52)
-        self.leave_button.rect.topleft = (w // 2 + 15, h - 52)
+        self.ready_button.rect.topleft = (w // 2 - 165, h - 58)
+        self.leave_button.rect.topleft = (w // 2 + 15, h - 58)
 
     def _note_roster_change(self, entries: list) -> None:
         new_ids = frozenset(p[0] for p in entries)
@@ -58,11 +54,9 @@ class JoinedLobbyState(ScreenState):
         self._roster_ids = new_ids
 
     def _drain_network(self):
-        heard_server = False
         for event in self.context.drain_network_events():
-            heard_server = True
             if self.handle_common_network_event(event):
-                return True
+                continue
             if isinstance(event, nw.RosterEvent):
                 self._note_roster_change(list(event.entries))
                 self.context.roster = list(event.entries)
@@ -74,17 +68,13 @@ class JoinedLobbyState(ScreenState):
             elif isinstance(event, nw.CountdownCancelEvent):
                 self.context.countdown_remaining = None
             elif isinstance(event, nw.GameStartEvent):
-                self.context.countdown_remaining = None
                 self.switch("in_game")
-                return True
+                return
             elif isinstance(event, nw.GameEndEvent):
-                self.context.reset_lobby_after_game()
-                self._ready_on = False
                 self.context.results_standings = list(event.standings)
                 self.context.return_state_after_results = "joined_lobby"
                 self.switch("results")
-                return True
-        return heard_server
+                return
 
     def handle_event(self, event):
         super().handle_event(event)
@@ -104,27 +94,13 @@ class JoinedLobbyState(ScreenState):
 
     def update(self, dt: float):
         self._pulse_t += dt
-        if self._drain_network():
-            self._server_silence_elapsed = 0.0
-        else:
-            self._server_silence_elapsed += dt
-        if self.context.network is None:
-            return
-        self._heartbeat_elapsed += dt
-        if self._heartbeat_elapsed >= 1.0:
-            self._heartbeat_elapsed = 0.0
-            self.context.network.send_ready(self._ready_on)
-        if self._server_silence_elapsed >= 4.0:
-            self.context.set_banner("Host closed the room or stopped responding.", duration=5.0)
-            self.context.detach_network(send_disconnect=False, preserve_reconnect=True)
-            self.switch("browse_lobby")
-            return
+        self._drain_network()
         self.ready_button.enabled = self.context.network is not None
         for k in list(self._row_flash.keys()):
             self._row_flash[k] = anim.highlight_decay(self._row_flash[k], dt, rate=3.0)
             if self._row_flash[k] <= 0.01:
                 del self._row_flash[k]
-        mp = self.context.mouse_pos
+        mp = pygame.mouse.get_pos()
         self._ready_h = self.ready_button.rect.collidepoint(mp)
         self._leave_h = self.leave_button.rect.collidepoint(mp)
 
@@ -148,7 +124,7 @@ class JoinedLobbyState(ScreenState):
                 self._pulse_t,
                 theme,
             )
-        elif not self._ready_on and self.ready_button.rect.collidepoint(self.context.mouse_pos):
+        elif not self._ready_on and self.ready_button.rect.collidepoint(pygame.mouse.get_pos()):
             ui.draw_tooltip(
                 surface,
                 self.context.tiny_font,
@@ -158,16 +134,16 @@ class JoinedLobbyState(ScreenState):
             )
 
         hid = _host_player_id(self.context.roster)
-        y = 96
+        y = 112
         for player_id, ready, name in self.context.roster:
+            tag = ""
             if hid is not None and player_id == hid:
-                line = f"{name}  ·  HOST"
-            else:
-                line = f"{name}  ·  {'READY' if ready else 'not ready'}"
-            row_rect = pygame.Rect(20, y, surface.get_width() - 40, 34)
+                tag = " · HOST"
+            line = f"{name}{tag}  ·  {'READY' if ready else 'not ready'}"
+            row_rect = pygame.Rect(20, y, surface.get_width() - 40, 42)
             flash = self._row_flash.get(player_id, 0.0)
             ui.draw_roster_row(surface, self.context.small_font, row_rect, line, flash, theme=theme)
-            y += 42
+            y += 50
 
         self.ready_button.text = "Unready" if self._ready_on else "Ready"
         glow = anim.pulse01(self._pulse_t, 1.0) if self._ready_on else 0.0

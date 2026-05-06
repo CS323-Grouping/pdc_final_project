@@ -14,7 +14,6 @@ class ResultsState(ScreenState):
     def enter(self):
         self._auto_hide = 5.0
         self._elapsed = 0.0
-        self.context.countdown_remaining = None
 
     def _placement_label(self, placement: int) -> str:
         if placement == 1:

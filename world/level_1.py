@@ -1,147 +1,18 @@
-from dataclasses import dataclass
-
 from world.shapes import platform as plat
-from world.constants import CHUNK_HEIGHT, INTERNAL_WIDTH, PLATFORM_NORMAL_SIZE
 
-
-@dataclass(frozen=True)
-class PlatformSpec:
-    x: int
-    y: int
-    kind: str = "normal"
-
-
-LEVEL_1_CHUNKS = 20
-LEVEL_1_TARGET_HEIGHT = LEVEL_1_CHUNKS * CHUNK_HEIGHT
-LEVEL_1_MIN_PLATFORM_GAP = 38
-LEVEL_1_MAX_PLATFORM_GAP = 44
-
-LEVEL_1_X_SEQUENCE = (
-    96,
-    176,
-    66,
-    190,
-    110,
-    48,
-    170,
-    82,
-    196,
-    120,
-    58,
-    180,
-    92,
-    206,
-    130,
-    70,
-    188,
-    102,
-    50,
-    160,
-    84,
-    202,
-    118,
-    64,
-    174,
-    96,
-    210,
-    136,
-    76,
-    190,
-    108,
-    54,
-    166,
-    88,
-    198,
-    124,
-    68,
-    182,
-    100,
-    214,
-    142,
-    80,
-    194,
-    112,
-    60,
-)
-
-LEVEL_1_PLATFORM_GAPS = (
-    40,
-    40,
-    42,
-    38,
-    44,
-    40,
-    42,
-    38,
-    40,
-    44,
-    38,
-    42,
-    40,
-    40,
-    44,
-    38,
-    42,
-    40,
-    38,
-    44,
-    40,
-    42,
-    38,
-    40,
-    44,
-    38,
-    42,
-    40,
-    40,
-    44,
-    38,
-    42,
-    40,
-    38,
-    44,
-    40,
-    42,
-    38,
-    40,
-    44,
-    38,
-    42,
-    40,
-    40,
-)
-
-
-def _build_level_1_platforms() -> tuple[PlatformSpec, ...]:
-    start_y = 152
-    y = start_y
+def create_level_1():
     platforms = []
-    index = 0
-    while True:
-        x = LEVEL_1_X_SEQUENCE[index % len(LEVEL_1_X_SEQUENCE)]
-        platforms.append(PlatformSpec(x, y))
-        if (start_y - y) >= LEVEL_1_TARGET_HEIGHT:
-            break
-        y -= LEVEL_1_PLATFORM_GAPS[index % len(LEVEL_1_PLATFORM_GAPS)]
-        index += 1
-    return tuple(platforms)
 
+    # Ground
+    platforms.append(plat.Platform(800, 40, (0, 560)))
 
-LEVEL_1_PLATFORMS = _build_level_1_platforms()
+    # Floating platforms
+    platforms.append(plat.Platform(120, 20, (150, 450)))
+    platforms.append(plat.Platform(120, 20, (350, 380)))
+    platforms.append(plat.Platform(120, 20, (550, 300)))
 
-LEVEL_1_TOP_Y: int = min(spec.y for spec in LEVEL_1_PLATFORMS) - 80
+    # # Small challenge platforms
+    # platforms.append(plat.Platform(80, 20, (300, 250)))
+    # platforms.append(plat.Platform(80, 20, (450, 200)))
 
-LEVEL_1_GOAL_Y: int = LEVEL_1_TOP_Y
-
-LEVEL_1_GOAL_CENTER_X: int = INTERNAL_WIDTH // 2
-
-
-def create_level_1(platform_image):
-    return [
-        plat.Platform(
-            (spec.x, spec.y),
-            platform_image,
-            collision_size=PLATFORM_NORMAL_SIZE,
-        )
-        for spec in LEVEL_1_PLATFORMS
-    ]
+    return platforms

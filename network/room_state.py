@@ -1,13 +1,11 @@
 from dataclasses import dataclass
-import secrets
 import threading
-import time
 from typing import Dict, List, Optional, Tuple
 
 try:
-    from network.protocol import MAX_PLAYERS, MIN_PLAYERS, RECONNECT_GRACE_SECONDS, STATE_LOBBY
+    from network.protocol import MAX_PLAYERS, MIN_PLAYERS, STATE_LOBBY
 except ModuleNotFoundError:
-    from protocol import MAX_PLAYERS, MIN_PLAYERS, RECONNECT_GRACE_SECONDS, STATE_LOBBY  # type: ignore
+    from protocol import MAX_PLAYERS, MIN_PLAYERS, STATE_LOBBY  # type: ignore
 
 Address = Tuple[str, int]
 Position = Tuple[float, float]
@@ -17,14 +15,10 @@ Position = Tuple[float, float]
 class PlayerEntry:
     player_id: int
     name: str
-    session_token: int
     ready: bool
     alive: bool
     connected: bool
     placement: Optional[int]
-    last_seen: float
-    disconnected_at: Optional[float] = None
-    reconnect_deadline: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -52,10 +46,6 @@ class RoomState:
         self._players: Dict[int, PlayerEntry] = {}
         self._addr_to_id: Dict[Address, int] = {}
         self._positions: Dict[int, Position] = {}
-
-    def _spawn_position_for_index(self, index: int) -> Position:
-        start_x, start_y = self.start_position
-        return (start_x + (12.0 * index), start_y)
 
     def snapshot(self) -> RoomSnapshot:
         with self.lock:
@@ -85,53 +75,24 @@ class RoomState:
     def add_or_get_player(self, addr: Address, name: str) -> Tuple[int, bool]:
         with self.lock:
             if addr in self._addr_to_id:
-                player_id = self._addr_to_id[addr]
-                player = self._players.get(player_id)
-                if player is not None:
-                    player.last_seen = time.monotonic()
-                return player_id, False
+                return self._addr_to_id[addr], False
 
             player_id = self._next_player_id
             self._next_player_id += 1
             self._addr_to_id[addr] = player_id
             self._positions[player_id] = self.start_position
-            token = secrets.randbits(32) or 1
-            now = time.monotonic()
 
             self._players[player_id] = PlayerEntry(
                 player_id=player_id,
                 name=name,
-                session_token=token,
                 ready=False,
                 alive=False,
                 connected=True,
                 placement=None,
-                last_seen=now,
             )
             if self.host_id is None:
                 self.host_id = player_id
             return player_id, True
-
-    def session_token(self, player_id: int) -> Optional[int]:
-        with self.lock:
-            player = self._players.get(player_id)
-            return None if player is None else player.session_token
-
-    def touch_player(self, player_id: int, now: Optional[float] = None):
-        with self.lock:
-            player = self._players.get(player_id)
-            if player is not None and player.connected:
-                player.last_seen = time.monotonic() if now is None else now
-
-    def touch_addr(self, addr: Address, now: Optional[float] = None) -> Optional[int]:
-        with self.lock:
-            player_id = self._addr_to_id.get(addr)
-            if player_id is None:
-                return None
-            player = self._players.get(player_id)
-            if player is not None and player.connected:
-                player.last_seen = time.monotonic() if now is None else now
-            return player_id
 
     def update_position(self, player_id: int, x: float, y: float):
         with self.lock:
@@ -151,89 +112,16 @@ class RoomState:
         with self.lock:
             return player_id in self._players
 
-    def mark_disconnected(
-        self,
-        player_id: int,
-        now: Optional[float] = None,
-        grace_seconds: float = RECONNECT_GRACE_SECONDS,
-    ):
+    def mark_disconnected(self, player_id: int):
         with self.lock:
             player = self._players.get(player_id)
             if player is None:
                 return
-            now = time.monotonic() if now is None else now
             player.connected = False
-            player.disconnected_at = now
-            player.reconnect_deadline = now + max(0.0, grace_seconds)
             for addr, pid in list(self._addr_to_id.items()):
                 if pid == player_id:
                     del self._addr_to_id[addr]
                     break
-
-    def reconnect_player(
-        self,
-        addr: Address,
-        player_id: int,
-        session_token: int,
-        now: Optional[float] = None,
-    ) -> Optional[Position]:
-        with self.lock:
-            player = self._players.get(player_id)
-            if player is None:
-                return None
-            now = time.monotonic() if now is None else now
-            if player.session_token != session_token:
-                return None
-            if player.connected:
-                return None
-            if not player.alive:
-                return None
-            if player.reconnect_deadline is not None and now > player.reconnect_deadline:
-                return None
-            for old_addr, pid in list(self._addr_to_id.items()):
-                if old_addr == addr or pid == player_id:
-                    del self._addr_to_id[old_addr]
-            self._addr_to_id[addr] = player_id
-            player.connected = True
-            player.ready = False
-            player.last_seen = now
-            player.disconnected_at = None
-            player.reconnect_deadline = None
-            return self._positions.get(player_id, self.start_position)
-
-    def reconnect_player_by_name(
-        self,
-        addr: Address,
-        player_name: str,
-        now: Optional[float] = None,
-    ) -> Optional[Tuple[int, Position, int]]:
-        with self.lock:
-            now = time.monotonic() if now is None else now
-            matches = []
-            for player_id, player in self._players.items():
-                if player.name != player_name:
-                    continue
-                if not player.alive or player.connected:
-                    continue
-                if player.reconnect_deadline is not None and now > player.reconnect_deadline:
-                    continue
-                matches.append(player_id)
-
-            if len(matches) != 1:
-                return None
-
-            player_id = matches[0]
-            player = self._players[player_id]
-            for old_addr, pid in list(self._addr_to_id.items()):
-                if old_addr == addr or pid == player_id:
-                    del self._addr_to_id[old_addr]
-            self._addr_to_id[addr] = player_id
-            player.connected = True
-            player.ready = False
-            player.last_seen = now
-            player.disconnected_at = None
-            player.reconnect_deadline = None
-            return player_id, self._positions.get(player_id, self.start_position), player.session_token
 
     def remove_player(self, player_id: int):
         with self.lock:
@@ -245,46 +133,6 @@ class RoomState:
                     break
             if self.host_id == player_id:
                 self.host_id = None
-
-    def disconnect_remaining(self, player_id: int, now: Optional[float] = None) -> float:
-        with self.lock:
-            player = self._players.get(player_id)
-            if player is None or player.reconnect_deadline is None:
-                return 0.0
-            now = time.monotonic() if now is None else now
-            return max(0.0, player.reconnect_deadline - now)
-
-    def disconnected_alive_ids(self) -> List[int]:
-        with self.lock:
-            return sorted(
-                player_id
-                for player_id, player in self._players.items()
-                if player.alive and not player.connected
-            )
-
-    def has_disconnected_alive_players(self) -> bool:
-        with self.lock:
-            return any(player.alive and not player.connected for player in self._players.values())
-
-    def timed_out_connected_alive_ids(self, now: float, timeout_seconds: float) -> List[int]:
-        with self.lock:
-            output: List[int] = []
-            for player_id, player in self._players.items():
-                if not player.alive or not player.connected:
-                    continue
-                if (now - player.last_seen) > timeout_seconds:
-                    output.append(player_id)
-            return sorted(output)
-
-    def expired_reconnect_ids(self, now: float) -> List[int]:
-        with self.lock:
-            output: List[int] = []
-            for player_id, player in self._players.items():
-                if not player.alive or player.connected:
-                    continue
-                if player.reconnect_deadline is not None and now >= player.reconnect_deadline:
-                    output.append(player_id)
-            return sorted(output)
 
     def peers(self, exclude_addr: Optional[Address] = None) -> List[Address]:
         with self.lock:
@@ -361,26 +209,10 @@ class RoomState:
     def enter_game(self):
         with self.lock:
             self.countdown_deadline = None
-            now = time.monotonic()
-            spawn_index = 0
-            for player_id in sorted(self._players.keys()):
-                player = self._players[player_id]
+            for player in self._players.values():
                 if player.connected:
-                    self._positions[player_id] = self._spawn_position_for_index(spawn_index)
-                    spawn_index += 1
                     player.alive = True
                     player.placement = None
-                    player.last_seen = now
-                    player.disconnected_at = None
-                    player.reconnect_deadline = None
-
-    def connected_positions(self) -> Dict[int, Position]:
-        with self.lock:
-            positions: Dict[int, Position] = {}
-            for player_id, player in self._players.items():
-                if player.connected and player_id in self._positions:
-                    positions[player_id] = self._positions[player_id]
-            return positions
 
     def alive_ids(self) -> List[int]:
         with self.lock:
