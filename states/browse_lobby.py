@@ -18,8 +18,9 @@ BROWSER_RECTS = {
     "back": pygame.Rect(17, 42, 22, 18),
     "refresh": pygame.Rect(44, 42, 53, 18),
     "player_name": pygame.Rect(17, 64, 78, 14),
-    "create": pygame.Rect(17, 81, 78, 36),
-    "join": pygame.Rect(17, 122, 78, 36),
+    "create": pygame.Rect(17, 81, 78, 22),
+    "join": pygame.Rect(17, 106, 78, 22),
+    "direct_connect": pygame.Rect(17, 131, 78, 22),
     "search": pygame.Rect(117, 42, 186, 18),
     "search_icon": pygame.Rect(124, 46, 9, 10),
     "room_card": pygame.Rect(117, 66, 186, 30),
@@ -42,6 +43,11 @@ class BrowseLobbyState(ScreenState):
         self._search_text = ""
         self._assets: dict[str, pygame.Surface] = {}
         self._window_fonts: dict[tuple[int, bool], pygame.font.Font] = {}
+        # Direct connect overlay state
+        self._direct_connect_active = False
+        self._direct_connect_field = "ip"   # "ip" or "port"
+        self._direct_connect_ip = ""
+        self._direct_connect_port = ""
 
     def enter(self):
         self._assets = self._load_assets()
@@ -183,6 +189,48 @@ class BrowseLobbyState(ScreenState):
         )
         self.switch("in_game")
 
+    def _join_room_by_addr(self, addr: str, port: int):
+        """Attempt a direct connection to the given IP address and port."""
+        net = nw.Network()
+        result = net.connect_to_room(addr, port, self.context.player_name)
+        if not result.ok:
+            if result.reason_code == protocol.CONNO_REASON_COOLDOWN:
+                if result.extra == protocol.UINT32_MAX:
+                    self.context.set_banner("On cooldown - rejoin blocked for this session.", duration=6.0)
+                else:
+                    self.context.set_banner(f"On cooldown - {result.extra} seconds remaining.", duration=6.0)
+                net.close()
+                self.switch("menu")
+                return
+            if result.reason_code == protocol.CONNO_REASON_IN_GAME:
+                self.context.set_status("Room is no longer joinable.", duration=3.0)
+            elif result.reason_code == protocol.CONNO_REASON_FULL:
+                self.context.set_status("Room is already full.", duration=3.0)
+            else:
+                self.context.set_status("Failed to connect to host.", duration=3.0)
+            net.close()
+            return
+        self.context.attach_network(
+            network_obj=net,
+            is_host=False,
+            room_name=result.room_name,
+            start_pos=result.start_pos,
+        )
+        self.switch("joined_lobby")
+
+    def _submit_direct_connect(self):
+        """Validate and attempt the direct IP/port connection entered by the user."""
+        addr = self._direct_connect_ip.strip()
+        port_str = self._direct_connect_port.strip()
+        if not addr:
+            self.context.set_status("Enter an IP address.", duration=2.0)
+            return
+        if not port_str.isdigit() or not (1 <= int(port_str) <= 65535):
+            self.context.set_status("Enter a valid port (1-65535).", duration=2.0)
+            return
+        self._direct_connect_active = False
+        self._join_room_by_addr(addr, int(port_str))
+
     def _join_room(self, room):
         net = nw.Network()
         result = net.connect_to_room(room.addr, room.game_port, self.context.player_name)
@@ -250,6 +298,29 @@ class BrowseLobbyState(ScreenState):
     def handle_event(self, event):
         super().handle_event(event)
         if event.type == pygame.KEYDOWN:
+            if self._direct_connect_active:
+                if event.key == pygame.K_ESCAPE:
+                    self._direct_connect_active = False
+                elif event.key == pygame.K_TAB:
+                    # Toggle between IP and port fields
+                    self._direct_connect_field = "port" if self._direct_connect_field == "ip" else "ip"
+                elif event.key == pygame.K_RETURN:
+                    self._submit_direct_connect()
+                elif event.key == pygame.K_BACKSPACE:
+                    if self._direct_connect_field == "ip":
+                        self._direct_connect_ip = self._direct_connect_ip[:-1]
+                    else:
+                        self._direct_connect_port = self._direct_connect_port[:-1]
+                elif event.unicode and event.unicode.isprintable():
+                    if self._direct_connect_field == "ip":
+                        # Allow digits and dots for IP addresses
+                        if event.unicode in "0123456789.":
+                            self._direct_connect_ip = (self._direct_connect_ip + event.unicode)[:15]
+                    else:
+                        if event.unicode.isdigit():
+                            self._direct_connect_port = (self._direct_connect_port + event.unicode)[:5]
+                return
+
             if event.key == pygame.K_ESCAPE:
                 self.switch("menu")
                 return
@@ -263,6 +334,12 @@ class BrowseLobbyState(ScreenState):
                 return
 
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            if self._direct_connect_active:
+                overlay_rect = pygame.Rect(60, 60, 200, 60)
+                if not overlay_rect.collidepoint(event.pos):
+                    self._direct_connect_active = False
+                return
+
             self._search_active = BROWSER_RECTS["search"].collidepoint(event.pos)
             if BROWSER_RECTS["back"].collidepoint(event.pos):
                 self.switch("menu")
@@ -277,6 +354,12 @@ class BrowseLobbyState(ScreenState):
                 selected = self._selected_room()
                 if selected is not None and selected[1]:
                     self._join_selected_room()
+                return
+            if BROWSER_RECTS["direct_connect"].collidepoint(event.pos):
+                self._direct_connect_active = True
+                self._direct_connect_field = "ip"
+                self._direct_connect_ip = ""
+                self._direct_connect_port = ""
                 return
             for rect, room, _joinable, _reconnectable in self.room_rows:
                 if rect.collidepoint(event.pos):
@@ -316,7 +399,7 @@ class BrowseLobbyState(ScreenState):
 
         mp = self.context.mouse_pos
         self._hovered = None
-        for key in ("back", "refresh", "create", "join", "search"):
+        for key in ("back", "refresh", "create", "join", "search", "direct_connect"):
             if BROWSER_RECTS[key].collidepoint(mp):
                 self._hovered = key
                 break
@@ -332,11 +415,22 @@ class BrowseLobbyState(ScreenState):
         self._draw_asset(surface, "right_section")
         self._draw_asset(surface, "back")
         self._draw_asset(surface, "refresh")
-        surface.blit(self._assets["button"], BROWSER_RECTS["create"])
+
+        btn = self._assets["button"]
+        btn_disabled = self._assets["button_disabled"]
+        for key in ("create", "join", "direct_connect"):
+            rect = BROWSER_RECTS[key]
+            if key == "join":
+                selected = self._selected_room()
+                join_enabled = selected is not None and selected[1]
+                asset = btn if join_enabled else btn_disabled
+            else:
+                asset = btn
+            scaled = pygame.transform.scale(asset, (rect.w, rect.h))
+            surface.blit(scaled, rect)
+
         selected = self._selected_room()
         join_enabled = selected is not None and selected[1]
-        join_asset = self._assets["button"] if join_enabled else self._assets["button_disabled"]
-        surface.blit(join_asset, BROWSER_RECTS["join"])
         self._draw_asset(surface, "search")
         self._draw_asset(surface, "search_icon")
 
@@ -354,7 +448,7 @@ class BrowseLobbyState(ScreenState):
             if self._selected_room_key == key:
                 pygame.draw.rect(surface, (115, 190, 255), rect.inflate(2, 2), width=1, border_radius=2)
 
-        if self._hovered in ("back", "refresh", "create", "join"):
+        if self._hovered in ("back", "refresh", "create", "join", "direct_connect"):
             if self._hovered != "join" or join_enabled:
                 pygame.draw.rect(surface, (115, 190, 255), BROWSER_RECTS[self._hovered].inflate(2, 2), width=1, border_radius=2)
         if self._search_active:
@@ -439,10 +533,11 @@ class BrowseLobbyState(ScreenState):
         self._draw_text_center(surface, 9, "ROOM BROWSER", BROWSER_RECTS["title"], (180, 220, 255))
         self._draw_text_center(surface, 6, "REFRESH", BROWSER_RECTS["refresh"], (215, 235, 250))
         self._draw_text_center(surface, 7, self.context.player_name, BROWSER_RECTS["player_name"], (190, 220, 255))
-        self._draw_text_center(surface, 8, "CREATE", BROWSER_RECTS["create"], theme.text)
+        self._draw_text_center(surface, 7, "CREATE", BROWSER_RECTS["create"], theme.text)
         selected = self._selected_room()
         join_color = theme.text if selected is not None and selected[1] else theme.text_muted
-        self._draw_text_center(surface, 8, "JOIN", BROWSER_RECTS["join"], join_color)
+        self._draw_text_center(surface, 7, "JOIN", BROWSER_RECTS["join"], join_color)
+        self._draw_text_center(surface, 7, "DIRECT CONNECT", BROWSER_RECTS["direct_connect"], (160, 200, 240))
 
         search_text = self._search_text if self._search_text else "SEARCH"
         search_color = theme.text if self._search_text else theme.text_muted
@@ -457,6 +552,36 @@ class BrowseLobbyState(ScreenState):
         for rect, room, joinable, reconnectable in self.room_rows:
             self._draw_room_row_text(surface, rect, room, joinable, reconnectable)
         self._draw_window_global_messages(surface)
+
+        if self._direct_connect_active:
+            self._draw_direct_connect_overlay(surface)
+
+    def _draw_direct_connect_overlay(self, surface: pygame.Surface):
+        scale = self._window_scale()
+        panel = pygame.Rect(60 * scale, 60 * scale, 200 * scale, 60 * scale)
+        pygame.draw.rect(surface, (18, 28, 44), panel, border_radius=4 * scale)
+        pygame.draw.rect(surface, (80, 120, 170), panel, width=1 * scale, border_radius=4 * scale)
+
+        self._draw_text_center(surface, 7, "DIRECT CONNECT", pygame.Rect(60, 62, 200, 10), (180, 220, 255))
+
+        ip_rect = pygame.Rect(68, 74, 112, 12)
+        ip_border_color = (115, 190, 255) if self._direct_connect_field == "ip" else (50, 80, 110)
+        pygame.draw.rect(surface, (10, 18, 32), self._scale_rect(ip_rect))
+        pygame.draw.rect(surface, ip_border_color, self._scale_rect(ip_rect), width=1 * scale)
+        ip_display = self._direct_connect_ip if self._direct_connect_ip else "IP ADDRESS"
+        ip_color = (215, 235, 255) if self._direct_connect_ip else (80, 110, 140)
+        self._draw_text_left(surface, 6, ip_display, pygame.Rect(70, 75, 108, 10), ip_color, bold=False)
+
+        port_rect = pygame.Rect(186, 74, 64, 12)
+        port_border_color = (115, 190, 255) if self._direct_connect_field == "port" else (50, 80, 110)
+        pygame.draw.rect(surface, (10, 18, 32), self._scale_rect(port_rect))
+        pygame.draw.rect(surface, port_border_color, self._scale_rect(port_rect), width=1 * scale)
+        port_display = self._direct_connect_port if self._direct_connect_port else "PORT"
+        port_color = (215, 235, 255) if self._direct_connect_port else (80, 110, 140)
+        self._draw_text_left(surface, 6, port_display, pygame.Rect(188, 75, 60, 10), port_color, bold=False)
+
+        self._draw_text_center(surface, 5, "TAB to switch fields  |  ENTER to connect  |  ESC to cancel",
+                               pygame.Rect(60, 89, 200, 8), (80, 110, 140), bold=False)
 
     def _draw_room_row_text(self, surface: pygame.Surface, rect: pygame.Rect, room, joinable: bool, reconnectable: bool):
         theme = DEFAULT_THEME
