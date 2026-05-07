@@ -6,7 +6,12 @@ import pygame
 from network.discovery import LobbyBrowser
 from network import network_handler as nw
 from network import protocol
-from states.common import ScreenState, event_has_ctrl_modifier, filter_room_name_input, remove_previous_input_token
+from states.common import (
+    ScreenState,
+    event_has_ctrl_modifier,
+    filter_room_name_input,
+    get_clipboard_text,
+)
 from ui import animations as anim
 from ui.theme import DEFAULT_THEME
 
@@ -27,6 +32,28 @@ BROWSER_RECTS = {
     "room_card": pygame.Rect(117, 66, 186, 30),
 }
 
+DIRECT_JOIN_ADDRESS_MAX_LEN = 253
+DIRECT_JOIN_ADDRESS_SEPARATORS = ".-"
+
+
+def _is_direct_join_address_char(char: str) -> bool:
+    return len(char) == 1 and char.isascii() and (char.isalnum() or char in DIRECT_JOIN_ADDRESS_SEPARATORS)
+
+
+def _filter_direct_join_address_input(value: str) -> str:
+    chars: list[str] = []
+    for char in value:
+        if not _is_direct_join_address_char(char):
+            continue
+        chars.append(char)
+        if len(chars) >= DIRECT_JOIN_ADDRESS_MAX_LEN:
+            break
+    return "".join(chars)
+
+
+def _filter_digits(value: str, max_len: int) -> str:
+    return "".join(char for char in value if char.isdigit())[:max_len]
+
 
 class BrowseLobbyState(ScreenState):
     render_to_internal = True
@@ -42,17 +69,21 @@ class BrowseLobbyState(ScreenState):
         self._hovered: str | None = None
         self._search_active = False
         self._search_text = ""
+        self._search_caret = 0
         self._assets: dict[str, pygame.Surface] = {}
         self._window_fonts: dict[tuple[int, bool], pygame.font.Font] = {}
         # Direct join overlay state
         self._direct_join_active = False
         self._direct_join_field: str | None = None
-        self._direct_join_ip = ""
+        self._direct_join_address = ""
+        self._direct_join_address_caret = 0
         self._direct_join_port = ""
+        self._direct_join_port_caret = 0
         # Create room overlay state
         self._create_room_active = False
         self._create_room_field_active = False
         self._create_room_name = ""
+        self._create_room_caret = 0
 
     def enter(self):
         self._assets = self._load_assets()
@@ -207,7 +238,7 @@ class BrowseLobbyState(ScreenState):
         self.switch("in_game")
 
     def _direct_join_room_by_addr(self, addr: str, port: int):
-        """Attempt a direct join to the given IP address and port."""
+        """Attempt a direct join to the given host/address and port."""
         net = nw.Network()
         result = net.connect_to_room(addr, port, self.context.player_name)
         if not result.ok:
@@ -238,11 +269,11 @@ class BrowseLobbyState(ScreenState):
         self.switch("joined_lobby")
 
     def _submit_direct_join(self):
-        """Validate and attempt the direct join IP/port entered by the user."""
-        addr = self._direct_join_ip.strip()
+        """Validate and attempt the direct join host/address and port entered by the user."""
+        addr = self._direct_join_address.strip()
         port_str = self._direct_join_port.strip()
         if not self._direct_join_address_valid():
-            self.context.set_status("Enter a valid IPv4 address.", duration=2.0)
+            self.context.set_status("Enter a valid host or address.", duration=2.0)
             return
         if not self._direct_join_port_valid():
             self.context.set_status("Enter a valid port (1-65535).", duration=2.0)
@@ -352,10 +383,31 @@ class BrowseLobbyState(ScreenState):
         return protocol.is_valid_room_name(name)
 
     def _direct_join_address_valid(self) -> bool:
-        try:
-            return ipaddress.ip_address(self._direct_join_ip.strip()).version == 4
-        except ValueError:
+        host = self._direct_join_address.strip()
+        if not host or len(host) > DIRECT_JOIN_ADDRESS_MAX_LEN:
             return False
+        if any(not _is_direct_join_address_char(char) for char in host):
+            return False
+        try:
+            ipaddress.ip_address(host)
+            return True
+        except ValueError:
+            pass
+
+        hostname = host.rstrip(".")
+        labels = hostname.split(".")
+        if not hostname or any(label == "" for label in labels):
+            return False
+        if "." in hostname and all(label.isdigit() for label in labels):
+            return False
+        for label in labels:
+            if len(label) > 63:
+                return False
+            if not (label[0].isalnum() and label[-1].isalnum()):
+                return False
+            if any(not _is_direct_join_address_char(char) for char in label):
+                return False
+        return True
 
     def _direct_join_port_valid(self) -> bool:
         port = self._direct_join_port.strip()
@@ -364,10 +416,109 @@ class BrowseLobbyState(ScreenState):
     def _direct_join_valid(self) -> bool:
         return self._direct_join_address_valid() and self._direct_join_port_valid()
 
+    def _clamp_caret(self, caret: int, text: str) -> int:
+        return max(0, min(len(text), int(caret)))
+
+    def _previous_token_start(self, text: str, caret: int, separators: str) -> int:
+        index = self._clamp_caret(caret, text)
+        while index > 0 and text[index - 1] in separators:
+            index -= 1
+        while index > 0 and text[index - 1] not in separators:
+            index -= 1
+        return index
+
+    def _next_token_end(self, text: str, caret: int, separators: str) -> int:
+        index = self._clamp_caret(caret, text)
+        while index < len(text) and text[index] in separators:
+            index += 1
+        while index < len(text) and text[index] not in separators:
+            index += 1
+        return index
+
+    def _caret_after_navigation(self, text: str, caret: int, event, separators: str) -> int | None:
+        caret = self._clamp_caret(caret, text)
+        if event.key == pygame.K_HOME:
+            return 0
+        if event.key == pygame.K_END:
+            return len(text)
+        if event.key == pygame.K_LEFT:
+            if event_has_ctrl_modifier(event):
+                return self._previous_token_start(text, caret, separators)
+            return max(0, caret - 1)
+        if event.key == pygame.K_RIGHT:
+            if event_has_ctrl_modifier(event):
+                return self._next_token_end(text, caret, separators)
+            return min(len(text), caret + 1)
+        return None
+
+    def _insert_filtered_text(self, value: str, caret: int, insert_text: str, filter_fn) -> tuple[str, int]:
+        caret = self._clamp_caret(caret, value)
+        prefix = value[:caret] + insert_text
+        updated = filter_fn(prefix + value[caret:])
+        next_caret = len(filter_fn(prefix))
+        return updated, self._clamp_caret(next_caret, updated)
+
+    def _delete_before_caret(self, value: str, caret: int, separators: str, ctrl: bool) -> tuple[str, int]:
+        caret = self._clamp_caret(caret, value)
+        if caret <= 0:
+            return value, caret
+        start = self._previous_token_start(value, caret, separators) if ctrl else caret - 1
+        return value[:start] + value[caret:], start
+
+    def _delete_after_caret(self, value: str, caret: int, separators: str, ctrl: bool) -> tuple[str, int]:
+        caret = self._clamp_caret(caret, value)
+        if caret >= len(value):
+            return value, caret
+        end = self._next_token_end(value, caret, separators) if ctrl else caret + 1
+        return value[:caret] + value[end:], caret
+
+    def _paste_create_room_name(self):
+        pasted = get_clipboard_text()
+        if not pasted:
+            return
+        self._create_room_name, self._create_room_caret = self._insert_filtered_text(
+            self._create_room_name,
+            self._create_room_caret,
+            pasted,
+            filter_room_name_input,
+        )
+
+    def _paste_direct_join_field(self):
+        pasted = get_clipboard_text()
+        if not pasted:
+            return
+        if self._direct_join_field == "address":
+            self._direct_join_address, self._direct_join_address_caret = self._insert_filtered_text(
+                self._direct_join_address,
+                self._direct_join_address_caret,
+                pasted,
+                _filter_direct_join_address_input,
+            )
+        elif self._direct_join_field == "port":
+            self._direct_join_port, self._direct_join_port_caret = self._insert_filtered_text(
+                self._direct_join_port,
+                self._direct_join_port_caret,
+                pasted,
+                lambda value: _filter_digits(value, 5),
+            )
+
+    def _paste_search_text(self):
+        pasted = get_clipboard_text()
+        if not pasted:
+            return
+        printable = "".join(char for char in pasted if char.isprintable())
+        self._search_text, self._search_caret = self._insert_filtered_text(
+            self._search_text,
+            self._search_caret,
+            printable,
+            lambda value: value[:18],
+        )
+
     def _open_create_room_window(self):
         self._create_room_active = True
         self._create_room_field_active = False
         self._create_room_name = ""
+        self._create_room_caret = 0
         self._search_active = False
         self._direct_join_active = False
         self._direct_join_field = None
@@ -375,8 +526,10 @@ class BrowseLobbyState(ScreenState):
     def _open_direct_join_window(self):
         self._direct_join_active = True
         self._direct_join_field = None
-        self._direct_join_ip = ""
+        self._direct_join_address = ""
+        self._direct_join_address_caret = 0
         self._direct_join_port = ""
+        self._direct_join_port_caret = 0
         self._create_room_active = False
         self._create_room_field_active = False
         self._search_active = False
@@ -457,13 +610,38 @@ class BrowseLobbyState(ScreenState):
                     self._submit_create_room()
                 elif not self._create_room_field_active:
                     pass
+                elif (
+                    caret := self._caret_after_navigation(
+                        self._create_room_name,
+                        self._create_room_caret,
+                        event,
+                        separators=" _-",
+                    )
+                ) is not None:
+                    self._create_room_caret = caret
+                elif event_has_ctrl_modifier(event) and event.key == pygame.K_v:
+                    self._paste_create_room_name()
                 elif event.key == pygame.K_BACKSPACE:
-                    if event_has_ctrl_modifier(event):
-                        self._create_room_name = remove_previous_input_token(self._create_room_name, separators=" _-")
-                    else:
-                        self._create_room_name = self._create_room_name[:-1]
+                    self._create_room_name, self._create_room_caret = self._delete_before_caret(
+                        self._create_room_name,
+                        self._create_room_caret,
+                        separators=" _-",
+                        ctrl=event_has_ctrl_modifier(event),
+                    )
+                elif event.key == pygame.K_DELETE:
+                    self._create_room_name, self._create_room_caret = self._delete_after_caret(
+                        self._create_room_name,
+                        self._create_room_caret,
+                        separators=" _-",
+                        ctrl=event_has_ctrl_modifier(event),
+                    )
                 elif event.unicode and event.unicode.isprintable():
-                    self._create_room_name = filter_room_name_input(self._create_room_name + event.unicode)
+                    self._create_room_name, self._create_room_caret = self._insert_filtered_text(
+                        self._create_room_name,
+                        self._create_room_caret,
+                        event.unicode,
+                        filter_room_name_input,
+                    )
                 return
 
             if self._direct_join_active:
@@ -478,37 +656,117 @@ class BrowseLobbyState(ScreenState):
                     self._submit_direct_join()
                 elif self._direct_join_field is None:
                     pass
+                elif self._direct_join_field == "address" and (
+                    caret := self._caret_after_navigation(
+                        self._direct_join_address,
+                        self._direct_join_address_caret,
+                        event,
+                        separators=DIRECT_JOIN_ADDRESS_SEPARATORS,
+                    )
+                ) is not None:
+                    self._direct_join_address_caret = caret
+                elif self._direct_join_field == "port" and (
+                    caret := self._caret_after_navigation(
+                        self._direct_join_port,
+                        self._direct_join_port_caret,
+                        event,
+                        separators="",
+                    )
+                ) is not None:
+                    self._direct_join_port_caret = caret
+                elif event_has_ctrl_modifier(event) and event.key == pygame.K_v:
+                    self._paste_direct_join_field()
                 elif event.key == pygame.K_BACKSPACE:
                     if self._direct_join_field == "address":
-                        if event_has_ctrl_modifier(event):
-                            self._direct_join_ip = remove_previous_input_token(self._direct_join_ip, separators=".")
-                        else:
-                            self._direct_join_ip = self._direct_join_ip[:-1]
+                        self._direct_join_address, self._direct_join_address_caret = self._delete_before_caret(
+                            self._direct_join_address,
+                            self._direct_join_address_caret,
+                            separators=DIRECT_JOIN_ADDRESS_SEPARATORS,
+                            ctrl=event_has_ctrl_modifier(event),
+                        )
                     else:
-                        self._direct_join_port = "" if event_has_ctrl_modifier(event) else self._direct_join_port[:-1]
+                        self._direct_join_port, self._direct_join_port_caret = self._delete_before_caret(
+                            self._direct_join_port,
+                            self._direct_join_port_caret,
+                            separators="",
+                            ctrl=event_has_ctrl_modifier(event),
+                        )
+                elif event.key == pygame.K_DELETE:
+                    if self._direct_join_field == "address":
+                        self._direct_join_address, self._direct_join_address_caret = self._delete_after_caret(
+                            self._direct_join_address,
+                            self._direct_join_address_caret,
+                            separators=DIRECT_JOIN_ADDRESS_SEPARATORS,
+                            ctrl=event_has_ctrl_modifier(event),
+                        )
+                    else:
+                        self._direct_join_port, self._direct_join_port_caret = self._delete_after_caret(
+                            self._direct_join_port,
+                            self._direct_join_port_caret,
+                            separators="",
+                            ctrl=event_has_ctrl_modifier(event),
+                        )
                 elif event.unicode and event.unicode.isprintable():
                     if self._direct_join_field == "address":
-                        if event.unicode in "0123456789.":
-                            self._direct_join_ip = (self._direct_join_ip + event.unicode)[:15]
+                        if _is_direct_join_address_char(event.unicode):
+                            self._direct_join_address, self._direct_join_address_caret = self._insert_filtered_text(
+                                self._direct_join_address,
+                                self._direct_join_address_caret,
+                                event.unicode,
+                                _filter_direct_join_address_input,
+                            )
                     else:
                         if event.unicode.isdigit():
-                            self._direct_join_port = (self._direct_join_port + event.unicode)[:5]
+                            self._direct_join_port, self._direct_join_port_caret = self._insert_filtered_text(
+                                self._direct_join_port,
+                                self._direct_join_port_caret,
+                                event.unicode,
+                                lambda value: _filter_digits(value, 5),
+                            )
                 return
 
             if self._search_active:
                 if event.key == pygame.K_ESCAPE:
                     self._search_active = False
+                elif (
+                    caret := self._caret_after_navigation(
+                        self._search_text,
+                        self._search_caret,
+                        event,
+                        separators=" _-.",
+                    )
+                ) is not None:
+                    self._search_caret = caret
+                elif event_has_ctrl_modifier(event) and event.key == pygame.K_v:
+                    self._paste_search_text()
                 elif event.key == pygame.K_BACKSPACE:
-                    if event_has_ctrl_modifier(event):
-                        self._search_text = remove_previous_input_token(self._search_text, separators=" _-.")
-                    else:
-                        self._search_text = self._search_text[:-1]
+                    self._search_text, self._search_caret = self._delete_before_caret(
+                        self._search_text,
+                        self._search_caret,
+                        separators=" _-.",
+                        ctrl=event_has_ctrl_modifier(event),
+                    )
+                elif event.key == pygame.K_DELETE:
+                    self._search_text, self._search_caret = self._delete_after_caret(
+                        self._search_text,
+                        self._search_caret,
+                        separators=" _-.",
+                        ctrl=event_has_ctrl_modifier(event),
+                    )
                 elif event.key == pygame.K_RETURN:
                     self._search_active = False
                 elif event.unicode and event.unicode.isprintable():
-                    self._search_text = (self._search_text + event.unicode)[:18]
+                    self._search_text, self._search_caret = self._insert_filtered_text(
+                        self._search_text,
+                        self._search_caret,
+                        event.unicode,
+                        lambda value: value[:18],
+                    )
                 return
             if event.key == pygame.K_ESCAPE:
+                if self._selected_room_key is not None:
+                    self._selected_room_key = None
+                    return
                 self.switch("menu")
                 return
 
@@ -525,6 +783,7 @@ class BrowseLobbyState(ScreenState):
                     return
                 if layout["field"].collidepoint(event.pos):
                     self._create_room_field_active = True
+                    self._create_room_caret = len(self._create_room_name)
                     return
                 if layout["frame"].collidepoint(event.pos):
                     self._create_room_field_active = False
@@ -545,9 +804,11 @@ class BrowseLobbyState(ScreenState):
                     return
                 if layout["address"].collidepoint(event.pos):
                     self._direct_join_field = "address"
+                    self._direct_join_address_caret = len(self._direct_join_address)
                     return
                 if layout["port"].collidepoint(event.pos):
                     self._direct_join_field = "port"
+                    self._direct_join_port_caret = len(self._direct_join_port)
                     return
                 if layout["frame"].collidepoint(event.pos):
                     self._direct_join_field = None
@@ -557,6 +818,8 @@ class BrowseLobbyState(ScreenState):
                 return
 
             self._search_active = BROWSER_RECTS["search"].collidepoint(event.pos)
+            if self._search_active:
+                self._search_caret = len(self._search_text)
             if BROWSER_RECTS["back"].collidepoint(event.pos):
                 self.switch("menu")
                 return
@@ -765,6 +1028,75 @@ class BrowseLobbyState(ScreenState):
         y = rect.y + (rect.h - caret_h) // 2
         pygame.draw.rect(surface, color, pygame.Rect(x, y, caret_w, caret_h))
 
+    def _tail_text_that_fits(self, text: str, font: pygame.font.Font, max_width: int) -> str:
+        if font.size(text)[0] <= max_width:
+            return text
+        visible = text
+        while visible and font.size(visible)[0] > max_width:
+            visible = visible[1:]
+        return visible
+
+    def _visible_text_for_caret(
+        self,
+        text: str,
+        caret_index: int,
+        font: pygame.font.Font,
+        max_width: int,
+    ) -> tuple[str, int]:
+        caret_index = self._clamp_caret(caret_index, text)
+        start = 0
+        while start < caret_index and font.size(text[start:caret_index])[0] > max_width:
+            start += 1
+        end = caret_index
+        while end < len(text) and font.size(text[start : end + 1])[0] <= max_width:
+            end += 1
+        if end == caret_index and caret_index == start:
+            while end < len(text) and font.size(text[start : end + 1])[0] <= max_width:
+                end += 1
+        return text[start:end], caret_index - start
+
+    def _draw_input_text_left(
+        self,
+        surface: pygame.Surface,
+        logical_size: int,
+        text: str,
+        logical_rect: pygame.Rect,
+        color: tuple[int, int, int],
+        bold: bool = True,
+        shadow: bool = False,
+        caret_active: bool = False,
+        caret_index: int = 0,
+    ):
+        rect = self._scale_rect(logical_rect)
+        scale = self._window_scale()
+        font = self._window_font(logical_size, bold=bold)
+        caret_w = max(1, scale)
+        caret_gap = scale if caret_active else 0
+        max_text_width = max(1, rect.w - (caret_w + caret_gap if caret_active else 0))
+        if caret_active:
+            visible_text, visible_caret = self._visible_text_for_caret(text, caret_index, font, max_text_width)
+        else:
+            visible_text = self._tail_text_that_fits(text, font, max_text_width)
+            visible_caret = len(visible_text)
+        y = rect.y + (rect.h - font.get_height()) // 2
+
+        previous_clip = surface.get_clip()
+        surface.set_clip(rect)
+        if shadow:
+            shade = font.render(visible_text, True, (8, 14, 25))
+            surface.blit(shade, (rect.x + scale, y + scale))
+        label = font.render(visible_text, True, color)
+        surface.blit(label, (rect.x, y))
+        surface.set_clip(previous_clip)
+
+        if not caret_active or int(time.monotonic() * 2) % 2 != 0:
+            return
+        text_width = font.size(visible_text[:visible_caret])[0] if visible_text else 0
+        caret_h = max(caret_w, font.get_height() - (2 * scale))
+        x = min(rect.right - caret_w, rect.x + text_width + (caret_gap if visible_text else 0))
+        y = rect.y + (rect.h - caret_h) // 2
+        pygame.draw.rect(surface, color, pygame.Rect(x, y, caret_w, caret_h))
+
     def draw_window_overlay(self, surface: pygame.Surface):
         theme = DEFAULT_THEME
         self._draw_text_center(surface, 9, "ROOM BROWSER", BROWSER_RECTS["title"], (180, 220, 255))
@@ -786,15 +1118,15 @@ class BrowseLobbyState(ScreenState):
             search_text = "SEARCH"
             search_color = theme.text_muted
         search_text_rect = pygame.Rect(137, BROWSER_RECTS["search"].y + 2, 158, 14)
-        self._draw_text_left(
+        self._draw_input_text_left(
             surface,
             7,
             search_text,
             search_text_rect,
             search_color,
+            caret_active=self._search_active,
+            caret_index=self._search_caret,
         )
-        if self._search_active:
-            self._draw_text_caret(surface, 7, self._search_text, search_text_rect, theme.text)
 
         for rect, room, joinable, reconnectable in self.room_rows:
             self._draw_room_row_text(surface, rect, room, joinable, reconnectable)
@@ -845,9 +1177,16 @@ class BrowseLobbyState(ScreenState):
         else:
             name_text = "ROOM NAME"
             name_color = theme.text_muted
-        self._draw_text_left(surface, 7, name_text, layout["text"], name_color, shadow=False)
-        if self._create_room_field_active:
-            self._draw_text_caret(surface, 7, self._create_room_name, layout["text"], theme.text)
+        self._draw_input_text_left(
+            surface,
+            7,
+            name_text,
+            layout["text"],
+            name_color,
+            shadow=False,
+            caret_active=self._create_room_field_active,
+            caret_index=self._create_room_caret,
+        )
         create_color = theme.text if create_enabled else theme.text_muted
         self._draw_text_center(surface, 7, "CREATE", layout["create"], create_color)
         self._draw_text_center(surface, 7, "CANCEL", layout["cancel"], theme.text)
@@ -874,14 +1213,14 @@ class BrowseLobbyState(ScreenState):
             self._draw_window_hover_outline(surface, layout["cancel"])
 
         self._draw_text_center(surface, 7, "DIRECT JOIN", layout["title"], (180, 220, 255))
-        if self._direct_join_ip:
-            address_text = self._direct_join_ip
+        if self._direct_join_address:
+            address_text = self._direct_join_address
             address_color = theme.text
         elif self._direct_join_field == "address":
             address_text = ""
             address_color = theme.text
         else:
-            address_text = "IP ADDRESS"
+            address_text = "HOST"
             address_color = theme.text_muted
         if self._direct_join_port:
             port_text = self._direct_join_port
@@ -892,12 +1231,28 @@ class BrowseLobbyState(ScreenState):
         else:
             port_text = "PORT"
             port_color = theme.text_muted
-        self._draw_text_left(surface, 7, address_text, layout["address_text"], address_color, shadow=False)
-        self._draw_text_left(surface, 7, port_text, layout["port_text"], port_color, shadow=False)
-        if self._direct_join_field == "address":
-            self._draw_text_caret(surface, 7, self._direct_join_ip, layout["address_text"], theme.text)
-        if self._direct_join_field == "port":
-            self._draw_text_caret(surface, 7, self._direct_join_port, layout["port_text"], theme.text)
+        address_caret_active = self._direct_join_field == "address"
+        port_caret_active = self._direct_join_field == "port"
+        self._draw_input_text_left(
+            surface,
+            7,
+            address_text,
+            layout["address_text"],
+            address_color,
+            shadow=False,
+            caret_active=address_caret_active,
+            caret_index=self._direct_join_address_caret,
+        )
+        self._draw_input_text_left(
+            surface,
+            7,
+            port_text,
+            layout["port_text"],
+            port_color,
+            shadow=False,
+            caret_active=port_caret_active,
+            caret_index=self._direct_join_port_caret,
+        )
         join_color = theme.text if join_enabled else theme.text_muted
         self._draw_text_center(surface, 7, "JOIN", layout["join"], join_color)
         self._draw_text_center(surface, 7, "CANCEL", layout["cancel"], theme.text)

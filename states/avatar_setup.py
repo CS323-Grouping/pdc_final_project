@@ -7,9 +7,8 @@ from player_scripts.avatar_sprite import (
     AVATAR_RECT,
     VALID_AVATAR_EXTENSIONS,
     crop_square,
-    make_default_avatar,
-    prepare_avatar,
 )
+from network import protocol
 from states.common import ScreenState
 from ui import components as ui
 from ui.theme import DEFAULT_THEME
@@ -22,6 +21,8 @@ class AvatarSetupState(ScreenState):
         self.back_button = ui.Button(pygame.Rect(0, 0, 110, 38), "Back")
         self.upload_button = ui.Button(pygame.Rect(0, 0, 160, 40), "Upload Image")
         self.default_button = ui.Button(pygame.Rect(0, 0, 150, 40), "Use Default")
+        self.prev_color_button = ui.Button(pygame.Rect(0, 0, 118, 34), "Prev Color")
+        self.next_color_button = ui.Button(pygame.Rect(0, 0, 118, 34), "Next Color")
         self.save_crop_button = ui.Button(pygame.Rect(0, 0, 130, 38), "Save Crop")
         self.cancel_crop_button = ui.Button(pygame.Rect(0, 0, 110, 38), "Cancel")
         self.zoom_in_button = ui.Button(pygame.Rect(0, 0, 42, 38), "+")
@@ -29,6 +30,8 @@ class AvatarSetupState(ScreenState):
         self._back_h = False
         self._upload_h = False
         self._default_h = False
+        self._prev_color_h = False
+        self._next_color_h = False
         self._save_h = False
         self._cancel_h = False
         self._zoom_in_h = False
@@ -49,13 +52,7 @@ class AvatarSetupState(ScreenState):
         self._refresh_previews()
 
     def _sprite_path(self) -> Path:
-        return (
-            self.context.project_root
-            / "assets"
-            / "player"
-            / "animation"
-            / "playerAnimationNormal_Blue.png"
-        )
+        return self.context.player_animation_path()
 
     def _load_body_frames(self):
         try:
@@ -65,12 +62,10 @@ class AvatarSetupState(ScreenState):
             self.context.set_status(f"Could not load player preview: {err}", duration=4.0)
 
     def _current_avatar(self) -> pygame.Surface:
-        return self.context.avatar_surface if self.context.avatar_surface is not None else make_default_avatar()
+        return self.context.current_avatar_frame()
 
     def _current_crop_source(self) -> pygame.Surface:
-        if self.context.avatar_window_surface is not None:
-            return self.context.avatar_window_surface
-        return self._current_avatar()
+        return self.context.current_avatar_source()
 
     def _refresh_previews(self):
         if self._body_frames is not None:
@@ -86,6 +81,9 @@ class AvatarSetupState(ScreenState):
         button_y = height - 58
         self.upload_button.rect.center = (width // 2 - 90, button_y + 20)
         self.default_button.rect.center = (width // 2 + 90, button_y + 20)
+        color_y = max(86, button_y - 48)
+        self.prev_color_button.rect.center = (width // 2 - 74, color_y)
+        self.next_color_button.rect.center = (width // 2 + 74, color_y)
 
     def _crop_layout(self):
         width, height = self.context.screen.get_size()
@@ -145,11 +143,20 @@ class AvatarSetupState(ScreenState):
         self._dragging_crop = False
 
     def _use_default_avatar(self):
-        self.context.avatar_surface = None
-        self.context.avatar_window_surface = None
-        self.context.avatar_source_name = "Default avatar"
+        self.context.use_default_head()
         self._refresh_previews()
         self.context.set_status("Avatar reset to default.", duration=2.0)
+
+    def _cycle_model_color(self, direction: int):
+        colors = list(protocol.MODEL_COLORS)
+        try:
+            index = colors.index(protocol.normalize_model_color(self.context.model_color))
+        except ValueError:
+            index = colors.index(protocol.DEFAULT_MODEL_COLOR)
+        self.context.set_model_color(colors[(index + direction) % len(colors)])
+        self._load_body_frames()
+        self._refresh_previews()
+        self.context.set_status(f"Model color: {self.context.model_color}", duration=1.5)
 
     def _cover_scale(self, target_size: int, source: pygame.Surface) -> float:
         return max(target_size / source.get_width(), target_size / source.get_height()) * self._crop_zoom
@@ -196,9 +203,7 @@ class AvatarSetupState(ScreenState):
         cropped = self._render_crop_surface(256)
         if cropped is None:
             return
-        self.context.avatar_window_surface = cropped
-        self.context.avatar_surface = prepare_avatar(cropped)
-        self.context.avatar_source_name = self._editing_source_name
+        self.context.cache_custom_head(cropped, self._editing_source_name)
         self._editing_source = None
         self._dragging_crop = False
         self._refresh_previews()
@@ -222,6 +227,12 @@ class AvatarSetupState(ScreenState):
                 return
             if self.default_button.rect.collidepoint(event.pos):
                 self._use_default_avatar()
+                return
+            if self.prev_color_button.rect.collidepoint(event.pos):
+                self._cycle_model_color(-1)
+                return
+            if self.next_color_button.rect.collidepoint(event.pos):
+                self._cycle_model_color(1)
 
     def update(self, dt: float):
         _ = dt
@@ -238,6 +249,8 @@ class AvatarSetupState(ScreenState):
         self._back_h = self.back_button.rect.collidepoint(mp)
         self._upload_h = self.upload_button.rect.collidepoint(mp)
         self._default_h = self.default_button.rect.collidepoint(mp)
+        self._prev_color_h = self.prev_color_button.rect.collidepoint(mp)
+        self._next_color_h = self.next_color_button.rect.collidepoint(mp)
 
     def draw(self, surface):
         super().draw(surface)
@@ -270,9 +283,17 @@ class AvatarSetupState(ScreenState):
 
         source = self.context.tiny_font.render(self.context.avatar_source_name, True, theme.text_muted)
         surface.blit(source, source.get_rect(center=(width // 2 + 120, preview_y + 150)))
+        color_label = self.context.small_font.render(
+            f"{self.context.model_type} / {self.context.model_color}",
+            True,
+            theme.text_warn,
+        )
+        surface.blit(color_label, color_label.get_rect(center=(width // 2, height - 104)))
 
         ui.draw_button(surface, self.context.small_font, self.upload_button, theme, hovered=self._upload_h)
         ui.draw_button(surface, self.context.small_font, self.default_button, theme, hovered=self._default_h, variant="neutral")
+        ui.draw_button(surface, self.context.small_font, self.prev_color_button, theme, hovered=self._prev_color_h, variant="neutral")
+        ui.draw_button(surface, self.context.small_font, self.next_color_button, theme, hovered=self._next_color_h, variant="neutral")
 
     def _make_player_preview(self, scale: int) -> pygame.Surface | None:
         if self._idle_body_frame is None:

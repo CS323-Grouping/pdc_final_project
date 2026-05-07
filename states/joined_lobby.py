@@ -52,6 +52,10 @@ class JoinedLobbyState(ScreenState):
             self._row_flash[pid] = 0.35
         self._roster_ids = new_ids
 
+    def _leave_room(self) -> None:
+        self.context.detach_network(send_disconnect=True)
+        self.switch("browse_lobby")
+
     def _drain_network(self):
         heard_server = False
         my_id = self.context.network.id if self.context.network else -1
@@ -77,6 +81,8 @@ class JoinedLobbyState(ScreenState):
                 self.context.countdown_remaining = event.seconds_until_start
             elif isinstance(event, nw.CountdownCancelEvent):
                 self.context.countdown_remaining = None
+            elif isinstance(event, nw.RoomNameEvent):
+                self.context.room_name = event.room_name
             elif isinstance(event, nw.GameStartEvent):
                 self.context.countdown_remaining = None
                 self.switch("in_game")
@@ -95,6 +101,12 @@ class JoinedLobbyState(ScreenState):
         if self.context.network is None:
             self.switch("menu")
             return
+        if self.context.countdown_remaining is not None:
+            return
+
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+            self._leave_room()
+            return
 
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             action = self._room_ui.hit_test(
@@ -105,8 +117,7 @@ class JoinedLobbyState(ScreenState):
                 kick_mode=False,
             )
             if action == "secondary":
-                self.context.detach_network(send_disconnect=True)
-                self.switch("browse_lobby")
+                self._leave_room()
                 return
             if action == "primary":
                 self._ready_on = not self._ready_on
@@ -142,6 +153,8 @@ class JoinedLobbyState(ScreenState):
             host_view=False,
             kick_mode=False,
         )
+        if self.context.countdown_remaining is not None:
+            self._hovered = None
 
     def draw(self, surface):
         hid = _host_player_id(self.context.roster)

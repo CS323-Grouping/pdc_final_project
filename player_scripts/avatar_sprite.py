@@ -1,5 +1,6 @@
 import pygame
 
+from player_scripts.model_assets import load_default_head_texture
 from world.constants import PLAYER_FRAME_SIZE
 
 HEAD_OUTER_RECT = pygame.Rect(4, 0, 16, 16)
@@ -21,7 +22,9 @@ def prepare_avatar(source: pygame.Surface) -> pygame.Surface:
     return pygame.transform.smoothscale(cropped, AVATAR_RECT.size)
 
 
-def make_default_avatar() -> pygame.Surface:
+def make_default_avatar(project_root=None) -> pygame.Surface:
+    if project_root is not None:
+        return prepare_avatar(load_default_head_texture(project_root))
     avatar = pygame.Surface(AVATAR_RECT.size, pygame.SRCALPHA)
     avatar.fill((74, 128, 212, 255))
     pygame.draw.rect(avatar, (236, 240, 255, 255), pygame.Rect(3, 2, 8, 5))

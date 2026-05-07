@@ -4,7 +4,7 @@ from app.display import DisplayConfig
 from network import protocol
 from network.discovery import LobbyBrowser, PresenceEntry
 from player_scripts.animation import load_spritesheet_frames
-from player_scripts.avatar_sprite import AVATAR_RECT, crop_square, make_default_avatar
+from player_scripts.avatar_sprite import AVATAR_RECT, crop_square
 from states.common import ScreenState, event_has_ctrl_modifier, filter_player_name_input, remove_previous_input_token
 from ui.theme import DEFAULT_THEME
 from world.constants import PLAYER_FRAME_HEIGHT, PLAYER_FRAME_WIDTH
@@ -21,12 +21,12 @@ RESOLUTION_LABELS = {
 
 MENU_ASSET_RECTS = {
     "background": pygame.Rect(0, 0, 320, 180),
-    "avatar_section": pygame.Rect(10, 66, 68, 100),
-    "avatar_bg": pygame.Rect(21, 88, 46, 46),
-    "avatar_frame": pygame.Rect(19, 86, 50, 50),
-    "avatar_model": pygame.Rect(33, 91, 22, 32),
-    "avatar_platform": pygame.Rect(24, 123, 40, 8),
-    "avatar_button": pygame.Rect(17, 141, 54, 18),
+    "avatar_section": pygame.Rect(10, 40, 68, 100),
+    "avatar_bg": pygame.Rect(21, 62, 46, 46),
+    "avatar_frame": pygame.Rect(19, 60, 50, 50),
+    "avatar_model": pygame.Rect(33, 65, 22, 32),
+    "avatar_platform": pygame.Rect(24, 97, 40, 8),
+    "avatar_button": pygame.Rect(17, 115, 54, 18),
     "crown": pygame.Rect(145, 10, 30, 22),
     "title": pygame.Rect(88, 33, 144, 62),
     "play": pygame.Rect(99, 100, 122, 26),
@@ -42,6 +42,8 @@ ONLINE_CARD_RECTS = (
     pygame.Rect(249, 126, 54, 24),
 )
 
+NAME_DISPLAY_RECT = pygame.Rect(14, 48, 60, 10)
+
 
 class MainMenuState(ScreenState):
     render_to_internal = True
@@ -49,8 +51,11 @@ class MainMenuState(ScreenState):
 
     def __init__(self, machine, context, **kwargs):
         super().__init__(machine, context, **kwargs)
-        self.name_active = False
         self.name_input = context.player_name
+        self._name_edit_open = False
+        self._name_edit_field_active = False
+        self._name_edit_original = context.player_name
+        self._name_edit_value = context.player_name
         self._settings_open = False
         self._pending_scale = context.display_manager.config.selected_scale if context.display_manager else 4
         self._pending_fullscreen = context.display_manager.config.fullscreen if context.display_manager else False
@@ -92,6 +97,18 @@ class MainMenuState(ScreenState):
             "settings": "MenuSettings_Button.png",
             "online_section": "OnlineSection_Frame.png",
             "online_card": "OnlineSection_Card.png",
+            "name_edit_frame": "NameEditWindow_Frame.png",
+            "name_edit_field": "NameEditWindowNameField_Frame.png",
+            "name_edit_save": "NameEditWindowSave_Button.png",
+            "name_edit_save_disabled": "NameEditWindowSave_ButtonDisabled.png",
+            "name_edit_cancel": "NameEditWindowCancel_Button.png",
+        }
+        fallbacks = {
+            "name_edit_frame": (148, 84),
+            "name_edit_field": (134, 18),
+            "name_edit_save": (64, 24),
+            "name_edit_save_disabled": (64, 24),
+            "name_edit_cancel": (64, 24),
         }
         assets: dict[str, pygame.Surface] = {}
         for key, filename in names.items():
@@ -99,7 +116,11 @@ class MainMenuState(ScreenState):
             try:
                 assets[key] = pygame.image.load(str(path)).convert_alpha()
             except (FileNotFoundError, pygame.error):
-                fallback = pygame.Surface((max(1, MENU_ASSET_RECTS.get(key, pygame.Rect(0, 0, 16, 16)).w), 16), pygame.SRCALPHA)
+                size = fallbacks.get(key)
+                if size is None:
+                    rect = MENU_ASSET_RECTS.get(key, pygame.Rect(0, 0, 16, 16))
+                    size = (max(1, rect.w), 16)
+                fallback = pygame.Surface(size, pygame.SRCALPHA)
                 fallback.fill((35, 42, 58, 255))
                 assets[key] = fallback
         return assets
@@ -107,7 +128,7 @@ class MainMenuState(ScreenState):
     def _load_player_preview_frame(self):
         if self._idle_body_frame is not None:
             return
-        sprite = self.context.project_root / "assets" / "player" / "animation" / "playerAnimationNormal_Blue.png"
+        sprite = self.context.player_animation_path()
         try:
             frames = load_spritesheet_frames(sprite)
         except (FileNotFoundError, pygame.error):
@@ -208,6 +229,53 @@ class MainMenuState(ScreenState):
         apply = pygame.Rect(box.right - 56, box.bottom - 24, 44, 16)
         return box, fullscreen, close, apply
 
+    def _name_edit_layout(self) -> dict[str, pygame.Rect]:
+        frame_asset = self._assets.get("name_edit_frame")
+        field_asset = self._assets.get("name_edit_field")
+        button_asset = self._assets.get("name_edit_save")
+        frame_w, frame_h = frame_asset.get_size() if frame_asset is not None else (148, 84)
+        field_w, field_h = field_asset.get_size() if field_asset is not None else (134, 18)
+        button_w, button_h = button_asset.get_size() if button_asset is not None else (64, 24)
+        frame = pygame.Rect((320 - frame_w) // 2, (180 - frame_h) // 2, frame_w, frame_h)
+        title = pygame.Rect(frame.x + 7, frame.y + 7, frame.w - 14, 16)
+        field = pygame.Rect(frame.centerx - field_w // 2, title.bottom + 2, field_w, field_h)
+        button_y = field.bottom + 8
+        button_gap = 8
+        total_button_w = button_w * 2 + button_gap
+        save = pygame.Rect(frame.centerx - total_button_w // 2, button_y, button_w, button_h)
+        cancel = pygame.Rect(save.right + button_gap, button_y, button_w, button_h)
+        return {
+            "frame": frame,
+            "title": title,
+            "field": field,
+            "text": pygame.Rect(field.x + 5, field.y + 3, 124, 12),
+            "count": pygame.Rect(field.x + 7, field.y + 3, field.w - 14, 12),
+            "save": save,
+            "cancel": cancel,
+        }
+
+    def _open_name_edit_window(self):
+        self._name_edit_original = self.name_input
+        self._name_edit_value = self.name_input
+        self._name_edit_open = True
+        self._name_edit_field_active = False
+
+    def _close_name_edit_window(self):
+        self._name_edit_open = False
+        self._name_edit_field_active = False
+
+    def _name_edit_save_enabled(self) -> bool:
+        return self._name_edit_value != self._name_edit_original and protocol.is_valid_player_name(self._name_edit_value)
+
+    def _save_name_edit(self):
+        if not self._name_edit_save_enabled():
+            return
+        self.name_input = self._name_edit_value
+        self.context.player_name = self.name_input
+        self.context.room_name = f"{self.context.player_name}Room"
+        self.context.save_profile()
+        self._close_name_edit_window()
+
     def _play(self):
         if not self._is_name_valid():
             self.context.set_status(
@@ -217,10 +285,45 @@ class MainMenuState(ScreenState):
             return
         self.context.player_name = self.name_input
         self.context.room_name = f"{self.context.player_name}Room"
+        self.context.save_profile()
         self.switch("browse_lobby")
 
     def handle_event(self, event):
         super().handle_event(event)
+        if self._name_edit_open:
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    self._close_name_edit_window()
+                elif event.key == pygame.K_RETURN:
+                    if self._name_edit_save_enabled():
+                        self._save_name_edit()
+                elif not self._name_edit_field_active:
+                    pass
+                elif event.key == pygame.K_BACKSPACE:
+                    if event_has_ctrl_modifier(event):
+                        self._name_edit_value = remove_previous_input_token(self._name_edit_value, separators="_-")
+                    else:
+                        self._name_edit_value = self._name_edit_value[:-1]
+                elif event.unicode and event.unicode.isprintable():
+                    self._name_edit_value = filter_player_name_input(self._name_edit_value + event.unicode)
+                return
+
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                layout = self._name_edit_layout()
+                if layout["cancel"].collidepoint(event.pos):
+                    self._close_name_edit_window()
+                    return
+                if layout["save"].collidepoint(event.pos):
+                    self._save_name_edit()
+                    return
+                if layout["field"].collidepoint(event.pos):
+                    self._name_edit_field_active = True
+                    return
+                if layout["frame"].collidepoint(event.pos):
+                    self._name_edit_field_active = False
+                    return
+                return
+
         if self._settings_open:
             box, fullscreen, close, apply = self._settings_layout()
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
@@ -246,7 +349,9 @@ class MainMenuState(ScreenState):
             return
 
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-            self.name_active = MENU_ASSET_RECTS["avatar_frame"].collidepoint(event.pos)
+            if NAME_DISPLAY_RECT.collidepoint(event.pos):
+                self._open_name_edit_window()
+                return
             if MENU_ASSET_RECTS["avatar_button"].collidepoint(event.pos):
                 self.switch("avatar_setup")
                 return
@@ -263,25 +368,17 @@ class MainMenuState(ScreenState):
                 self._settings_open = True
                 return
 
-        if event.type == pygame.KEYDOWN and self.name_active:
-            if event.key == pygame.K_ESCAPE:
-                self.name_active = False
-            elif event.key == pygame.K_RETURN:
-                self.name_active = False
-            elif event.key == pygame.K_BACKSPACE:
-                if event_has_ctrl_modifier(event):
-                    self.name_input = remove_previous_input_token(self.name_input, separators="_-")
-                else:
-                    self.name_input = self.name_input[:-1]
-            elif event.unicode and event.unicode.isprintable():
-                self.name_input = filter_player_name_input(self.name_input + event.unicode)
-
     def update(self, dt: float):
         _ = dt
         self._presence_entries = self._browser.presence_snapshot() if self._browser is not None else []
 
         mp = self.context.mouse_pos
         self._hovered = None
+        if self._name_edit_open:
+            return
+        if NAME_DISPLAY_RECT.collidepoint(mp):
+            self._hovered = "name"
+            return
         for key in ("avatar_button", "play", "exit", "settings"):
             if MENU_ASSET_RECTS[key].collidepoint(mp):
                 self._hovered = key
@@ -302,6 +399,8 @@ class MainMenuState(ScreenState):
 
         if self._settings_open:
             self._draw_settings(surface)
+        if self._name_edit_open:
+            self._draw_name_edit_dialog(surface)
 
     def _draw_asset(self, surface: pygame.Surface, key: str):
         asset = self._assets.get(key)
@@ -399,9 +498,41 @@ class MainMenuState(ScreenState):
             pygame.draw.rect(surface, fill, rect, border_radius=2)
             pygame.draw.rect(surface, theme.border, rect, width=1, border_radius=2)
 
+    def _draw_dialog_asset(self, surface: pygame.Surface, key: str, rect: pygame.Rect):
+        asset = self._assets.get(key)
+        if asset is None:
+            return
+        if asset.get_size() == rect.size:
+            surface.blit(asset, rect)
+        else:
+            surface.blit(pygame.transform.scale(asset, rect.size), rect)
+
+    def _draw_name_edit_dialog(self, surface: pygame.Surface):
+        layout = self._name_edit_layout()
+        scrim = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+        scrim.fill((0, 0, 0, 145))
+        surface.blit(scrim, (0, 0))
+        self._draw_dialog_asset(surface, "name_edit_frame", layout["frame"])
+        self._draw_dialog_asset(surface, "name_edit_field", layout["field"])
+        save_asset = "name_edit_save" if self._name_edit_save_enabled() else "name_edit_save_disabled"
+        self._draw_dialog_asset(surface, save_asset, layout["save"])
+        self._draw_dialog_asset(surface, "name_edit_cancel", layout["cancel"])
+
+        mp = self.context.mouse_pos
+        if self._name_edit_field_active:
+            self._draw_hover_outline(surface, layout["field"])
+        if self._name_edit_save_enabled() and layout["save"].collidepoint(mp):
+            self._draw_hover_outline(surface, layout["save"])
+        if layout["cancel"].collidepoint(mp):
+            self._draw_hover_outline(surface, layout["cancel"])
+
     def draw_window_overlay(self, surface: pygame.Surface):
         if self._settings_open:
             self._draw_window_settings_text(surface)
+            self._draw_window_global_messages(surface)
+            return
+        if self._name_edit_open:
+            self._draw_window_name_edit_dialog(surface)
             self._draw_window_global_messages(surface)
             return
         self._draw_window_avatar_text(surface)
@@ -410,26 +541,24 @@ class MainMenuState(ScreenState):
         self._draw_window_global_messages(surface)
 
     def _draw_window_avatar_text(self, surface: pygame.Surface):
-        name_rect = pygame.Rect(14, 74, 60, 10)
-        color = (255, 236, 170) if self.name_active else (190, 220, 255)
-        self._draw_window_text_center(surface, 6, self.name_input, name_rect, color)
+        color = (255, 236, 170) if self._hovered == "name" else (190, 220, 255)
+        self._draw_window_text_center(surface, 6, self.name_input, NAME_DISPLAY_RECT, color)
         self._draw_window_text_center(surface, 7, "AVATAR", MENU_ASSET_RECTS["avatar_button"], (245, 247, 252))
         self._draw_window_avatar_preview(surface)
 
     def _current_avatar_source(self) -> pygame.Surface:
-        if self.context.avatar_window_surface is not None:
-            return self.context.avatar_window_surface
-        if self.context.avatar_surface is not None:
-            return self.context.avatar_surface
-        return make_default_avatar()
+        return self.context.current_avatar_source()
 
     def _draw_window_avatar_preview(self, surface: pygame.Surface):
         if self._idle_body_frame is None:
             return
-        frame_rect = self._scale_rect(pygame.Rect(32, 91, PLAYER_FRAME_WIDTH, PLAYER_FRAME_HEIGHT))
+        model_rect = MENU_ASSET_RECTS["avatar_model"]
+        frame_rect = self._scale_rect(
+            pygame.Rect(model_rect.x, model_rect.y, PLAYER_FRAME_WIDTH, PLAYER_FRAME_HEIGHT)
+        )
         avatar_logical = pygame.Rect(
-            32 + AVATAR_RECT.x,
-            91 + AVATAR_RECT.y,
+            model_rect.x + AVATAR_RECT.x,
+            model_rect.y + AVATAR_RECT.y,
             AVATAR_RECT.w,
             AVATAR_RECT.h,
         )
@@ -470,6 +599,83 @@ class MainMenuState(ScreenState):
         self._draw_window_text_center(surface, 7, f"Fullscreen {'ON' if self._pending_fullscreen else 'OFF'}", fullscreen, theme.text, shadow=False)
         self._draw_window_text_center(surface, 7, "CLOSE", close, theme.text, shadow=False)
         self._draw_window_text_center(surface, 7, "APPLY", apply, theme.text, shadow=False)
+
+    def _draw_window_text_left(
+        self,
+        surface: pygame.Surface,
+        logical_size: int,
+        text: str,
+        logical_rect: pygame.Rect,
+        color: tuple[int, int, int],
+        shadow: bool = False,
+    ):
+        rect = self._scale_rect(logical_rect)
+        scale = self._window_scale()
+        font = self._window_font(logical_size)
+        text = self._fit_text(text, font, max(4, rect.w - (4 * scale)))
+        y = rect.y + (rect.h - font.get_height()) // 2
+        if shadow:
+            shade = font.render(text, True, (8, 14, 25))
+            surface.blit(shade, (rect.x + scale, y + scale))
+        label = font.render(text, True, color)
+        surface.blit(label, (rect.x, y))
+
+    def _draw_window_text_caret(
+        self,
+        surface: pygame.Surface,
+        logical_size: int,
+        text: str,
+        logical_rect: pygame.Rect,
+        color: tuple[int, int, int],
+    ):
+        if int(pygame.time.get_ticks() / 500) % 2 != 0:
+            return
+        rect = self._scale_rect(logical_rect)
+        scale = self._window_scale()
+        font = self._window_font(logical_size)
+        fitted_text = self._fit_text(text, font, max(4, rect.w - (4 * scale)))
+        text_width = font.size(fitted_text)[0] if fitted_text else 0
+        caret_w = max(1, scale)
+        caret_h = max(caret_w, font.get_height() - (2 * scale))
+        x = min(rect.right - caret_w, rect.x + text_width + scale)
+        y = rect.y + (rect.h - caret_h) // 2
+        pygame.draw.rect(surface, color, pygame.Rect(x, y, caret_w, caret_h))
+
+    def _draw_window_text_right_alpha(
+        self,
+        surface: pygame.Surface,
+        logical_size: int,
+        text: str,
+        logical_rect: pygame.Rect,
+        color: tuple[int, int, int],
+        alpha: int,
+    ):
+        rect = self._scale_rect(logical_rect)
+        font = self._window_font(logical_size)
+        label = font.render(text, True, color)
+        label.set_alpha(alpha)
+        y = rect.y + (rect.h - font.get_height()) // 2
+        surface.blit(label, (rect.right - label.get_width(), y))
+
+    def _draw_window_name_edit_dialog(self, surface: pygame.Surface):
+        theme = DEFAULT_THEME
+        layout = self._name_edit_layout()
+        save_enabled = self._name_edit_save_enabled()
+        self._draw_window_text_center(surface, 7, "EDIT NAME", layout["title"], (180, 220, 255))
+        self._draw_window_text_left(surface, 7, self._name_edit_value, layout["text"], theme.text, shadow=False)
+        self._draw_window_text_right_alpha(
+            surface,
+            7,
+            f"{len(self._name_edit_value)}/{protocol.PLAYER_NAME_MAX_LEN}",
+            layout["count"],
+            theme.text_muted,
+            191,
+        )
+        if self._name_edit_field_active:
+            self._draw_window_text_caret(surface, 7, self._name_edit_value, layout["text"], theme.text)
+        save_color = theme.text if save_enabled else theme.text_muted
+        self._draw_window_text_center(surface, 7, "SAVE", layout["save"], save_color)
+        self._draw_window_text_center(surface, 7, "CANCEL", layout["cancel"], theme.text)
 
     def _draw_window_global_messages(self, surface: pygame.Surface):
         scale = self._window_scale()

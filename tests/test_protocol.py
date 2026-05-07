@@ -55,6 +55,8 @@ def test_avatar_header_round_trip():
         123,
         4,
         protocol.NETWORK_AVATAR_BYTES,
+        protocol.DEFAULT_MODEL_TYPE,
+        protocol.DEFAULT_MODEL_COLOR,
     )
 
 

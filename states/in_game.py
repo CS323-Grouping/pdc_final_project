@@ -36,6 +36,7 @@ LOGGER = logging.getLogger(__name__)
 class RemotePlayer:
     position: tuple[float, float]
     animation: AnimationState
+    body_frames_by_state: dict[str, list[pygame.Surface]]
 
 
 @dataclass
@@ -69,6 +70,8 @@ class InGameState(ScreenState):
         self.remote_player_image: pygame.Surface | None = None
         self.remote_frames_by_state: dict[str, list[pygame.Surface]] | None = None
         self.remote_body_frames_by_state: dict[str, list[pygame.Surface]] | None = None
+        self._remote_model_frames_cache: dict[tuple[str, str], dict[str, list[pygame.Surface]]] = {}
+        self._remote_models: dict[int, tuple[str, str]] = {}
         self._remote_avatar_surfaces: dict[int, pygame.Surface] = {}
         self._avatar_assemblies: dict[tuple[int, int], AvatarAssembly] = {}
         self._avatar_payload: bytes | None = None
@@ -93,6 +96,8 @@ class InGameState(ScreenState):
         self._remote_positions = {}
         self._remote_players = {}
         self._remote_avatar_surfaces = {}
+        self._remote_models = {}
+        self._remote_model_frames_cache = {}
         self._avatar_assemblies = {}
         self._name_by_id = {pid: name for pid, _r, name in self.context.roster}
         self.world_assets = load_world_assets(self.context.project_root)
@@ -104,18 +109,12 @@ class InGameState(ScreenState):
         else:
             base_start = (100.0, 100.0)
         start = self._spawn_position_for_local_player(base_start)
-        sprite = str(
-            self.context.project_root
-            / "assets"
-            / "player"
-            / "animation"
-            / "playerAnimationNormal_Blue.png"
-        )
+        sprite = str(self.context.player_animation_path())
         try:
-            self.hero = pl.Player(start, sprite, avatar=self.context.avatar_surface)
+            self.hero = pl.Player(start, sprite, avatar=self.context.current_avatar_frame())
             remote_body_frames = load_spritesheet_frames(sprite)
             self.remote_body_frames_by_state = remote_body_frames
-            self.remote_frames_by_state = compose_player_frames(remote_body_frames, make_default_avatar())
+            self.remote_frames_by_state = compose_player_frames(remote_body_frames, make_default_avatar(self.context.project_root))
             self.remote_player_image = self.remote_frames_by_state["idle_front"][0]
         except (FileNotFoundError, pygame.error) as err:
             LOGGER.warning("Player sprite missing: %s", err)
@@ -196,24 +195,63 @@ class InGameState(ScreenState):
         self._last_animation_state = self.hero.animation.state
 
     def _make_avatar_payload(self) -> bytes | None:
-        avatar = self.context.avatar_window_surface or self.context.avatar_surface
-        if avatar is None:
-            return None
+        avatar = self.context.current_avatar_source()
         network_avatar = pygame.transform.smoothscale(
             avatar,
             (protocol.NETWORK_AVATAR_SIZE, protocol.NETWORK_AVATAR_SIZE),
         ).convert_alpha()
         return pygame.image.tobytes(network_avatar, "RGBA")
 
+    def _body_frames_for_model(self, model_type: str, model_color: str) -> dict[str, list[pygame.Surface]]:
+        key = (
+            protocol.normalize_model_type(model_type),
+            protocol.normalize_model_color(model_color),
+        )
+        frames = self._remote_model_frames_cache.get(key)
+        if frames is not None:
+            return frames
+        try:
+            frames = load_spritesheet_frames(self.context.player_animation_path(*key))
+        except (FileNotFoundError, pygame.error):
+            if self.remote_body_frames_by_state is not None:
+                return self.remote_body_frames_by_state
+            raise
+        self._remote_model_frames_cache[key] = frames
+        return frames
+
+    def _remote_model_for_player(self, player_id: int) -> tuple[str, str]:
+        return self._remote_models.get(player_id, (protocol.DEFAULT_MODEL_TYPE, protocol.DEFAULT_MODEL_COLOR))
+
+    def _rebuild_remote_player_model(self, player_id: int):
+        remote = self._remote_players.get(player_id)
+        if remote is None:
+            return
+        state = remote.animation.state
+        frame_index = remote.animation.frame_index
+        model_type, model_color = self._remote_model_for_player(player_id)
+        body_frames = self._body_frames_for_model(model_type, model_color)
+        frames = compose_player_frames(body_frames, make_default_avatar(self.context.project_root))
+        remote.body_frames_by_state = body_frames
+        remote.animation = AnimationState(frames)
+        if state in frames:
+            remote.animation.state = state
+            remote.animation.frame_index = min(frame_index, len(frames[state]) - 1)
+
     def _get_remote_player(self, player_id: int, position: tuple[float, float]) -> RemotePlayer | None:
         if self.hero is None:
             return None
         remote = self._remote_players.get(player_id)
         if remote is None:
-            frames_by_state = self.remote_frames_by_state or self.hero.animation.frames_by_state
+            model_type, model_color = self._remote_model_for_player(player_id)
+            try:
+                body_frames = self._body_frames_for_model(model_type, model_color)
+            except (FileNotFoundError, pygame.error):
+                body_frames = self.remote_body_frames_by_state or self.hero.body_frames_by_state
+            frames_by_state = compose_player_frames(body_frames, make_default_avatar(self.context.project_root))
             remote = RemotePlayer(
                 position=position,
                 animation=AnimationState(frames_by_state),
+                body_frames_by_state=body_frames,
             )
             self._remote_players[player_id] = remote
         else:
@@ -240,6 +278,10 @@ class InGameState(ScreenState):
                 if remote is not None:
                     remote.animation.set_state(protocol.animation_state_name(event.animation_state_id))
             elif isinstance(event, nw.AvatarHeaderEvent):
+                old_model = self._remote_models.get(event.player_id)
+                self._remote_models[event.player_id] = (event.model_type, event.model_color)
+                if old_model != self._remote_models[event.player_id]:
+                    self._rebuild_remote_player_model(event.player_id)
                 self._handle_avatar_header(event)
             elif isinstance(event, nw.AvatarChunkEvent):
                 self._handle_avatar_chunk(event)
@@ -274,6 +316,7 @@ class InGameState(ScreenState):
                     self._remote_players.pop(event.player_id, None)
                     self._remote_positions.pop(event.player_id, None)
                     self._remote_avatar_surfaces.pop(event.player_id, None)
+                    self._remote_models.pop(event.player_id, None)
                     if self._spectate_player_id == event.player_id:
                         self._set_spectator_target(self._default_spectator_target(), snap=True)
                 self._paused_players.pop(event.player_id, None)
@@ -292,6 +335,7 @@ class InGameState(ScreenState):
                         self._remote_positions.pop(player_id, None)
                         self._remote_players.pop(player_id, None)
                         self._remote_avatar_surfaces.pop(player_id, None)
+                        self._remote_models.pop(player_id, None)
                         if self._spectate_player_id == player_id:
                             self._set_spectator_target(self._default_spectator_target(), snap=True)
                 for pid, _ready, name in event.entries:
@@ -509,7 +553,7 @@ class InGameState(ScreenState):
         self._avatar_send_timer -= dt
         if self._avatar_send_timer > 0:
             return
-        net.send_avatar(self._avatar_id, self._avatar_payload)
+        net.send_avatar(self._avatar_id, self._avatar_payload, self.context.model_type, self.context.model_color)
         self._avatar_send_count += 1
         self._avatar_send_timer = 1.0
 
@@ -612,9 +656,7 @@ class InGameState(ScreenState):
         return visual_rect.move(-int(round(self.camera.x)), -int(round(self.camera.y)))
 
     def _remote_body_image(self, remote: RemotePlayer) -> pygame.Surface | None:
-        if self.remote_body_frames_by_state is None:
-            return None
-        return self.remote_body_frames_by_state[remote.animation.state][remote.animation.frame_index]
+        return remote.body_frames_by_state[remote.animation.state][remote.animation.frame_index]
 
     def _draw_avatar_overlay(
         self,

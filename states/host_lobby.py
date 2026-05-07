@@ -33,6 +33,11 @@ class HostLobbyState(ScreenState):
         self._session_open = False
         self._confirm_close_room = False
         self._confirm_hovered = None
+        self._room_name_edit_open = False
+        self._room_name_edit_field_active = False
+        self._room_name_edit_original = context.room_name
+        self._room_name_edit_value = context.room_name
+        self._room_name_edit_hovered = None
         self._pulse_t = 0.0
         self._open_h = self._start_h = self._cancel_h = self._close_h = False
         self._kick_hover: Optional[int] = None
@@ -46,6 +51,11 @@ class HostLobbyState(ScreenState):
         self._session_open = net is not None and net.id >= 0
         self._confirm_close_room = False
         self._confirm_hovered = None
+        self._room_name_edit_open = False
+        self._room_name_edit_field_active = False
+        self._room_name_edit_original = self.context.room_name
+        self._room_name_edit_value = self.context.room_name
+        self._room_name_edit_hovered = None
         self._kick_mode_on = False
         self._hovered = None
         if not self._session_open:
@@ -54,6 +64,33 @@ class HostLobbyState(ScreenState):
     def _cancel_dialog(self) -> None:
         self._confirm_close_room = False
         self._confirm_hovered = None
+
+    def _open_room_name_edit(self) -> None:
+        self._room_name_edit_original = self.context.room_name
+        self._room_name_edit_value = self.context.room_name
+        self._room_name_edit_open = True
+        self._room_name_edit_field_active = False
+        self._room_name_edit_hovered = None
+
+    def _close_room_name_edit(self) -> None:
+        self._room_name_edit_open = False
+        self._room_name_edit_field_active = False
+        self._room_name_edit_hovered = None
+
+    def _room_name_edit_save_enabled(self) -> bool:
+        return (
+            self._room_name_edit_value != self._room_name_edit_original
+            and protocol.is_valid_room_name(self._room_name_edit_value)
+        )
+
+    def _save_room_name_edit(self) -> None:
+        if not self._room_name_edit_save_enabled():
+            return
+        self.context.room_name = self._room_name_edit_value
+        if self.context.network:
+            self.context.network.room_name = self._room_name_edit_value
+            self.context.network.send_room_name(self._room_name_edit_value)
+        self._close_room_name_edit()
 
     def _render_size(self) -> tuple[int, int]:
         if self.context.display_manager is not None and self.render_to_internal:
@@ -138,6 +175,8 @@ class HostLobbyState(ScreenState):
                 self.context.countdown_remaining = event.seconds_until_start
             elif isinstance(event, nw.CountdownCancelEvent):
                 self.context.countdown_remaining = None
+            elif isinstance(event, nw.RoomNameEvent):
+                self.context.room_name = event.room_name
             elif isinstance(event, nw.GameStartEvent):
                 self.context.countdown_remaining = None
                 self.switch("in_game")
@@ -151,6 +190,43 @@ class HostLobbyState(ScreenState):
 
     def handle_event(self, event):
         super().handle_event(event)
+        if self._room_name_edit_open:
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    self._close_room_name_edit()
+                elif event.key == pygame.K_RETURN:
+                    if self._room_name_edit_save_enabled():
+                        self._save_room_name_edit()
+                elif not self._room_name_edit_field_active:
+                    pass
+                elif event.key == pygame.K_BACKSPACE:
+                    if event_has_ctrl_modifier(event):
+                        self._room_name_edit_value = remove_previous_input_token(
+                            self._room_name_edit_value,
+                            separators=" _-",
+                        )
+                    else:
+                        self._room_name_edit_value = self._room_name_edit_value[:-1]
+                elif event.unicode and event.unicode.isprintable():
+                    self._room_name_edit_value = filter_room_name_input(self._room_name_edit_value + event.unicode)
+                return
+
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                action = self._room_ui.room_name_edit_hit_test(event.pos)
+                if action == "cancel":
+                    self._close_room_name_edit()
+                    return
+                if action == "save":
+                    self._save_room_name_edit()
+                    return
+                if action == "field":
+                    self._room_name_edit_field_active = True
+                    return
+                if action == "frame":
+                    self._room_name_edit_field_active = False
+                    return
+                return
+
         if self._confirm_close_room:
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 action = self._room_ui.close_confirmation_hit_test(event.pos)
@@ -184,6 +260,15 @@ class HostLobbyState(ScreenState):
             return
 
         self._layout_session()
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+            if self.context.countdown_remaining is not None:
+                if self.context.network:
+                    self.context.network.cancel_countdown()
+            else:
+                self._confirm_close_room = True
+                self._confirm_hovered = None
+            return
+
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             hid = _host_player_id(self.context.roster)
             action = self._room_ui.hit_test(
@@ -193,16 +278,22 @@ class HostLobbyState(ScreenState):
                 host_view=True,
                 kick_mode=self._kick_mode_on,
             )
+            in_cd = self.context.countdown_remaining is not None
+            if in_cd:
+                if action == "primary":
+                    self.context.network.cancel_countdown()
+                return
+
+            if self._room_ui.room_name_hit_test(event.pos, self.context.room_name, host_view=True):
+                self._open_room_name_edit()
+                return
+
             if action == "secondary":
                 self._confirm_close_room = True
                 self._confirm_hovered = None
                 return
 
-            in_cd = self.context.countdown_remaining is not None
             if action == "primary":
-                if in_cd:
-                    self.context.network.cancel_countdown()
-                    return
                 if self.host_and_non_host_ready():
                     self.context.network.send_start()
                 else:
@@ -222,6 +313,9 @@ class HostLobbyState(ScreenState):
     def update(self, dt: float):
         self._pulse_t += dt
         mp = self.context.mouse_pos
+        if self._room_name_edit_open:
+            self._room_name_edit_hovered = self._room_ui.room_name_edit_hit_test(mp)
+            return
         if self._confirm_close_room:
             self._confirm_hovered = self._room_ui.close_confirmation_hit_test(mp)
             return
@@ -240,6 +334,10 @@ class HostLobbyState(ScreenState):
                 host_view=True,
                 kick_mode=self._kick_mode_on,
             )
+            if in_cd and action != "primary":
+                action = None
+            if action is None and not in_cd and self._room_ui.room_name_hit_test(mp, self.context.room_name, host_view=True):
+                action = "room_name"
             self._hovered = ("kick", action[1]) if isinstance(action, tuple) and action[0] == "kick" else action
         else:
             self._layout_setup()
@@ -288,12 +386,27 @@ class HostLobbyState(ScreenState):
 
         if self._confirm_close_room:
             self._room_ui.draw_close_confirmation_base(surface, self._confirm_hovered)
+        if self._room_name_edit_open:
+            self._room_ui.draw_room_name_edit_base(
+                surface,
+                self._room_name_edit_save_enabled(),
+                self._room_name_edit_field_active,
+                self._room_name_edit_hovered,
+            )
 
     def draw_window_overlay(self, surface: pygame.Surface):
         if not self._session_open:
             return
         if self._confirm_close_room:
             self._room_ui.draw_close_confirmation_window_overlay(surface)
+            return
+        if self._room_name_edit_open:
+            self._room_ui.draw_room_name_edit_window_overlay(
+                surface,
+                self._room_name_edit_value,
+                self._room_name_edit_save_enabled(),
+                self._room_name_edit_field_active,
+            )
             return
         network = self.context.network
         local_id = network.id if network is not None else None
@@ -312,4 +425,5 @@ class HostLobbyState(ScreenState):
             secondary_label="CLOSE ROOM",
             countdown_remaining=self.context.countdown_remaining,
             pulse_t=self._pulse_t,
+            room_name_hovered=self._hovered == "room_name",
         )

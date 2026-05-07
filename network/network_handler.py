@@ -39,6 +39,7 @@ from network.protocol import (
     RECV_BUF,
     RECONNECT_NO,
     RECONNECT_OK,
+    ROOM_NAME_UPDATE,
     SESSION,
     START,
     UINT32_MAX,
@@ -52,6 +53,7 @@ from network.protocol import (
     pack_player_state,
     pack_ready,
     pack_reconnect,
+    pack_room_name_update,
     pack_start,
     safe_unpack,
     safe_unpack_avatar_chunk,
@@ -69,6 +71,7 @@ from network.protocol import (
     safe_unpack_player_state,
     safe_unpack_reconnect_no,
     safe_unpack_reconnect_ok,
+    safe_unpack_room_name_update,
     safe_unpack_session,
     tag_of,
 )
@@ -119,7 +122,8 @@ def _event_summary(event: "NetworkEvent") -> str:
     if isinstance(event, AvatarHeaderEvent):
         return (
             f"AvatarHeaderEvent player_id={event.player_id} avatar_id={event.avatar_id} "
-            f"chunks={event.total_chunks} bytes={event.payload_size}"
+            f"chunks={event.total_chunks} bytes={event.payload_size} "
+            f"model={event.model_type}/{event.model_color}"
         )
     if isinstance(event, AvatarChunkEvent):
         return (
@@ -132,6 +136,8 @@ def _event_summary(event: "NetworkEvent") -> str:
         return f"MatchPauseEvent player_id={event.player_id} remaining={event.seconds_remaining:.2f}"
     if isinstance(event, MatchResumeEvent):
         return "MatchResumeEvent"
+    if isinstance(event, RoomNameEvent):
+        return f"RoomNameEvent room_name={event.room_name}"
     if isinstance(event, ConnectDeniedEvent):
         return f"ConnectDeniedEvent reason={event.reason_code} extra={event.extra}"
     if isinstance(event, ConnectionLostEvent):
@@ -210,6 +216,8 @@ class AvatarHeaderEvent:
     avatar_id: int
     total_chunks: int
     payload_size: int
+    model_type: str
+    model_color: str
 
 
 @dataclass(frozen=True)
@@ -236,6 +244,11 @@ class MatchPauseEvent:
 @dataclass(frozen=True)
 class MatchResumeEvent:
     pass
+
+
+@dataclass(frozen=True)
+class RoomNameEvent:
+    room_name: str
 
 
 @dataclass(frozen=True)
@@ -269,6 +282,7 @@ NetworkEvent = Union[
     SessionEvent,
     MatchPauseEvent,
     MatchResumeEvent,
+    RoomNameEvent,
     ConnectDeniedEvent,
     ConnectionLostEvent,
     ErrorEvent,
@@ -318,6 +332,23 @@ class Network:
             else:
                 self._closed = True
             return False
+
+    def _set_remote_addr(self, addr: str, port: int) -> bool:
+        try:
+            infos = socket.getaddrinfo(addr, port, socket.AF_INET, socket.SOCK_DGRAM)
+        except OSError as error:
+            LOGGER.warning("Address resolution failed addr=%s port=%s error=%s", addr, port, error)
+            return False
+        if not infos:
+            LOGGER.warning("Address resolution returned no results addr=%s port=%s", addr, port)
+            return False
+        remote_host, remote_port = infos[0][4][:2]
+        self.server = remote_host
+        self.port = int(remote_port)
+        self.addr = (self.server, self.port)
+        if remote_host != addr:
+            LOGGER.info("Resolved room host %s:%s -> %s:%s", addr, port, remote_host, remote_port)
+        return True
 
     def close(self):
         LOGGER.info("Closing network socket player_id=%s addr=%s", self.id, self.addr)
@@ -385,7 +416,8 @@ class Network:
         return servers
 
     def connect_to_room(self, addr: str, port: int, player_name: str) -> ConnectResult:
-        self.addr = (addr, port)
+        if not self._set_remote_addr(addr, port):
+            return ConnectResult(ok=False, reason_code=CONNO_REASON_VERSION)
         self.client.settimeout(2.0)
         LOGGER.info("Connecting to room addr=%s player_name=%s", self.addr, player_name)
         if not self._sendto(pack_conn(player_name, PROTO_VERSION), report_error=False):
@@ -465,7 +497,8 @@ class Network:
         session_token: int,
         player_name: str,
     ) -> ConnectResult:
-        self.addr = (addr, port)
+        if not self._set_remote_addr(addr, port):
+            return ConnectResult(ok=False, reason_code=CONNO_REASON_VERSION)
         self.client.settimeout(2.0)
         payload = pack_reconnect(player_id, session_token, player_name, PROTO_VERSION)
         LOGGER.info(
@@ -582,6 +615,12 @@ class Network:
         LOGGER.info("send KICK host_id=%s target_id=%s", self.id, target_id)
         self._sendto(pack_kick(self.id, target_id))
 
+    def send_room_name(self, room_name: str):
+        if self.id < 0:
+            return
+        LOGGER.info("send ROOM_NAME player_id=%s room_name=%s", self.id, room_name)
+        self._sendto(pack_room_name_update(self.id, room_name))
+
     def send_dead(self):
         if self.id < 0:
             return
@@ -607,15 +646,28 @@ class Network:
             return
         self._sendto(pack_player_state(x, y, self.id, animation_state))
 
-    def send_avatar(self, avatar_id: int, payload: bytes):
+    def send_avatar(
+        self,
+        avatar_id: int,
+        payload: bytes,
+        model_type: str = "Default",
+        model_color: str = "Blue",
+    ):
         if self.id < 0 or not payload:
             return
-        LOGGER.info("send AVATAR player_id=%s avatar_id=%s bytes=%s", self.id, avatar_id, len(payload))
+        LOGGER.info(
+            "send AVATAR player_id=%s avatar_id=%s bytes=%s model=%s/%s",
+            self.id,
+            avatar_id,
+            len(payload),
+            model_type,
+            model_color,
+        )
         chunks = [
             payload[index : index + AVATAR_CHUNK_PAYLOAD_SIZE]
             for index in range(0, len(payload), AVATAR_CHUNK_PAYLOAD_SIZE)
         ]
-        if not self._sendto(pack_avatar_header(self.id, avatar_id, len(chunks), len(payload))):
+        if not self._sendto(pack_avatar_header(self.id, avatar_id, len(chunks), len(payload), model_type, model_color)):
             return
         for index, chunk in enumerate(chunks):
             if not self._sendto(pack_avatar_chunk(self.id, avatar_id, index, len(chunks), chunk)):
@@ -681,6 +733,13 @@ class Network:
             if unpacked is None:
                 return ErrorEvent("Malformed RSUM packet")
             return MatchResumeEvent()
+        if tag == ROOM_NAME_UPDATE:
+            unpacked = safe_unpack_room_name_update(data)
+            if unpacked is None:
+                return ErrorEvent("Malformed RNAM packet")
+            _tag, _host_id, room_name = unpacked
+            self.room_name = room_name
+            return RoomNameEvent(room_name=room_name)
         if tag == CONNO:
             unpacked = safe_unpack_conno(data)
             if unpacked is None:
@@ -708,12 +767,14 @@ class Network:
             unpacked = safe_unpack_avatar_header(data)
             if unpacked is None:
                 return ErrorEvent("Malformed AVHD packet")
-            _tag, player_id, avatar_id, total_chunks, payload_size = unpacked
+            _tag, player_id, avatar_id, total_chunks, payload_size, model_type, model_color = unpacked
             return AvatarHeaderEvent(
                 player_id=player_id,
                 avatar_id=avatar_id,
                 total_chunks=total_chunks,
                 payload_size=payload_size,
+                model_type=model_type,
+                model_color=model_color,
             )
         if tag == AVATAR_CHUNK:
             unpacked = safe_unpack_avatar_chunk(data)

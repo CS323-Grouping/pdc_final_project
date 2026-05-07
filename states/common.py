@@ -106,6 +106,23 @@ def event_has_ctrl_modifier(event) -> bool:
     return bool(getattr(event, "mod", 0) & pygame.KMOD_CTRL)
 
 
+def get_clipboard_text() -> str:
+    try:
+        get_init = getattr(pygame.scrap, "get_init", None)
+        if get_init is None or not get_init():
+            pygame.scrap.init()
+        raw = pygame.scrap.get(pygame.SCRAP_TEXT)
+    except (AttributeError, pygame.error):
+        return ""
+    if not raw:
+        return ""
+    if isinstance(raw, bytes):
+        text = raw.decode("utf-8", errors="ignore")
+    else:
+        text = str(raw)
+    return text.replace("\x00", "").replace("\r", "").replace("\n", "")
+
+
 def remove_previous_input_token(value: str, separators: str = " _-.") -> str:
     end = len(value)
     while end > 0 and value[end - 1] in separators:

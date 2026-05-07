@@ -92,6 +92,8 @@ def test_lobby_replays_cached_avatar_to_late_joiner():
             avatar_id,
             1,
             len(payload),
+            protocol.DEFAULT_MODEL_TYPE,
+            protocol.DEFAULT_MODEL_COLOR,
         )
         for packet in late_packets
     )

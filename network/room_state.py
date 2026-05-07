@@ -67,6 +67,10 @@ class RoomState:
                 game_port=self.game_port,
             )
 
+    def set_room_name(self, room_name: str):
+        with self.lock:
+            self.room_name = room_name
+
     def connected_count(self) -> int:
         with self.lock:
             return len(self._addr_to_id)
