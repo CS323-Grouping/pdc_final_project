@@ -63,6 +63,7 @@ try:
         RECONNECT_DENY_NOT_IN_GAME,
         RECONNECT_DENY_NO_SLOT,
         RECONNECT_GRACE_SECONDS,
+        ROOM_NAME_UPDATE,
         ROOM_NAME_MAX_LEN,
         ROOM_NAME_MIN_LEN,
         START,
@@ -96,7 +97,6 @@ try:
         pack_player_state,
         pack_reconnect_no,
         pack_reconnect_ok,
-        pack_level_select,
         pack_room_name_update,
         pack_session,
         safe_unpack,
@@ -112,7 +112,6 @@ try:
         safe_unpack_player_state,
         safe_unpack_ready,
         safe_unpack_reconnect,
-        safe_unpack_level_select,
         safe_unpack_room_name_update,
         safe_unpack_start,
         tag_of,
@@ -174,6 +173,7 @@ except ModuleNotFoundError:
         RECONNECT_DENY_NOT_IN_GAME,
         RECONNECT_DENY_NO_SLOT,
         RECONNECT_GRACE_SECONDS,
+        ROOM_NAME_UPDATE,
         ROOM_NAME_MAX_LEN,
         ROOM_NAME_MIN_LEN,
         START,
@@ -207,7 +207,6 @@ except ModuleNotFoundError:
         pack_player_state,
         pack_reconnect_no,
         pack_reconnect_ok,
-        pack_level_select,
         pack_room_name_update,
         pack_session,
         safe_unpack,
@@ -223,7 +222,6 @@ except ModuleNotFoundError:
         safe_unpack_player_state,
         safe_unpack_ready,
         safe_unpack_reconnect,
-        safe_unpack_level_select,
         safe_unpack_room_name_update,
         safe_unpack_start,
         tag_of,
@@ -268,7 +266,7 @@ class LobbyServer:
         self._player_elapsed_at_result: dict[int, float] = {}
         self._player_platform_max: dict[int, int] = {}
         self._match_player_count: int = 0
-        self._avatar_headers: dict[int, tuple[int, int, int]] = {}
+        self._avatar_headers: dict[int, tuple[int, int, int, str, str]] = {}
         self._avatar_chunks: dict[tuple[int, int], dict[int, bytes]] = {}
 
     def broadcast(self, payload: bytes, exclude_addr=None):
@@ -333,13 +331,21 @@ class LobbyServer:
             if key[0] == player_id:
                 self._avatar_chunks.pop(key, None)
 
-    def _cache_avatar_header(self, player_id: int, avatar_id: int, total_chunks: int, payload_size: int):
+    def _cache_avatar_header(
+        self,
+        player_id: int,
+        avatar_id: int,
+        total_chunks: int,
+        payload_size: int,
+        model_type: str,
+        model_color: str,
+    ):
         if total_chunks <= 0 or payload_size <= 0:
             return
         previous = self._avatar_headers.get(player_id)
         if previous is not None and previous[0] != avatar_id:
             self._avatar_chunks.pop((player_id, previous[0]), None)
-        self._avatar_headers[player_id] = (avatar_id, total_chunks, payload_size)
+        self._avatar_headers[player_id] = (avatar_id, total_chunks, payload_size, model_type, model_color)
         self._avatar_chunks.setdefault((player_id, avatar_id), {})
 
     def _cache_avatar_chunk(
@@ -354,7 +360,13 @@ class LobbyServer:
             return
         header = self._avatar_headers.get(player_id)
         if header is None or header[0] != avatar_id:
-            self._avatar_headers[player_id] = (avatar_id, total_chunks, 0)
+            self._avatar_headers[player_id] = (
+                avatar_id,
+                total_chunks,
+                0,
+                DEFAULT_MODEL_TYPE,
+                DEFAULT_MODEL_COLOR,
+            )
         self._avatar_chunks.setdefault((player_id, avatar_id), {})[chunk_index] = payload
 
     def _avatar_cache_complete(self, player_id: int) -> bool:
@@ -375,10 +387,13 @@ class LobbyServer:
                 continue
             if not self._avatar_cache_complete(player_id):
                 continue
-            avatar_id, total_chunks, payload_size = self._avatar_headers[player_id]
+            avatar_id, total_chunks, payload_size, model_type, model_color = self._avatar_headers[player_id]
             chunks = self._avatar_chunks.get((player_id, avatar_id), {})
             try:
-                self.sock.sendto(pack_avatar_header(player_id, avatar_id, total_chunks, payload_size), addr)
+                self.sock.sendto(
+                    pack_avatar_header(player_id, avatar_id, total_chunks, payload_size, model_type, model_color),
+                    addr,
+                )
                 for chunk_index in range(total_chunks):
                     self.sock.sendto(
                         pack_avatar_chunk(
@@ -854,21 +869,6 @@ class LobbyServer:
         LOGGER.info("Host %s renamed room to %s", host_id, room_name)
         self.broadcast(pack_room_name_update(host_id, room_name))
 
-    def handle_level_select(self, data: bytes, addr):
-        unpacked = safe_unpack_level_select(data)
-        if unpacked is None:
-            return
-        _tag, host_id, level_id = unpacked
-        addr_player_id = self.room_state.get_player_id_by_addr(addr)
-        if addr_player_id != host_id or host_id != self.room_state.host_id:
-            return
-        if self.room_state.state != STATE_LOBBY:
-            return
-        self.room_state.touch_player(host_id)
-        if self.room_state.set_selected_level(level_id):
-            LOGGER.info("Host %s selected level %s", host_id, level_id)
-        self.broadcast(pack_level_select(host_id, self.room_state.get_selected_level()))
-
     def handle_position(self, data: bytes, addr):
         unpacked = safe_unpack(data)
         if unpacked is None:
@@ -925,7 +925,7 @@ class LobbyServer:
         if player_id is None or player_id != recv_id:
             return
         self.room_state.touch_player(player_id)
-        self._cache_avatar_header(player_id, avatar_id, total_chunks, payload_size)
+        self._cache_avatar_header(player_id, avatar_id, total_chunks, payload_size, model_type, model_color)
         self.broadcast(
             pack_avatar_header(player_id, avatar_id, total_chunks, payload_size, model_type, model_color),
             exclude_addr=addr,
@@ -1024,9 +1024,6 @@ class LobbyServer:
             return
         if tag == ROOM_NAME_UPDATE:
             self.handle_room_name_update(data, addr)
-            return
-        if tag == LEVEL_SELECT:
-            self.handle_level_select(data, addr)
             return
         if tag == DEAD:
             self.handle_dead(data, addr)

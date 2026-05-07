@@ -10,6 +10,7 @@ from network import network_handler as nw
 from network import protocol
 from player_scripts.animation import load_spritesheet_frames
 from player_scripts.avatar_sprite import AVATAR_RECT, crop_square, make_default_avatar
+from player_scripts.model_assets import animation_path
 from ui.theme import DEFAULT_THEME
 from world.constants import INTERNAL_HEIGHT, INTERNAL_WIDTH, PLAYER_FRAME_HEIGHT, PLAYER_FRAME_WIDTH
 
@@ -49,7 +50,9 @@ class RoomLobbyUi:
         self._assets: dict[str, pygame.Surface] = {}
         self._window_fonts: dict[tuple[int, bool], pygame.font.Font] = {}
         self._idle_body_frame: pygame.Surface | None = None
+        self._body_frame_cache: dict[tuple[str, str], pygame.Surface] = {}
         self._remote_avatar_surfaces: dict[int, pygame.Surface] = {}
+        self._remote_models: dict[int, tuple[str, str]] = {}
         self._avatar_assemblies: dict[tuple[int, int], AvatarAssembly] = {}
         self._avatar_payload: bytes | None = None
         self._avatar_id = 0
@@ -59,7 +62,9 @@ class RoomLobbyUi:
     def enter(self):
         self._assets = self._load_assets()
         self._load_player_preview_frame()
+        self._body_frame_cache.clear()
         self._remote_avatar_surfaces.clear()
+        self._remote_models.clear()
         self._avatar_assemblies.clear()
         self._avatar_payload = self._make_avatar_payload()
         self._avatar_id = zlib.adler32(self._avatar_payload) & 0xFFFF if self._avatar_payload else 0
@@ -93,6 +98,11 @@ class RoomLobbyUi:
             "close_confirmation_window": root / "RoomLobbyCloseConfirmationWindow_Frame.png",
             "close_confirmation_close": root / "RoomLobbyCloseConfirmationWindowClose_Button.png",
             "close_confirmation_cancel": root / "RoomLobbyCloseConfirmationWindowCancel_Button.png",
+            "room_name_edit_frame": root / "RoomNameEditWindow_Frame.png",
+            "room_name_edit_field": root / "RoomNameEditWindowNameField_Frame.png",
+            "room_name_edit_save": root / "RoomNameEditWindowSave_Button.png",
+            "room_name_edit_save_disabled": root / "RoomNameEditWindowSave_ButtonDisabled.png",
+            "room_name_edit_cancel": root / "RoomNameEditWindowCancel_Button.png",
         }
         fallbacks = {
             "background": ROOM_LOBBY_RECTS["background"].size,
@@ -118,6 +128,11 @@ class RoomLobbyUi:
             "close_confirmation_window": (148, 84),
             "close_confirmation_close": (64, 24),
             "close_confirmation_cancel": (64, 24),
+            "room_name_edit_frame": (148, 84),
+            "room_name_edit_field": (134, 18),
+            "room_name_edit_save": (64, 24),
+            "room_name_edit_save_disabled": (64, 24),
+            "room_name_edit_cancel": (64, 24),
         }
         assets: dict[str, pygame.Surface] = {}
         for key, path in names.items():
@@ -132,13 +147,7 @@ class RoomLobbyUi:
     def _load_player_preview_frame(self):
         if self._idle_body_frame is not None:
             return
-        sprite = (
-            self.context.project_root
-            / "assets"
-            / "player"
-            / "animation"
-            / "playerAnimationNormal_Blue.png"
-        )
+        sprite = self.context.player_animation_path()
         try:
             frames = load_spritesheet_frames(sprite)
         except (FileNotFoundError, pygame.error):
@@ -147,9 +156,7 @@ class RoomLobbyUi:
         self._idle_body_frame = frames["idle_front"][0]
 
     def _make_avatar_payload(self) -> bytes | None:
-        avatar = self.context.avatar_window_surface or self.context.avatar_surface
-        if avatar is None:
-            return None
+        avatar = self.context.current_avatar_source()
         network_avatar = pygame.transform.smoothscale(
             avatar,
             (protocol.NETWORK_AVATAR_SIZE, protocol.NETWORK_AVATAR_SIZE),
@@ -171,7 +178,7 @@ class RoomLobbyUi:
         self._avatar_send_timer -= dt
         if self._avatar_send_timer > 0:
             return
-        net.send_avatar(self._avatar_id, self._avatar_payload)
+        net.send_avatar(self._avatar_id, self._avatar_payload, self.context.model_type, self.context.model_color)
         self._avatar_send_count += 1
         self._avatar_send_timer = 1.0
 
@@ -187,6 +194,7 @@ class RoomLobbyUi:
     def _handle_avatar_header(self, event: nw.AvatarHeaderEvent, my_id: int):
         if event.player_id == my_id:
             return
+        self._remote_models[event.player_id] = (event.model_type, event.model_color)
         key = (event.player_id, event.avatar_id)
         assembly = self._avatar_assemblies.get(key)
         if assembly is None:
@@ -239,6 +247,7 @@ class RoomLobbyUi:
 
     def clear_remote_avatar(self, player_id: int):
         self._remote_avatar_surfaces.pop(player_id, None)
+        self._remote_models.pop(player_id, None)
         for key in list(self._avatar_assemblies.keys()):
             if key[0] == player_id:
                 self._avatar_assemblies.pop(key, None)
@@ -270,10 +279,10 @@ class RoomLobbyUi:
     def player_card_layout(self, card: pygame.Rect) -> dict[str, pygame.Rect]:
         platform_size = self._assets.get("player_platform", pygame.Surface((30, 17))).get_size()
         status_size = self._assets.get("status_ready", pygame.Surface((36, 14))).get_size()
-        name = pygame.Rect(card.x + 7, card.y + 6, 36, 14)
+        name = pygame.Rect(card.centerx - 19, card.y + 6, 38, 12)
         status = pygame.Rect(
             card.centerx - status_size[0] // 2,
-            card.bottom - 5 - status_size[1],
+            card.bottom - 8 - status_size[1],
             status_size[0],
             status_size[1],
         )
@@ -323,6 +332,21 @@ class RoomLobbyUi:
         frame = ROOM_LOBBY_RECTS["room_name"]
         return pygame.Rect(frame.x + 6, frame.bottom - 13, frame.w - 12, 12)
 
+    def room_title_name_rect(self, room_name: str, host_view: bool) -> pygame.Rect:
+        rect = self.room_title_text_rect()
+        if not host_view:
+            return rect
+        scale = self._window_scale()
+        font = self._window_font(7)
+        prefix_w = int(math.ceil(font.size("Hosting: ")[0] / max(1, scale)))
+        max_w = max(0, rect.w - prefix_w)
+        return pygame.Rect(rect.x + prefix_w, rect.y, max_w, rect.h)
+
+    def room_name_hit_test(self, pos: tuple[int, int], room_name: str, host_view: bool) -> bool:
+        if not host_view:
+            return False
+        return self.room_title_name_rect(room_name, host_view).collidepoint(pos)
+
     def player_count_text_rect(self) -> pygame.Rect:
         frame = ROOM_LOBBY_RECTS["player_count"]
         return pygame.Rect(frame.x + 4, frame.bottom - 13, frame.w - 8, 12)
@@ -348,6 +372,31 @@ class RoomLobbyUi:
             "message": pygame.Rect(frame.x + 7, frame.y + 7, 134, 40),
             "close": pygame.Rect(frame.x + 7, frame.bottom - 7 - close_h, close_w, close_h),
             "cancel": pygame.Rect(frame.right - 7 - cancel_w, frame.bottom - 7 - cancel_h, cancel_w, cancel_h),
+        }
+
+    def room_name_edit_layout(self) -> dict[str, pygame.Rect]:
+        frame_asset = self._assets.get("room_name_edit_frame")
+        field_asset = self._assets.get("room_name_edit_field")
+        button_asset = self._assets.get("room_name_edit_save")
+        frame_w, frame_h = frame_asset.get_size() if frame_asset is not None else (148, 84)
+        field_w, field_h = field_asset.get_size() if field_asset is not None else (134, 18)
+        button_w, button_h = button_asset.get_size() if button_asset is not None else (64, 24)
+        frame = pygame.Rect((INTERNAL_WIDTH - frame_w) // 2, (INTERNAL_HEIGHT - frame_h) // 2, frame_w, frame_h)
+        title = pygame.Rect(frame.x + 7, frame.y + 7, frame.w - 14, 16)
+        field = pygame.Rect(frame.centerx - field_w // 2, title.bottom + 2, field_w, field_h)
+        button_y = field.bottom + 8
+        button_gap = 8
+        total_button_w = button_w * 2 + button_gap
+        save = pygame.Rect(frame.centerx - total_button_w // 2, button_y, button_w, button_h)
+        cancel = pygame.Rect(save.right + button_gap, button_y, button_w, button_h)
+        return {
+            "frame": frame,
+            "title": title,
+            "field": field,
+            "text": pygame.Rect(field.x + 5, field.y + 3, 124, 12),
+            "count": pygame.Rect(field.x + 7, field.y + 3, field.w - 14, 12),
+            "save": save,
+            "cancel": cancel,
         }
 
     def _status_asset_key(self, status: LobbyPlayerStatus) -> str:
@@ -451,6 +500,18 @@ class RoomLobbyUi:
             return "cancel"
         return None
 
+    def room_name_edit_hit_test(self, pos: tuple[int, int]):
+        layout = self.room_name_edit_layout()
+        if layout["save"].collidepoint(pos):
+            return "save"
+        if layout["cancel"].collidepoint(pos):
+            return "cancel"
+        if layout["field"].collidepoint(pos):
+            return "field"
+        if layout["frame"].collidepoint(pos):
+            return "frame"
+        return None
+
     def draw_close_confirmation_base(self, surface: pygame.Surface, hovered=None):
         self._draw_dim_scrim(surface, None)
         layout = self.close_confirmation_layout()
@@ -460,6 +521,21 @@ class RoomLobbyUi:
         if hovered == "close":
             self._draw_hover_outline(surface, layout["close"])
         elif hovered == "cancel":
+            self._draw_hover_outline(surface, layout["cancel"])
+
+    def draw_room_name_edit_base(self, surface: pygame.Surface, save_enabled: bool, field_active: bool, hovered=None):
+        self._draw_dim_scrim(surface, None)
+        layout = self.room_name_edit_layout()
+        self._draw_asset(surface, "room_name_edit_frame", layout["frame"])
+        self._draw_asset(surface, "room_name_edit_field", layout["field"])
+        save_key = "room_name_edit_save" if save_enabled else "room_name_edit_save_disabled"
+        self._draw_asset(surface, save_key, layout["save"])
+        self._draw_asset(surface, "room_name_edit_cancel", layout["cancel"])
+        if field_active:
+            self._draw_hover_outline(surface, layout["field"])
+        if save_enabled and hovered == "save":
+            self._draw_hover_outline(surface, layout["save"])
+        if hovered == "cancel":
             self._draw_hover_outline(surface, layout["cancel"])
 
     def _window_scale(self) -> int:
@@ -530,6 +606,43 @@ class RoomLobbyUi:
         label = font.render(text, True, color)
         surface.blit(label, (rect.x, y))
 
+    def _draw_text_right_alpha(
+        self,
+        surface: pygame.Surface,
+        logical_size: int,
+        text: str,
+        logical_rect: pygame.Rect,
+        color: tuple[int, int, int],
+        alpha: int,
+    ):
+        rect = self._scale_rect(logical_rect)
+        font = self._window_font(logical_size, bold=True)
+        label = font.render(text, True, color)
+        label.set_alpha(alpha)
+        y = rect.y + (rect.h - font.get_height()) // 2
+        surface.blit(label, (rect.right - label.get_width(), y))
+
+    def _draw_text_caret(
+        self,
+        surface: pygame.Surface,
+        logical_size: int,
+        text: str,
+        logical_rect: pygame.Rect,
+        color: tuple[int, int, int],
+    ):
+        if int(pygame.time.get_ticks() / 500) % 2 != 0:
+            return
+        rect = self._scale_rect(logical_rect)
+        scale = self._window_scale()
+        font = self._window_font(logical_size, bold=True)
+        fitted_text = self._fit_text(text, font, max(4, rect.w - (4 * scale)))
+        text_width = font.size(fitted_text)[0] if fitted_text else 0
+        caret_w = max(1, scale)
+        caret_h = max(caret_w, font.get_height() - (2 * scale))
+        x = min(rect.right - caret_w, rect.x + text_width + scale)
+        y = rect.y + (rect.h - caret_h) // 2
+        pygame.draw.rect(surface, color, pygame.Rect(x, y, caret_w, caret_h))
+
     def _draw_marquee_text(
         self,
         surface: pygame.Surface,
@@ -562,24 +675,37 @@ class RoomLobbyUi:
         surface.set_clip(previous_clip)
 
     def _current_avatar_source(self) -> pygame.Surface:
-        if self.context.avatar_window_surface is not None:
-            return self.context.avatar_window_surface
-        if self.context.avatar_surface is not None:
-            return self.context.avatar_surface
-        return make_default_avatar()
+        return self.context.current_avatar_source()
 
     def _avatar_for_player(self, player_id: int, local_player_id: int | None) -> pygame.Surface:
         if local_player_id is not None and player_id == local_player_id:
             return self._current_avatar_source()
-        return self._remote_avatar_surfaces.get(player_id) or make_default_avatar()
+        return self._remote_avatar_surfaces.get(player_id) or make_default_avatar(self.context.project_root)
+
+    def _body_frame_for_player(self, player_id: int, local_player_id: int | None) -> pygame.Surface | None:
+        if local_player_id is not None and player_id == local_player_id:
+            return self._idle_body_frame
+        model_type, model_color = self._remote_models.get(
+            player_id,
+            (protocol.DEFAULT_MODEL_TYPE, protocol.DEFAULT_MODEL_COLOR),
+        )
+        key = (model_type, model_color)
+        if key not in self._body_frame_cache:
+            try:
+                frames = load_spritesheet_frames(animation_path(self.context.project_root, model_type, model_color))
+                self._body_frame_cache[key] = frames["idle_front"][0]
+            except (FileNotFoundError, pygame.error):
+                return self._idle_body_frame
+        return self._body_frame_cache.get(key)
 
     def _draw_player_model(
         self,
         surface: pygame.Surface,
         logical_rect: pygame.Rect,
         avatar: pygame.Surface,
+        body_frame: pygame.Surface | None,
     ):
-        if self._idle_body_frame is None:
+        if body_frame is None:
             return
         frame_rect = self._scale_rect(logical_rect)
         avatar_logical = pygame.Rect(
@@ -590,7 +716,7 @@ class RoomLobbyUi:
         )
         avatar_rect = self._scale_rect(avatar_logical)
         avatar_image = pygame.transform.smoothscale(crop_square(avatar), avatar_rect.size)
-        body = pygame.transform.scale(self._idle_body_frame, frame_rect.size)
+        body = pygame.transform.scale(body_frame, frame_rect.size)
         surface.blit(avatar_image, avatar_rect)
         surface.blit(body, frame_rect)
 
@@ -615,10 +741,28 @@ class RoomLobbyUi:
         secondary_label: str,
         countdown_remaining: float | None = None,
         pulse_t: float = 0.0,
+        room_name_hovered: bool = False,
     ):
         theme = DEFAULT_THEME
-        room_title = f"Hosting: {room_name}" if host_view else room_name
-        self._draw_text_left(surface, 7, room_title, self.room_title_text_rect(), theme.text, shadow=True)
+        buttons = self.button_layout(host_view)
+        if countdown_remaining is not None:
+            exempt_rect = buttons["primary"].inflate(2, 2) if host_view else None
+            self._draw_countdown_focus(surface, countdown_remaining, pulse_t, exempt_rect)
+            if host_view:
+                primary_color = theme.text if primary_enabled else theme.text_muted
+                self._draw_text_center(surface, 7, primary_label, buttons["primary"].inflate(-10, -6), primary_color)
+            self.draw_window_global_messages(surface)
+            return
+
+        if host_view:
+            title_rect = self.room_title_text_rect()
+            prefix = "Hosting: "
+            self._draw_text_left(surface, 7, prefix, title_rect, theme.text_muted, shadow=True)
+            name_rect = self.room_title_name_rect(room_name, host_view)
+            name_color = (255, 236, 170) if room_name_hovered else theme.text
+            self._draw_text_left(surface, 7, room_name, name_rect, name_color, shadow=True)
+        else:
+            self._draw_text_left(surface, 7, room_name, self.room_title_text_rect(), theme.text, shadow=True)
         self._draw_text_center(
             surface,
             7,
@@ -639,20 +783,20 @@ class RoomLobbyUi:
             is_host = host_id is not None and player_id == host_id
             status = lobby_player_status(is_host, ready)
             self._draw_marquee_text(surface, 6, name, layout["name"], (215, 235, 250), player_id)
-            self._draw_player_model(surface, layout["model"], self._avatar_for_player(player_id, local_player_id))
+            self._draw_player_model(
+                surface,
+                layout["model"],
+                self._avatar_for_player(player_id, local_player_id),
+                self._body_frame_for_player(player_id, local_player_id),
+            )
             if host_view and kick_mode and not is_host:
                 self._draw_text_center(surface, 5, "KICK", layout["kick_text"], theme.text, shadow=True)
             else:
                 self._draw_text_center(surface, 5, status.value, layout["status_text"], self._status_color(status), shadow=True)
 
-        buttons = self.button_layout(host_view)
         primary_color = theme.text if primary_enabled else theme.text_muted
         self._draw_text_center(surface, 7, primary_label, buttons["primary"].inflate(-10, -6), primary_color)
         self._draw_text_center(surface, 7, secondary_label, buttons["secondary"].inflate(-10, -6), theme.text)
-
-        if countdown_remaining is not None:
-            exempt_rect = buttons["primary"].inflate(2, 2) if host_view else None
-            self._draw_countdown_focus(surface, countdown_remaining, pulse_t, exempt_rect)
 
         self.draw_window_global_messages(surface)
 
@@ -676,6 +820,32 @@ class RoomLobbyUi:
         )
         self._draw_text_center(surface, 7, "CLOSE", layout["close"].inflate(-8, -6), theme.text)
         self._draw_text_center(surface, 7, "CANCEL", layout["cancel"].inflate(-8, -6), theme.text)
+        self.draw_window_global_messages(surface)
+
+    def draw_room_name_edit_window_overlay(
+        self,
+        surface: pygame.Surface,
+        value: str,
+        save_enabled: bool,
+        field_active: bool,
+    ):
+        theme = DEFAULT_THEME
+        layout = self.room_name_edit_layout()
+        self._draw_text_center(surface, 7, "Edit Room Name", layout["title"], (180, 220, 255))
+        self._draw_text_left(surface, 7, value, layout["text"], theme.text, shadow=False)
+        self._draw_text_right_alpha(
+            surface,
+            7,
+            f"{len(value)}/{protocol.ROOM_NAME_MAX_LEN}",
+            layout["count"],
+            theme.text_muted,
+            191,
+        )
+        if field_active:
+            self._draw_text_caret(surface, 7, value, layout["text"], theme.text)
+        save_color = theme.text if save_enabled else theme.text_muted
+        self._draw_text_center(surface, 7, "SAVE", layout["save"], save_color)
+        self._draw_text_center(surface, 7, "CANCEL", layout["cancel"], theme.text)
         self.draw_window_global_messages(surface)
 
     def _draw_dim_scrim(self, surface: pygame.Surface, exempt_logical_rect: pygame.Rect | None):

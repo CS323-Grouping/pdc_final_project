@@ -13,7 +13,6 @@ from typing import Dict, Optional, Type
 import pygame
 
 from app.display import DisplayConfig, DisplayManager
-from app.paths import get_resource_root
 from app.profile_store import ProfileSession
 from network import network_handler as nw
 from network import protocol
@@ -134,8 +133,6 @@ class AppContext:
             self.roster = []
         if self.results_standings is None:
             self.results_standings = []
-        if self.remote_avatar_surfaces is None:
-            self.remote_avatar_surfaces = {}
         if self.avatar_surface is None or self.avatar_window_surface is None:
             self.use_default_head(save=False)
 
@@ -209,12 +206,6 @@ class AppContext:
         self.profile_session.data.model_color = protocol.normalize_model_color(self.model_color)
         self.profile_session.data.use_custom_head = self.use_custom_head
         self.profile_session.save()
-
-    def window_border_inset_px(self) -> int:
-        """Horizontal pillar width in **window** pixels (internal border is `BORDER_WIDTH` × scale)."""
-        if self.display_manager is None:
-            return BORDER_WIDTH
-        return BORDER_WIDTH * int(self.display_manager.config.selected_scale)
 
     def tick_timers(self, dt: float):
         if self.banner_timer > 0:

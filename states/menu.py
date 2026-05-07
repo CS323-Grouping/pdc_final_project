@@ -4,7 +4,7 @@ from app.display import DisplayConfig
 from network import protocol
 from network.discovery import LobbyBrowser, PresenceEntry
 from player_scripts.animation import load_spritesheet_frames
-from player_scripts.avatar_sprite import AVATAR_RECT, crop_square, make_default_avatar
+from player_scripts.avatar_sprite import AVATAR_RECT, crop_square
 from states.common import ScreenState, event_has_ctrl_modifier, filter_player_name_input, remove_previous_input_token
 from ui.theme import DEFAULT_THEME
 from world.constants import PLAYER_FRAME_HEIGHT, PLAYER_FRAME_WIDTH
@@ -244,13 +244,12 @@ class MainMenuState(ScreenState):
         total_button_w = button_w * 2 + button_gap
         save = pygame.Rect(frame.centerx - total_button_w // 2, button_y, button_w, button_h)
         cancel = pygame.Rect(save.right + button_gap, button_y, button_w, button_h)
-        count_w = 36
         return {
             "frame": frame,
             "title": title,
             "field": field,
-            "text": pygame.Rect(field.x + 5, field.y + 3, max(4, field.w - 17 - count_w), 12),
-            "count": pygame.Rect(field.right - 7 - count_w, field.y + 3, count_w, 12),
+            "text": pygame.Rect(field.x + 5, field.y + 3, 124, 12),
+            "count": pygame.Rect(field.x + 7, field.y + 3, field.w - 14, 12),
             "save": save,
             "cancel": cancel,
         }
@@ -368,19 +367,6 @@ class MainMenuState(ScreenState):
                     self._pending_fullscreen = self.context.display_manager.config.fullscreen
                 self._settings_open = True
                 return
-
-        if event.type == pygame.KEYDOWN and self.name_active:
-            if event.key == pygame.K_ESCAPE:
-                self.name_active = False
-            elif event.key == pygame.K_RETURN:
-                self.name_active = False
-            elif event.key == pygame.K_BACKSPACE:
-                if event_has_ctrl_modifier(event):
-                    self.name_input = remove_previous_input_token(self.name_input, separators="_-")
-                else:
-                    self.name_input = self.name_input[:-1]
-            elif event.unicode and event.unicode.isprintable():
-                self.name_input = filter_player_name_input(self.name_input + event.unicode)
 
     def update(self, dt: float):
         _ = dt

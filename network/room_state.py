@@ -73,18 +73,6 @@ class RoomState:
         with self.lock:
             self.room_name = room_name
 
-    def set_selected_level(self, level_id: int) -> bool:
-        with self.lock:
-            level_id = normalize_level_id(level_id)
-            if self.selected_level == level_id:
-                return False
-            self.selected_level = level_id
-            return True
-
-    def get_selected_level(self) -> int:
-        with self.lock:
-            return self.selected_level
-
     def connected_count(self) -> int:
         with self.lock:
             return len(self._addr_to_id)

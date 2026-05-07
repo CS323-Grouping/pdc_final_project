@@ -78,7 +78,7 @@ class JoinedLobbyState(ScreenState):
             elif isinstance(event, nw.CountdownEvent):
                 self.accept_countdown_event(event)
             elif isinstance(event, nw.CountdownCancelEvent):
-                self.accept_countdown_cancel_event(event)
+                self.context.countdown_remaining = None
             elif isinstance(event, nw.RoomNameEvent):
                 self.context.room_name = event.room_name
             elif isinstance(event, nw.GameStartEvent):
@@ -102,6 +102,12 @@ class JoinedLobbyState(ScreenState):
         if self.context.network is None:
             self.switch("menu")
             return
+        if self.context.countdown_remaining is not None:
+            return
+
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+            self._leave_room()
+            return
 
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             action = self._room_ui.hit_test(
@@ -112,8 +118,7 @@ class JoinedLobbyState(ScreenState):
                 kick_mode=False,
             )
             if action == "secondary":
-                self.context.detach_network(send_disconnect=True)
-                self.switch("browse_lobby")
+                self._leave_room()
                 return
             if action == "primary":
                 self._ready_on = not self._ready_on
@@ -145,6 +150,8 @@ class JoinedLobbyState(ScreenState):
             host_view=False,
             kick_mode=False,
         )
+        if self.context.countdown_remaining is not None:
+            self._hovered = None
 
     def draw(self, surface):
         hid = _host_player_id(self.context.roster)

@@ -61,10 +61,7 @@ from network.protocol import (
     pack_player_state,
     pack_ready,
     pack_reconnect,
-    pack_level_select,
     pack_room_name_update,
-    pack_orb_collect,
-    pack_platform_progress,
     pack_start,
     safe_unpack,
     safe_unpack_avatar_chunk,
@@ -85,7 +82,6 @@ from network.protocol import (
     safe_unpack_player_state,
     safe_unpack_reconnect_no,
     safe_unpack_reconnect_ok,
-    safe_unpack_level_select,
     safe_unpack_room_name_update,
     safe_unpack_session,
     tag_of,
@@ -157,17 +153,8 @@ def _event_summary(event: "NetworkEvent") -> str:
         return f"MatchPauseEvent player_id={event.player_id} remaining={event.seconds_remaining:.2f}"
     if isinstance(event, MatchResumeEvent):
         return "MatchResumeEvent"
-    if isinstance(event, HeartbeatAckEvent):
-        return f"HeartbeatAckEvent state={event.server_state} countdown_id={event.countdown_id} match_id={event.match_id}"
     if isinstance(event, RoomNameEvent):
         return f"RoomNameEvent room_name={event.room_name}"
-    if isinstance(event, LevelSelectEvent):
-        return f"LevelSelectEvent level={event.level_id}"
-    if isinstance(event, OrbCollectEvent):
-        return (
-            f"OrbCollectEvent player_id={event.player_id} orb_index={event.orb_index} "
-            f"cooldown_sec={event.cooldown_sec}"
-        )
     if isinstance(event, ConnectDeniedEvent):
         return f"ConnectDeniedEvent reason={event.reason_code} extra={event.extra}"
     if isinstance(event, ConnectionLostEvent):
@@ -284,27 +271,8 @@ class MatchResumeEvent:
 
 
 @dataclass(frozen=True)
-class HeartbeatAckEvent:
-    server_state: int
-    countdown_id: int
-    match_id: int
-
-
-@dataclass(frozen=True)
 class RoomNameEvent:
     room_name: str
-
-
-@dataclass(frozen=True)
-class LevelSelectEvent:
-    level_id: int
-
-
-@dataclass(frozen=True)
-class OrbCollectEvent:
-    player_id: int
-    orb_index: int
-    cooldown_sec: int
 
 
 @dataclass(frozen=True)
@@ -338,10 +306,7 @@ NetworkEvent = Union[
     SessionEvent,
     MatchPauseEvent,
     MatchResumeEvent,
-    HeartbeatAckEvent,
     RoomNameEvent,
-    LevelSelectEvent,
-    OrbCollectEvent,
     ConnectDeniedEvent,
     ConnectionLostEvent,
     ErrorEvent,
@@ -733,12 +698,6 @@ class Network:
         LOGGER.info("send ROOM_NAME player_id=%s room_name=%s", self.id, room_name)
         self._sendto(pack_room_name_update(self.id, room_name))
 
-    def send_level_select(self, level_id: int):
-        if self.id < 0:
-            return
-        LOGGER.info("send LEVEL_SELECT player_id=%s level=%s", self.id, level_id)
-        self._sendto(pack_level_select(self.id, level_id))
-
     def send_dead(self):
         if self.id < 0:
             return
@@ -763,16 +722,6 @@ class Network:
         if self.id < 0:
             return
         self._sendto(pack_player_state(x, y, self.id, animation_state))
-
-    def send_orb_collect(self, orb_index: int, cooldown_sec: int):
-        if self.id < 0:
-            return
-        self._sendto(pack_orb_collect(self.id, int(orb_index), int(cooldown_sec)))
-
-    def send_platform_progress(self, platforms_reached: int):
-        if self.id < 0:
-            return
-        self._sendto(pack_platform_progress(self.id, int(platforms_reached)))
 
     def send_avatar(
         self,
@@ -871,12 +820,6 @@ class Network:
             if unpacked is None:
                 return ErrorEvent("Malformed RSUM packet")
             return MatchResumeEvent()
-        if tag == HEARTBEAT_ACK:
-            unpacked = safe_unpack_heartbeat_ack(data)
-            if unpacked is None:
-                return ErrorEvent("Malformed HBAK packet")
-            _tag, server_state, countdown_id, match_id = unpacked
-            return HeartbeatAckEvent(server_state=server_state, countdown_id=countdown_id, match_id=match_id)
         if tag == ROOM_NAME_UPDATE:
             unpacked = safe_unpack_room_name_update(data)
             if unpacked is None:
@@ -884,19 +827,6 @@ class Network:
             _tag, _host_id, room_name = unpacked
             self.room_name = room_name
             return RoomNameEvent(room_name=room_name)
-        if tag == LEVEL_SELECT:
-            unpacked = safe_unpack_level_select(data)
-            if unpacked is None:
-                return ErrorEvent("Malformed LVSL packet")
-            _tag, _host_id, level_id = unpacked
-            self.selected_level = level_id
-            return LevelSelectEvent(level_id=level_id)
-        if tag == ORB_COLLECT:
-            unpacked = safe_unpack_orb_collect(data)
-            if unpacked is None:
-                return ErrorEvent("Malformed ORBC packet")
-            _tag, picker_id, orb_index, cooldown_sec = unpacked
-            return OrbCollectEvent(player_id=picker_id, orb_index=orb_index, cooldown_sec=cooldown_sec)
         if tag == CONNO:
             unpacked = safe_unpack_conno(data)
             if unpacked is None:
