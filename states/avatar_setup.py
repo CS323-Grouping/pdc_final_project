@@ -2,13 +2,9 @@ from pathlib import Path
 
 import pygame
 
-from player_scripts.animation import load_spritesheet_frames
-from player_scripts.avatar_sprite import (
-    AVATAR_RECT,
-    VALID_AVATAR_EXTENSIONS,
-    crop_square,
-)
 from network import protocol
+from player_scripts.avatar_sprite import AVATAR_RECT, VALID_AVATAR_EXTENSIONS, crop_square
+from player_scripts.model_assets import load_body_variation_frame, load_default_head_texture
 from states.common import ScreenState
 from ui import components as ui
 from ui.theme import DEFAULT_THEME
@@ -44,20 +40,23 @@ class AvatarSetupState(ScreenState):
 
     def __init__(self, machine, context, **kwargs):
         super().__init__(machine, context, **kwargs)
-        self.back_button = ui.Button(pygame.Rect(0, 0, 110, 38), "Back")
-        self.upload_button = ui.Button(pygame.Rect(0, 0, 160, 40), "Upload Image")
-        self.default_button = ui.Button(pygame.Rect(0, 0, 150, 40), "Use Default")
-        self.prev_color_button = ui.Button(pygame.Rect(0, 0, 118, 34), "Prev Color")
-        self.next_color_button = ui.Button(pygame.Rect(0, 0, 118, 34), "Next Color")
         self.save_crop_button = ui.Button(pygame.Rect(0, 0, 130, 38), "Save Crop")
         self.cancel_crop_button = ui.Button(pygame.Rect(0, 0, 110, 38), "Cancel")
         self.zoom_in_button = ui.Button(pygame.Rect(0, 0, 42, 38), "+")
         self.zoom_out_button = ui.Button(pygame.Rect(0, 0, 42, 38), "-")
-        self._back_h = False
-        self._upload_h = False
-        self._default_h = False
-        self._prev_color_h = False
-        self._next_color_h = False
+
+        self._assets: dict[str, pygame.Surface] = {}
+        self._window_fonts: dict[tuple[int, bool], pygame.font.Font] = {}
+        self._hovered: str | None = None
+        self._pending_dialog: str | None = None
+
+        self._draft_model_color = protocol.DEFAULT_MODEL_COLOR
+        self._draft_avatar_source: pygame.Surface | None = None
+        self._draft_avatar_source_name = "Default head"
+        self._draft_use_custom_head = False
+        self._draft_head_changed = False
+        self._body_frame: pygame.Surface | None = None
+
         self._save_h = False
         self._cancel_h = False
         self._zoom_in_h = False
@@ -74,8 +73,60 @@ class AvatarSetupState(ScreenState):
         self._assets = self._load_assets()
         self._reset_draft_from_context()
 
-    def _sprite_path(self) -> Path:
-        return self.context.player_animation_path()
+    def _load_assets(self) -> dict[str, pygame.Surface]:
+        edit_root = self.context.project_root / "assets" / "editAvatar"
+        menu_root = self.context.project_root / "assets" / "Menu"
+        names = {
+            "background": menu_root / "MenuBackground_Image.png",
+            "preview_section": edit_root / "EditAvatarPreviewSection_Frame.png",
+            "model_frame": edit_root / "EditAvatarPreviewSectionModel_Frame.png",
+            "model_background": edit_root / "EditAvatarPreviewSectionModelFrame_Background.png",
+            "upload": edit_root / "EditAvatarPreviewSectionUpload_Button.png",
+            "upload_icon": edit_root / "EditAvatarPreviewSectionUpload_ButtonIcon.png",
+            "remove": edit_root / "EditAvatarPreviewSectionRemove_Button.png",
+            "remove_disabled": edit_root / "EditAvatarPreviewSectionRemove_ButtonDisabled.png",
+            "remove_icon": edit_root / "EditAvatarPreviewSectionRemove_ButtonIcon.png",
+            "remove_icon_disabled": edit_root / "EditAvatarPreviewSectionRemove_ButtonIconDisabled.png",
+            "option_section": edit_root / "EditAvatarOptionSection_Frame.png",
+            "option": edit_root / "EditAvatarOptionSectionOption_Frame.png",
+            "option_textures": edit_root / "EditAvatarOptionSectionOptionColor_Textures.png",
+            "save": edit_root / "EditAvatarOptionSectionSave_Button.png",
+            "save_disabled": edit_root / "EditAvatarOptionSectionSave_ButtonDisabled.png",
+            "cancel": edit_root / "EditAvatarOptionSectionCancel_Button.png",
+            "dialog_frame": edit_root / "EditAvatarDiscardRemoveConfirmation_Window.png",
+            "dialog_confirm": edit_root / "EditAvatarDiscardRemoveConfirmationWindowConfirm_Button.png",
+            "dialog_cancel": edit_root / "EditAvatarDiscardRemoveConfirmationWindowCancel_Button.png",
+            "crop_window": edit_root / "EditAvatarCropImageWindow_Frame.png",
+            "crop_preview": edit_root / "EditAvatarCropImagePreview_Frame.png",
+            "crop_save": edit_root / "EditAvatarCropImageSave_Button.png",
+            "crop_cancel": edit_root / "EditAvatarCropImageCancel_Button.png",
+            "crop_zoom": edit_root / "EditAvatarCropImageZoomInOut_Button.png",
+        }
+        assets: dict[str, pygame.Surface] = {}
+        for key, path in names.items():
+            try:
+                assets[key] = pygame.image.load(str(path)).convert_alpha()
+            except (FileNotFoundError, pygame.error):
+                fallback = pygame.Surface((16, 16), pygame.SRCALPHA)
+                fallback.fill((25, 38, 58, 255))
+                assets[key] = fallback
+        return assets
+
+    def _reset_draft_from_context(self):
+        self._draft_model_color = protocol.normalize_model_color(self.context.model_color)
+        self._draft_avatar_source = self.context.current_avatar_source().copy()
+        self._draft_avatar_source_name = self.context.avatar_source_name
+        self._draft_use_custom_head = self.context.use_custom_head
+        self._draft_head_changed = False
+        self._pending_dialog = None
+        self._load_body_frame()
+
+    def _load_body_frame(self):
+        self._body_frame = load_body_variation_frame(
+            self.context.project_root,
+            self.context.model_type,
+            self._draft_model_color,
+        )
 
     def _has_unsaved_changes(self) -> bool:
         return (
@@ -84,11 +135,11 @@ class AvatarSetupState(ScreenState):
             or self._draft_model_color != protocol.normalize_model_color(self.context.model_color)
         )
 
-    def _current_avatar(self) -> pygame.Surface:
-        return self.context.current_avatar_frame()
+    def _can_remove_head(self) -> bool:
+        return self._draft_use_custom_head
 
-    def _current_crop_source(self) -> pygame.Surface:
-        return self.context.current_avatar_source()
+    def _default_head_source(self) -> pygame.Surface:
+        return load_default_head_texture(self.context.project_root)
 
     def _discard_changes(self):
         self._reset_draft_from_context()
@@ -101,15 +152,20 @@ class AvatarSetupState(ScreenState):
         self._draft_head_changed = True
         self._pending_dialog = None
 
-    def _layout(self):
-        width, height = self.context.screen.get_size()
-        self.back_button.rect.topleft = (16, 16)
-        button_y = height - 58
-        self.upload_button.rect.center = (width // 2 - 90, button_y + 20)
-        self.default_button.rect.center = (width // 2 + 90, button_y + 20)
-        color_y = max(86, button_y - 48)
-        self.prev_color_button.rect.center = (width // 2 - 74, color_y)
-        self.next_color_button.rect.center = (width // 2 + 74, color_y)
+    def _save_changes(self):
+        if not self._has_unsaved_changes():
+            return
+        self.context.set_model_color(self._draft_model_color, save=False)
+        if self._draft_use_custom_head:
+            if self._draft_avatar_source is not None and self._draft_head_changed:
+                self.context.cache_custom_head(self._draft_avatar_source, self._draft_avatar_source_name)
+            else:
+                self.context.save_profile()
+        else:
+            self.context.use_default_head(save=False)
+            self.context.save_profile()
+        self._reset_draft_from_context()
+        self.context.set_status("Avatar saved.", duration=2.0)
 
     def _handle_cancel_or_back(self):
         if self._has_unsaved_changes():
@@ -193,22 +249,6 @@ class AvatarSetupState(ScreenState):
         self._crop_offset.update(0, 0)
         self._dragging_crop = False
 
-    def _use_default_avatar(self):
-        self.context.use_default_head()
-        self._refresh_previews()
-        self.context.set_status("Avatar reset to default.", duration=2.0)
-
-    def _cycle_model_color(self, direction: int):
-        colors = list(protocol.MODEL_COLORS)
-        try:
-            index = colors.index(protocol.normalize_model_color(self.context.model_color))
-        except ValueError:
-            index = colors.index(protocol.DEFAULT_MODEL_COLOR)
-        self.context.set_model_color(colors[(index + direction) % len(colors)])
-        self._load_body_frames()
-        self._refresh_previews()
-        self.context.set_status(f"Model color: {self.context.model_color}", duration=1.5)
-
     def _cover_scale(self, target_size: int, source: pygame.Surface) -> float:
         return max(target_size / source.get_width(), target_size / source.get_height()) * self._crop_zoom
 
@@ -283,7 +323,10 @@ class AvatarSetupState(ScreenState):
         cropped = self._render_crop_surface(256)
         if cropped is None:
             return
-        self.context.cache_custom_head(cropped, self._editing_source_name)
+        self._draft_avatar_source = cropped
+        self._draft_avatar_source_name = self._editing_source_name
+        self._draft_use_custom_head = True
+        self._draft_head_changed = True
         self._editing_source = None
         self._dragging_crop = False
         self.context.set_status("Avatar image staged.", duration=2.0)
@@ -303,87 +346,38 @@ class AvatarSetupState(ScreenState):
             if EDIT_AVATAR_RECTS["upload"].collidepoint(event.pos):
                 self._upload_avatar()
                 return
-            if self.default_button.rect.collidepoint(event.pos):
-                self._use_default_avatar()
+            if EDIT_AVATAR_RECTS["remove"].collidepoint(event.pos):
+                if self._can_remove_head():
+                    self._pending_dialog = "remove"
                 return
-            if self.prev_color_button.rect.collidepoint(event.pos):
-                self._cycle_model_color(-1)
+            if EDIT_AVATAR_RECTS["save"].collidepoint(event.pos):
+                self._save_changes()
                 return
-            if self.next_color_button.rect.collidepoint(event.pos):
-                self._cycle_model_color(1)
+            if EDIT_AVATAR_RECTS["cancel"].collidepoint(event.pos):
+                self._handle_cancel_or_back()
+                return
+            for color, frame, _texture in self._option_rects():
+                if frame.collidepoint(event.pos):
+                    self._draft_model_color = color
+                    self._load_body_frame()
+                    return
 
     def _handle_dialog_event(self, event):
         layout = self._dialog_layout()
         if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
             self._pending_dialog = None
             return
-        self._layout()
-        mp = self.context.mouse_pos
-        self._back_h = self.back_button.rect.collidepoint(mp)
-        self._upload_h = self.upload_button.rect.collidepoint(mp)
-        self._default_h = self.default_button.rect.collidepoint(mp)
-        self._prev_color_h = self.prev_color_button.rect.collidepoint(mp)
-        self._next_color_h = self.next_color_button.rect.collidepoint(mp)
-
-    def draw(self, surface):
-        super().draw(surface)
-        if self._editing_source is not None:
-            self._draw_crop_editor(surface)
+        if event.type != pygame.MOUSEBUTTONDOWN or event.button != 1:
             return
-        self._layout()
-        theme = DEFAULT_THEME
-        width, height = surface.get_size()
-
-        ui.draw_button(surface, self.context.small_font, self.back_button, theme, hovered=self._back_h, variant="neutral")
-        title = self.context.title_font.render("Avatar", True, theme.text)
-        surface.blit(title, title.get_rect(center=(width // 2, 42)))
-
-        preview_y = max(76, height // 2 - 100)
-        preview = self._make_player_preview(6)
-        if preview is not None:
-            surface.blit(preview, preview.get_rect(center=(width // 2 - 120, preview_y + 96)))
-        else:
-            missing = self.context.small_font.render("Preview unavailable", True, theme.text_warn)
-            surface.blit(missing, missing.get_rect(center=(width // 2 - 120, preview_y + 96)))
-
-        crop_label = self.context.small_font.render("1:1 Crop", True, theme.text)
-        crop_center = (width // 2 + 120, preview_y + 78)
-        surface.blit(crop_label, crop_label.get_rect(center=(crop_center[0], preview_y + 8)))
-        if self._crop_preview is not None:
-            crop_rect = self._crop_preview.get_rect(center=crop_center)
-            surface.blit(self._crop_preview, crop_rect)
-            pygame.draw.rect(surface, theme.border_focus, crop_rect, width=2, border_radius=4)
-
-        source = self.context.tiny_font.render(self.context.avatar_source_name, True, theme.text_muted)
-        surface.blit(source, source.get_rect(center=(width // 2 + 120, preview_y + 150)))
-        color_label = self.context.small_font.render(
-            f"{self.context.model_type} / {self.context.model_color}",
-            True,
-            theme.text_warn,
-        )
-        surface.blit(color_label, color_label.get_rect(center=(width // 2, height - 104)))
-
-        ui.draw_button(surface, self.context.small_font, self.upload_button, theme, hovered=self._upload_h)
-        ui.draw_button(surface, self.context.small_font, self.default_button, theme, hovered=self._default_h, variant="neutral")
-        ui.draw_button(surface, self.context.small_font, self.prev_color_button, theme, hovered=self._prev_color_h, variant="neutral")
-        ui.draw_button(surface, self.context.small_font, self.next_color_button, theme, hovered=self._next_color_h, variant="neutral")
-
-    def _make_player_preview(self, scale: int) -> pygame.Surface | None:
-        if self._idle_body_frame is None:
-            return None
-        preview = pygame.Surface((PLAYER_FRAME_WIDTH * scale, PLAYER_FRAME_HEIGHT * scale), pygame.SRCALPHA)
-        avatar_source = self._current_crop_source()
-        avatar_rect = pygame.Rect(
-            AVATAR_RECT.x * scale,
-            AVATAR_RECT.y * scale,
-            AVATAR_RECT.w * scale,
-            AVATAR_RECT.h * scale,
-        )
-        avatar = pygame.transform.smoothscale(crop_square(avatar_source), avatar_rect.size)
-        body = pygame.transform.scale(self._idle_body_frame, preview.get_size())
-        preview.blit(avatar, avatar_rect)
-        preview.blit(body, (0, 0))
-        return preview
+        if layout["cancel"].collidepoint(event.pos):
+            self._pending_dialog = None
+            return
+        if layout["confirm"].collidepoint(event.pos):
+            if self._pending_dialog == "remove":
+                self._remove_uploaded_head()
+            elif self._pending_dialog == "discard":
+                self._discard_changes()
+            return
 
     def _handle_crop_event(self, event):
         self._crop_layout()

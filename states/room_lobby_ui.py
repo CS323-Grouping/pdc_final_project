@@ -746,11 +746,14 @@ class RoomLobbyUi:
         theme = DEFAULT_THEME
         buttons = self.button_layout(host_view)
         if countdown_remaining is not None:
-            exempt_rect = buttons["primary"].inflate(2, 2) if host_view else None
+            exempt_button = buttons["primary"] if host_view else buttons["secondary"]
+            exempt_rect = exempt_button.inflate(2, 2)
             self._draw_countdown_focus(surface, countdown_remaining, pulse_t, exempt_rect)
             if host_view:
                 primary_color = theme.text if primary_enabled else theme.text_muted
                 self._draw_text_center(surface, 7, primary_label, buttons["primary"].inflate(-10, -6), primary_color)
+            else:
+                self._draw_text_center(surface, 7, secondary_label, buttons["secondary"].inflate(-10, -6), theme.text)
             self.draw_window_global_messages(surface)
             return
 
