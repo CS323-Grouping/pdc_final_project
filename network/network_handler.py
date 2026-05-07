@@ -798,6 +798,9 @@ class Network:
         except OSError as error:
             if self._stop_event.is_set() or self._closed:
                 return None
+            if getattr(error, "winerror", None) == 10054:
+                LOGGER.debug("UDP recv WinError 10054 ignored (transient ICMP)")
+                return None
             return self._mark_connection_lost(f"Network receive failed: {error}")
         LOGGER.debug("recv packet tag=%s bytes=%s", _packet_tag_name(data), len(data))
         return self._parse_event(data)

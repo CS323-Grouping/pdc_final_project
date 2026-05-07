@@ -101,8 +101,6 @@ class JoinedLobbyState(ScreenState):
         if self.context.network is None:
             self.switch("menu")
             return
-        if self.context.countdown_remaining is not None:
-            return
 
         if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
             self._leave_room()
@@ -116,6 +114,10 @@ class JoinedLobbyState(ScreenState):
                 host_view=False,
                 kick_mode=False,
             )
+            if self.context.countdown_remaining is not None:
+                if action == "secondary":
+                    self._leave_room()
+                return
             if action == "secondary":
                 self._leave_room()
                 return

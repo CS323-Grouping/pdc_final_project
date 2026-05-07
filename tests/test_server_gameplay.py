@@ -60,6 +60,44 @@ def test_handle_conn_rejects_case_insensitive_duplicate_player_name():
     )
 
 
+def test_handle_conn_prunes_stale_lobby_duplicate_before_name_check():
+    room_state = RoomState(room_name="TestRoom", game_port=5555)
+    host_id, _ = room_state.add_or_get_player(("127.0.0.1", 12001), "HostA")
+    stale_id, _ = room_state.add_or_get_player(("127.0.0.1", 12002), "Bravo")
+    room_state.touch_player(host_id, now=time.monotonic())
+    room_state.touch_player(stale_id, now=0.0)
+    sock = FakeSocket()
+    server = LobbyServer(sock, room_state, countdown_seconds=0.0, lobby_player_timeout_seconds=1.0)
+    reconnect_addr = ("127.0.0.1", 12003)
+
+    server.handle_conn(protocol.pack_conn("bravo"), reconnect_addr)
+
+    assert room_state.connected_count() == 2
+    assert room_state.get_player_id_by_addr(reconnect_addr) is not None
+    assert room_state.get_player_id_by_addr(("127.0.0.1", 12002)) is None
+    assert not any(protocol.safe_unpack_conno(payload) for payload, _addr in sock.sent)
+
+
+def test_cancel_countdown_is_rebroadcast_for_late_or_lossy_clients():
+    room_state = RoomState(room_name="TestRoom", game_port=5555)
+    room_state.add_or_get_player(("127.0.0.1", 12001), "Alpha")
+    room_state.add_or_get_player(("127.0.0.1", 12002), "Bravo")
+    room_state.state = protocol.STATE_COUNTDOWN
+    sock = FakeSocket()
+    server = LobbyServer(sock, room_state, countdown_seconds=0.0)
+
+    server.cancel_countdown(protocol.CDWNX_REASON_HOST_CANCELLED)
+    immediate_count = sum(1 for payload, _addr in sock.sent if protocol.tag_of(payload) == protocol.CDWNX)
+    sock.sent.clear()
+    for item in server._reliable_broadcasts:
+        item["next_at"] = 0.0
+    server.tick_reliable_broadcasts()
+
+    rebroadcast_count = sum(1 for payload, _addr in sock.sent if protocol.tag_of(payload) == protocol.CDWNX)
+    assert immediate_count == 2
+    assert rebroadcast_count == 2
+
+
 def test_lobby_replays_cached_avatar_to_late_joiner():
     room_state = RoomState(room_name="TestRoom", game_port=5555)
     alpha_addr = ("127.0.0.1", 12001)
@@ -72,7 +110,7 @@ def test_lobby_replays_cached_avatar_to_late_joiner():
     payload = b"avatar-payload"
 
     server.handle_avatar_header(
-        protocol.pack_avatar_header(alpha_id, avatar_id, 1, len(payload)),
+        protocol.pack_avatar_header(alpha_id, avatar_id, 1, len(payload), "Default", "Green"),
         alpha_addr,
     )
     server.handle_avatar_chunk(
@@ -93,7 +131,7 @@ def test_lobby_replays_cached_avatar_to_late_joiner():
             1,
             len(payload),
             protocol.DEFAULT_MODEL_TYPE,
-            protocol.DEFAULT_MODEL_COLOR,
+            "Green",
         )
         for packet in late_packets
     )

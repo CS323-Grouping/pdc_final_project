@@ -292,6 +292,16 @@ class RoomState:
                     output.append(player_id)
             return sorted(output)
 
+    def timed_out_connected_ids(self, now: float, timeout_seconds: float) -> List[int]:
+        with self.lock:
+            output: List[int] = []
+            for player_id, player in self._players.items():
+                if not player.connected:
+                    continue
+                if (now - player.last_seen) > timeout_seconds:
+                    output.append(player_id)
+            return sorted(output)
+
     def expired_reconnect_ids(self, now: float) -> List[int]:
         with self.lock:
             output: List[int] = []
@@ -317,12 +327,14 @@ class RoomState:
                     entries.append((player.player_id, player.ready, player.name))
             return entries
 
-    def set_ready(self, player_id: int, ready_flag: bool):
+    def set_ready(self, player_id: int, ready_flag: bool) -> bool:
         with self.lock:
             player = self._players.get(player_id)
             if player is None or not player.connected:
-                return
+                return False
+            changed = player.ready != ready_flag
             player.ready = ready_flag
+            return changed
 
     def all_non_host_ready(self) -> bool:
         with self.lock:
