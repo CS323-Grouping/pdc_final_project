@@ -1,3 +1,4 @@
+import random
 from dataclasses import dataclass
 
 from world.shapes import platform as plat
@@ -113,17 +114,33 @@ LEVEL_1_PLATFORM_GAPS = (
 
 
 def _build_level_1_platforms() -> tuple[PlatformSpec, ...]:
+    random.seed(101)
+
     start_y = 152
     y = start_y
-    platforms = []
-    index = 0
+    platforms = [
+    PlatformSpec(40, 152, "normal"),
+    PlatformSpec(100, 152, "normal"),
+    PlatformSpec(160, 152, "normal"),
+    PlatformSpec(220, 152, "normal"),
+]
+
     while True:
-        x = LEVEL_1_X_SEQUENCE[index % len(LEVEL_1_X_SEQUENCE)]
+        if platforms:
+            previous_x = platforms[-1].x
+            min_x = max(80, previous_x - 70)
+            max_x = min(INTERNAL_WIDTH - 140, previous_x + 70)
+            x = random.randint(min_x, max_x)
+        else:
+            x = 100
         platforms.append(PlatformSpec(x, y))
         if (start_y - y) >= LEVEL_1_TARGET_HEIGHT:
             break
-        y -= LEVEL_1_PLATFORM_GAPS[index % len(LEVEL_1_PLATFORM_GAPS)]
-        index += 1
+        y -= random.randint(
+            LEVEL_1_MIN_PLATFORM_GAP,
+            LEVEL_1_MAX_PLATFORM_GAP
+        )
+
     return tuple(platforms)
 
 
