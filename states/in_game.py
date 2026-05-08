@@ -2,6 +2,8 @@ import random
 import logging
 from dataclasses import dataclass
 import math
+import random
+import time
 import zlib
 
 import pygame
@@ -30,6 +32,7 @@ from world.level_2 import create_level_2, LEVEL_2_GOAL_CENTER_X, LEVEL_2_GOAL_Y
 from world.level_3 import create_level_3, LEVEL_3_GOAL_CENTER_X, LEVEL_3_GOAL_Y
 from world.rendering import LevelRenderer
 from world.shapes.goal import Goal
+from world.shapes.powerup import PowerUp, create_orb_powerups_from_platform_specs
 from player_scripts import camera
 
 LOGGER = logging.getLogger(__name__)
@@ -55,6 +58,7 @@ class AvatarAssembly:
 
 class InGameState(ScreenState):
     render_to_internal = True
+    suppress_internal_global_messages = True
 
     def __init__(self, machine, context, **kwargs):
         super().__init__(machine, context, **kwargs)
@@ -89,8 +93,10 @@ class InGameState(ScreenState):
         self._placements_by_id: dict[int, int] = {}
         self.goal: Goal | None = None
         self._goal_reached = False
-
-
+        self.powerups: list = []
+        self._window_hud_font: pygame.font.Font | None = None
+        self._platform_send_elapsed = 0.0
+        self._last_platforms_sent = -1
 
     def enter(self):
         self.camera = camera.Camera(INTERNAL_WIDTH, INTERNAL_HEIGHT)
@@ -155,6 +161,9 @@ class InGameState(ScreenState):
         self._placements_by_id = {}
         self.goal = Goal(goal_x, goal_y)
         self._goal_reached = False
+        self._window_hud_font = None
+        self._platform_send_elapsed = 0.0
+        self._last_platforms_sent = -1
         self._seed_remote_players_from_roster(base_start)
         self._send_initial_player_state()
 
@@ -276,6 +285,13 @@ class InGameState(ScreenState):
             remote.position = position
         return remote
 
+    def _sync_orb_pickup(self, orb_index: int, cooldown_sec: int) -> None:
+        if not (0 <= orb_index < len(self.powerups)):
+            return
+        powerup = self.powerups[orb_index]
+        if powerup.active:
+            powerup.start_cooldown(float(cooldown_sec))
+
     def _drain_network(self) -> bool:
         for event in self.context.drain_network_events():
             if self.handle_common_network_event(event):
@@ -318,20 +334,31 @@ class InGameState(ScreenState):
                 self._pause_heartbeat_elapsed = 0.0
                 LOGGER.info("Match resume received")
                 self.context.set_status("Match resumed.", duration=2.0)
+            elif isinstance(event, nw.OrbCollectEvent):
+                self._sync_orb_pickup(event.orb_index, event.cooldown_sec)
             elif isinstance(event, nw.EliminationEvent):
                 name = self._name_by_id.get(event.player_id, f"id {event.player_id}")
                 LOGGER.info("Elimination received player_id=%s name=%s placement=%s", event.player_id, name, event.placement)
-                self._elimination_feed.append(f"{name} eliminated — place {event.placement}")
-                self._placements_by_id[event.player_id] = event.placement
                 my_id = self.context.network.id if self.context.network else -1
+                finished_goal = event.player_id == my_id and self._goal_reached
+                if finished_goal:
+                    feed_line = f"{name} finished — place {event.placement}"
+                else:
+                    feed_line = f"{name} eliminated — place {event.placement}"
+                self._elimination_feed.append(feed_line)
+                self._placements_by_id[event.player_id] = event.placement
                 if event.player_id == my_id:
                     self._observing = True
                     self._dead_sent = True
                     if self.context.network is not None:
                         self.context.network.set_client_state(protocol.CLIENT_STATE_SPECTATING)
                     self._set_spectator_target(self._default_spectator_target(), snap=True)
-                    LOGGER.info("Local player eliminated; switched to observing player_id=%s", event.player_id)
-                    self.context.set_status("Eliminated. Observing the remaining players.", duration=3.0)
+                    if finished_goal:
+                        LOGGER.info("Local player finish confirmed; spectating player_id=%s", event.player_id)
+                        self._set_finish_spectator_status_message()
+                    else:
+                        LOGGER.info("Local player eliminated; switched to observing player_id=%s", event.player_id)
+                        self.context.set_status("Eliminated. Observing the remaining players.", duration=3.0)
                 else:
                     self._remote_players.pop(event.player_id, None)
                     self._remote_positions.pop(event.player_id, None)
@@ -431,6 +458,9 @@ class InGameState(ScreenState):
 
         self._send_avatar_if_needed(dt, net)
 
+        for powerup in self.powerups:
+            powerup.update(dt)
+
         if self._paused_players:
             self._tick_pause(dt, net)
             return
@@ -440,6 +470,38 @@ class InGameState(ScreenState):
             return
 
         self.hero.update(dt, INTERNAL_WIDTH, INTERNAL_HEIGHT, self.platforms)
+
+        pr = self.hero.platforms_reached_count()
+        if pr != self._last_platforms_sent:
+            self._platform_send_elapsed += dt
+            if self._platform_send_elapsed >= 0.12:
+                net.send_platform_progress(pr)
+                self._last_platforms_sent = pr
+                self._platform_send_elapsed = 0.0
+        else:
+            self._platform_send_elapsed = 0.0
+
+        # Check powerup collisions
+        for i, powerup in enumerate(self.powerups):
+            if powerup.active and self.hero.rect.colliderect(powerup.rect):
+                cooldown_sec = random.randint(protocol.ORB_COOLDOWN_MIN_SEC, protocol.ORB_COOLDOWN_MAX_SEC)
+                powerup.start_cooldown(float(cooldown_sec))
+                actual_effect = self.hero.collect_power_up(powerup.effect_type)
+                net.send_orb_collect(i, cooldown_sec)
+                readable = {
+                    'speed': 'Speed Buff',
+                    'jump': 'Jump Buff',
+                    'shield': 'Shield Buff',
+                    'double_jump': 'Double Jump Buff',
+                    'launch': 'Launch Buff',
+                    'reverse_control': 'Reverse Control',
+                    'slippery': 'Slippery',
+                    'slow_falling': 'Slow Falling',
+                    'heavy': 'Heavy',
+                    'weak_jump': 'Weak Jump',
+                    'shield_blocked': 'Shield Destroyed',
+                }.get(actual_effect, 'Unknown')
+                self.context.set_status(f"Orb: {readable}", duration=3.0)
 
         for remote in self._remote_players.values():
             remote.animation.update(dt)
@@ -559,6 +621,19 @@ class InGameState(ScreenState):
         follow = min(1.0, dt * 12.0)
         self.camera.y += (target_y - self.camera.y) * follow
 
+    def _set_finish_spectator_status_message(self) -> None:
+        """Server echoes the same elimination packet for goal finishes — use finish wording, not 'Eliminated'."""
+        if self._alive_spectator_ids():
+            self.context.set_status("Finished! Watching the remaining players.", duration=3.5)
+        else:
+            self.context.set_status("Finished!", duration=2.5)
+
+    def _ingame_window_hud_font(self) -> pygame.font.Font:
+        if self._window_hud_font is None:
+            t = DEFAULT_THEME
+            self._window_hud_font = pygame.font.SysFont(t.font_body, 16, bold=True)
+        return self._window_hud_font
+
     def _tick_pause(self, dt: float, net: nw.Network):
         for player_id in list(self._paused_players.keys()):
             self._paused_players[player_id] = max(0.0, self._paused_players[player_id] - dt)
@@ -601,6 +676,10 @@ class InGameState(ScreenState):
         if self.goal is not None:
             self.goal.draw(surface, camera)
 
+        for powerup in self.powerups:
+            if powerup.active:
+                powerup.draw(surface, camera)
+
         my_id = self.context.network.id if self.context.network else -1
 
         for p_id, p_pos in self._remote_positions.items():
@@ -614,13 +693,6 @@ class InGameState(ScreenState):
 
         if self.level_renderer is not None:
             self.level_renderer.draw_borders(surface)
-
-        ui.draw_elimination_feed(
-            surface,
-            self.context.tiny_font,
-            self._elimination_feed,
-            theme
-        )
 
     def _draw_remote_player(self, surface, camera, position, theme, remote: RemotePlayer | None = None):
         hitbox = pygame.Rect(0, 0, PLAYER_HITBOX_WIDTH, PLAYER_HITBOX_HEIGHT)
@@ -641,6 +713,24 @@ class InGameState(ScreenState):
         display = self.context.display_manager
         if display is None or self.hero is None:
             return
+
+        self.context.draw_global_messages(surface)
+        border_px = self.context.window_border_inset_px()
+        match_elapsed = None
+        if self.context.match_start_unix_sec is not None:
+            match_elapsed = max(0.0, time.time() - float(self.context.match_start_unix_sec))
+        pr_local = self.hero.platforms_reached_count()
+        ui.draw_ingame_status_hud(
+            surface,
+            self._ingame_window_hud_font(),
+            self._elimination_feed,
+            self.hero.active_power_up_timers(),
+            DEFAULT_THEME,
+            edge_inset=border_px + 8,
+            bottom_margin=10,
+            match_elapsed_sec=match_elapsed,
+            platforms_reached=pr_local,
+        )
 
         my_id = self.context.network.id if self.context.network else -1
         for player_id, position in self._remote_positions.items():

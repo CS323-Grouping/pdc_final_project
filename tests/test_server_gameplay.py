@@ -28,6 +28,67 @@ def _server_with_started_room():
     return server, room_state, sock, (id_a, addr_a), (id_b, addr_b), (id_c, addr_c)
 
 
+def _server_with_lobby_room():
+    room_state = RoomState(room_name="TestRoom", game_port=5555)
+    host_addr = ("127.0.0.1", 12001)
+    guest_addr = ("127.0.0.1", 12002)
+    host_id, _ = room_state.add_or_get_player(host_addr, "Alpha")
+    guest_id, _ = room_state.add_or_get_player(guest_addr, "Bravo")
+    sock = FakeSocket()
+    server = LobbyServer(sock, room_state, countdown_seconds=0.0)
+    return server, room_state, sock, (host_id, host_addr), (guest_id, guest_addr)
+
+
+def test_host_level_select_updates_room_and_broadcasts():
+    server, room_state, sock, (host_id, host_addr), (_guest_id, _guest_addr) = _server_with_lobby_room()
+
+    server.handle_level_select(protocol.pack_level_select(host_id, 3), host_addr)
+
+    assert room_state.get_selected_level() == 3
+    assert any(protocol.safe_unpack_level_select(payload) == (protocol.LEVEL_SELECT, host_id, 3) for payload, _addr in sock.sent)
+
+
+def test_non_host_level_select_is_ignored():
+    server, room_state, sock, (_host_id, _host_addr), (guest_id, guest_addr) = _server_with_lobby_room()
+
+    server.handle_level_select(protocol.pack_level_select(guest_id, 3), guest_addr)
+
+    assert room_state.get_selected_level() == protocol.DEFAULT_LEVEL_ID
+    assert not any(protocol.tag_of(payload) == protocol.LEVEL_SELECT for payload, _addr in sock.sent)
+
+
+def test_level_select_is_locked_during_countdown():
+    server, room_state, sock, (host_id, host_addr), (_guest_id, _guest_addr) = _server_with_lobby_room()
+    room_state.state = protocol.STATE_COUNTDOWN
+    room_state.begin_countdown(time.monotonic() + 10.0)
+
+    server.handle_level_select(protocol.pack_level_select(host_id, 3), host_addr)
+
+    assert room_state.get_selected_level() == protocol.DEFAULT_LEVEL_ID
+    assert not any(protocol.tag_of(payload) == protocol.LEVEL_SELECT for payload, _addr in sock.sent)
+
+
+def test_game_start_packet_carries_selected_level_and_seed():
+    server, room_state, sock, (_host_id, _host_addr), (guest_id, _guest_addr) = _server_with_lobby_room()
+    room_state.set_ready(guest_id, True)
+    room_state.set_selected_level(2)
+    room_state.state = protocol.STATE_COUNTDOWN
+    room_state.begin_countdown(time.monotonic() - 1.0)
+
+    server.tick_countdown()
+
+    starts = [
+        protocol.safe_unpack_gstart(payload)
+        for payload, _addr in sock.sent
+        if protocol.tag_of(payload) == protocol.GSTART
+    ]
+    assert starts
+    for unpacked in starts:
+        assert unpacked is not None
+        assert unpacked[3] == 2
+        assert unpacked[4] != 0
+
+
 def test_name_only_reconnect_claims_single_disconnected_slot():
     server, room_state, sock, (player_id, _old_addr), (_other_id, _other_addr), (_third_id, _third_addr) = _server_with_started_room()
     new_addr = ("127.0.0.1", 12055)
