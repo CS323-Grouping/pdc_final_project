@@ -25,6 +25,10 @@ class AvatarAssembly:
             self.chunks = {}
 
 
+RESULTS_AUTO_HIDE_SECONDS = 5.0
+RESULTS_MIN_VISIBLE_SECONDS = 1.0
+
+
 class ResultsState(ScreenState):
     def __init__(self, machine, context, **kwargs):
         super().__init__(machine, context, **kwargs)
@@ -167,7 +171,8 @@ class ResultsState(ScreenState):
             remote_avatars=remote_avatars,
         )
 
-        hint_text = f"Press any key to continue  ·  {max(0, int(self._auto_hide + 0.99))}s"
-        hint = self.context.small_font.render(hint_text, True, theme.text_muted)
-        hint_margin = max(18, min(44, h // 16))
-        surface.blit(hint, hint.get_rect(midbottom=(w // 2, h - bottom_reserve - hint_margin)))
+        hint_text = f"Continue in {max(0, int(self._auto_hide + 0.99))}s"
+        if self._elapsed >= RESULTS_MIN_VISIBLE_SECONDS:
+            hint_text += " · any key / click"
+        hint = self.context.tiny_font.render(hint_text, True, theme.text_muted)
+        surface.blit(hint, hint.get_rect(center=(w // 2, h - 42)))

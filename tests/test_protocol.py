@@ -275,27 +275,7 @@ def test_gstart_round_trip():
     p = protocol.pack_gstart(countdown_id=12, match_id=3)
     u = protocol.safe_unpack_gstart(p)
     assert u is not None
-    assert u[:5] == (protocol.GSTART, 12, 3, protocol.DEFAULT_LEVEL_ID, 0)
-    assert u[5] == 0
-
-
-def test_gstart_round_trip_with_level_seed():
-    p = protocol.pack_gstart(countdown_id=12, match_id=3, selected_level=3, level_seed=456)
-    u = protocol.safe_unpack_gstart(p)
-    assert u == (protocol.GSTART, 12, 3, 3, 456, 0)
-
-
-def test_gstart_carry_match_start_unix():
-    p = protocol.pack_gstart(countdown_id=1, match_id=2, match_start_unix_sec=1700000001)
-    assert protocol.safe_unpack_gstart(p)[5] == 1700000001
-
-
-def test_level_select_round_trip():
-    p = protocol.pack_level_select(host_id=2, level_id=99)
-    u = protocol.safe_unpack_level_select(p)
-    assert u == (protocol.LEVEL_SELECT, 2, protocol.DEFAULT_LEVEL_ID)
-    assert protocol.cycle_level_id(1, -1) == protocol.LEVEL_IDS[-1]
-    assert protocol.cycle_level_id(protocol.LEVEL_IDS[-1], 1) == 1
+    assert u == (protocol.GSTART, 12, 3)
 
 
 def test_dead_elim_round_trip():
@@ -311,7 +291,7 @@ def test_dead_elim_round_trip():
 
 
 def test_gend_round_trip():
-    standings = [(0, 1, "W", 12345, 12), (1, 2, "L", 20000, 8)]
+    standings = [(0, 1, "W"), (1, 2, "L")]
     p = protocol.pack_gend(protocol.GEND_REASON_NORMAL, standings, match_id=4)
     u = protocol.safe_unpack_gend(p)
     assert u is not None

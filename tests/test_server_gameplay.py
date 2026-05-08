@@ -159,6 +159,48 @@ def test_cancel_countdown_is_rebroadcast_for_late_or_lossy_clients():
     assert rebroadcast_count == 2
 
 
+def test_start_and_cancel_actions_are_not_toggle_ambiguous():
+    room_state = RoomState(room_name="TestRoom", game_port=5555)
+    host_addr = ("127.0.0.1", 12001)
+    guest_addr = ("127.0.0.1", 12002)
+    host_id, _ = room_state.add_or_get_player(host_addr, "Alpha")
+    guest_id, _ = room_state.add_or_get_player(guest_addr, "Bravo")
+    room_state.set_ready(guest_id, True)
+    sock = FakeSocket()
+    server = LobbyServer(sock, room_state, countdown_seconds=10.0)
+
+    server.handle_start(protocol.pack_start(host_id, protocol.START_ACTION_START), host_addr)
+    first_countdown_id = server._countdown_id
+    server.handle_start(protocol.pack_start(host_id, protocol.START_ACTION_START), host_addr)
+
+    assert room_state.state == protocol.STATE_COUNTDOWN
+    assert server._countdown_id == first_countdown_id
+
+    server.handle_start(protocol.pack_start(host_id, protocol.START_ACTION_CANCEL), host_addr)
+    server.handle_start(protocol.pack_start(host_id, protocol.START_ACTION_CANCEL), host_addr)
+
+    assert room_state.state == protocol.STATE_LOBBY
+
+
+def test_heartbeat_refreshes_lobby_liveness_and_gets_ack():
+    room_state = RoomState(room_name="TestRoom", game_port=5555)
+    addr = ("127.0.0.1", 12001)
+    player_id, _ = room_state.add_or_get_player(addr, "Alpha")
+    token = room_state.session_token(player_id) or 0
+    room_state.touch_player(player_id, now=0.0)
+    sock = FakeSocket()
+    server = LobbyServer(sock, room_state, countdown_seconds=0.0, lobby_player_timeout_seconds=8.0)
+
+    server.handle_heartbeat(
+        protocol.pack_heartbeat(player_id, token, protocol.CLIENT_STATE_RESULTS, countdown_id=0, match_id=0),
+        addr,
+    )
+
+    assert sock.sent
+    assert protocol.tag_of(sock.sent[-1][0]) == protocol.HEARTBEAT_ACK
+    assert room_state.timed_out_connected_ids(time.monotonic(), 8.0) == []
+
+
 def test_lobby_replays_cached_avatar_to_late_joiner():
     room_state = RoomState(room_name="TestRoom", game_port=5555)
     alpha_addr = ("127.0.0.1", 12001)

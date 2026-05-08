@@ -109,7 +109,6 @@ class AppContext:
     last_countdown_id: int = 0
     current_match_id: int = 0
     last_results_match_id: int = 0
-    match_start_unix_sec: int | None = None
     mouse_pos: tuple[int, int] = (0, 0)
     presence_instance_id: int = 0
     presence_status: int = protocol.PRESENCE_STATUS_ONLINE
