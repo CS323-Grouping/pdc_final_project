@@ -21,6 +21,7 @@ from player_scripts.avatar_sprite import prepare_avatar
 from player_scripts.model_assets import animation_path, load_default_head_texture
 from ui import components as ui
 from ui.theme import DEFAULT_THEME
+from world.constants import BORDER_WIDTH
 
 from states.avatar_setup import AvatarSetupState
 from states.browse_lobby import BrowseLobbyState
@@ -108,11 +109,13 @@ class AppContext:
     last_countdown_id: int = 0
     current_match_id: int = 0
     last_results_match_id: int = 0
+    match_start_unix_sec: int | None = None
     mouse_pos: tuple[int, int] = (0, 0)
     presence_instance_id: int = 0
     presence_status: int = protocol.PRESENCE_STATUS_ONLINE
     presence_broadcaster: Optional[PresenceBroadcaster] = None
     log_dir: Optional[Path] = None
+    dock_global_messages_bottom: bool = False
 
     def __post_init__(self):
         if not self.player_name:
@@ -203,6 +206,12 @@ class AppContext:
         self.profile_session.data.use_custom_head = self.use_custom_head
         self.profile_session.save()
 
+    def window_border_inset_px(self) -> int:
+        """Horizontal pillar width in **window** pixels (internal border is `BORDER_WIDTH` × scale)."""
+        if self.display_manager is None:
+            return BORDER_WIDTH
+        return BORDER_WIDTH * int(self.display_manager.config.selected_scale)
+
     def tick_timers(self, dt: float):
         if self.banner_timer > 0:
             self.banner_timer = max(0.0, self.banner_timer - dt)
@@ -215,14 +224,40 @@ class AppContext:
         if self.countdown_remaining is not None:
             self.countdown_remaining = max(0.0, self.countdown_remaining - dt)
 
+    def reserved_bottom_message_strip_px(self) -> int:
+        """Window pixels to leave clear at the bottom when `dock_global_messages_bottom` is on."""
+        if not self.dock_global_messages_bottom:
+            return 0
+        margin = 8
+        if self.banner_message and self.status_message:
+            return margin + 22 + 2 + 30
+        if self.banner_message:
+            return margin + 30
+        if self.status_message:
+            return margin + 28
+        return 0
+
     def draw_global_messages(self, surface: Optional[pygame.Surface] = None):
         surface = surface or self.screen
+        inset = self.window_border_inset_px()
+        if self.dock_global_messages_bottom:
+            if self.banner_message or self.status_message:
+                ui.draw_global_messages_bottom_dock(
+                    surface,
+                    self.small_font,
+                    self.tiny_font,
+                    self.banner_message,
+                    self.status_message,
+                    inset,
+                    DEFAULT_THEME,
+                )
+            return
         if self.banner_message:
-            ui.draw_banner_bar(surface, self.small_font, self.banner_message)
+            ui.draw_banner_bar(surface, self.small_font, self.banner_message, horizontal_inset=inset)
         if self.status_message:
             y = 34 if self.banner_message else 8
             status_surface = self.tiny_font.render(self.status_message, True, (255, 230, 120))
-            surface.blit(status_surface, (8, y))
+            surface.blit(status_surface, (inset + 10, y))
 
     def update_mouse_pos(self, use_internal: bool = False):
         pos = pygame.mouse.get_pos()
@@ -386,6 +421,7 @@ class AppContext:
     def reset_lobby_after_game(self):
         self.countdown_remaining = None
         self.roster = [(player_id, False, name) for player_id, _ready, name in self.roster]
+        self.match_start_unix_sec = None
 
     def detach_network(self, send_disconnect: bool = True, preserve_reconnect: bool = False):
         if self.network is None:
