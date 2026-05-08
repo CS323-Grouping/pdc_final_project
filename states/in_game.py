@@ -27,6 +27,7 @@ from world.constants import (
 from world.level_system import create_level_platforms, generate_level, level_preview_seed
 from world.rendering import LevelRenderer
 from world.shapes.goal import Goal
+from world.shapes.powerup import PowerUp, create_orb_powerups_from_platform_specs
 from player_scripts import camera
 
 LOGGER = logging.getLogger(__name__)
@@ -86,8 +87,7 @@ class InGameState(ScreenState):
         self._placements_by_id: dict[int, int] = {}
         self.goal: Goal | None = None
         self._goal_reached = False
-
-
+        self.powerups: list = []
 
     def enter(self):
         self.camera = camera.Camera(INTERNAL_WIDTH, INTERNAL_HEIGHT)
@@ -109,6 +109,7 @@ class InGameState(ScreenState):
         level = generate_level(selected_level, level_seed)
         self.current_level = level.level_id
         self.platforms = create_level_platforms(level, self.world_assets.platform_normal)
+        self.powerups = create_orb_powerups_from_platform_specs(level.platforms, rng_seed=level.seed)
         LOGGER.info(
             "Loaded level=%s seed=%s platforms=%s goal=(%s,%s)",
             level.level_id,
@@ -437,6 +438,29 @@ class InGameState(ScreenState):
 
         self.hero.update(dt, INTERNAL_WIDTH, INTERNAL_HEIGHT, self.platforms)
 
+        for powerup in self.powerups:
+            powerup.update(dt)
+
+        # Check powerup collisions
+        for powerup in self.powerups:
+            if not powerup.collected and self.hero.rect.colliderect(powerup.rect):
+                powerup.collected = True
+                actual_effect = self.hero.collect_power_up(powerup.effect_type)
+                readable = {
+                    'speed': 'Speed Buff',
+                    'jump': 'Jump Buff',
+                    'shield': 'Shield Buff',
+                    'double_jump': 'Double Jump Buff',
+                    'launch': 'Launch Buff',
+                    'reverse_control': 'Reverse Control',
+                    'slippery': 'Slippery',
+                    'slow_falling': 'Slow Falling',
+                    'heavy': 'Heavy',
+                    'weak_jump': 'Weak Jump',
+                    'shield_blocked': 'Shield Destroyed',
+                }.get(actual_effect, 'Unknown')
+                self.context.set_status(f"Orb: {readable}", duration=3.0)
+
         for remote in self._remote_players.values():
             remote.animation.update(dt)
 
@@ -597,6 +621,10 @@ class InGameState(ScreenState):
         if self.goal is not None:
             self.goal.draw(surface, camera)
 
+        for powerup in self.powerups:
+            if not powerup.collected:
+                powerup.draw(surface, camera)
+
         my_id = self.context.network.id if self.context.network else -1
 
         for p_id, p_pos in self._remote_positions.items():
@@ -611,12 +639,29 @@ class InGameState(ScreenState):
         if self.level_renderer is not None:
             self.level_renderer.draw_borders(surface)
 
+        self._draw_active_effect_timers(surface, theme)
+
         ui.draw_elimination_feed(
             surface,
             self.context.tiny_font,
             self._elimination_feed,
             theme
         )
+
+    def _draw_active_effect_timers(self, surface, theme):
+        if self.hero is None:
+            return
+        timers = self.hero.active_power_up_timers()
+        if not timers:
+            return
+        labels = [self.context.tiny_font.render(f"{name}: {remaining:.1f}s", True, theme.text) for name, remaining in timers.items()]
+        line_height = max(label.get_height() for label in labels)
+        total_height = len(labels) * (line_height + 2) - 2
+        x = 8
+        y = INTERNAL_HEIGHT - total_height - 8
+        for label in labels:
+            surface.blit(label, (x, y))
+            y += line_height + 2
 
     def _draw_remote_player(self, surface, camera, position, theme, remote: RemotePlayer | None = None):
         hitbox = pygame.Rect(0, 0, PLAYER_HITBOX_WIDTH, PLAYER_HITBOX_HEIGHT)
