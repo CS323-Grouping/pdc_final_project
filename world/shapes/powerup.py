@@ -7,13 +7,25 @@ class PowerUp:
         self.pos = pygame.Vector2(pos)
         self.effect_type = effect_type  # 'speed', 'jump', 'shield', 'double_jump', 'launch', 'reverse_control', 'slippery', 'slow_falling', 'heavy', 'weak_jump', 'orb'
         self.rect = pygame.Rect(int(self.pos.x - 8), int(self.pos.y - 8), 16, 16)
-        self.collected = False
+        self.active = True
+        self.respawn_timer = 0.0
         self._pulse = 0.0
 
+    def start_cooldown(self, seconds: float) -> None:
+        self.active = False
+        self.respawn_timer = max(0.0, float(seconds))
+
     def update(self, dt: float) -> None:
+        if not self.active:
+            self.respawn_timer -= dt
+            if self.respawn_timer <= 0.0:
+                self.active = True
+                self.respawn_timer = 0.0
         self._pulse = (self._pulse + dt * 3.0) % (2 * math.pi)
 
     def draw(self, surface: pygame.Surface, camera=None) -> None:
+        if not self.active:
+            return
         rect = self.rect
         if camera is not None:
             rect = rect.move(-int(round(camera.x)), -int(round(camera.y)))

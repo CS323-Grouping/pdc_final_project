@@ -50,7 +50,6 @@ try:
         MATCH_PAUSE,
         MATCH_RESUME,
         ORB_COLLECT,
-        PLATFORM_PROGRESS,
         PLAYER_TIMEOUT_SECONDS,
         PLAYER_STATE,
         POSITION,
@@ -109,7 +108,6 @@ try:
         safe_unpack_heartbeat,
         safe_unpack_kick,
         safe_unpack_orb_collect,
-        safe_unpack_platform_progress,
         safe_unpack_player_state,
         safe_unpack_ready,
         safe_unpack_reconnect,
@@ -162,7 +160,6 @@ except ModuleNotFoundError:
         MATCH_PAUSE,
         MATCH_RESUME,
         ORB_COLLECT,
-        PLATFORM_PROGRESS,
         PLAYER_TIMEOUT_SECONDS,
         PLAYER_STATE,
         POSITION,
@@ -221,7 +218,6 @@ except ModuleNotFoundError:
         safe_unpack_heartbeat,
         safe_unpack_kick,
         safe_unpack_orb_collect,
-        safe_unpack_platform_progress,
         safe_unpack_player_state,
         safe_unpack_ready,
         safe_unpack_reconnect,
@@ -772,20 +768,6 @@ class LobbyServer:
             return
         self.broadcast(pack_orb_collect(player_id, orb_index, cooldown_sec))
 
-    def handle_platform_progress(self, data: bytes, addr):
-        unpacked = safe_unpack_platform_progress(data)
-        if unpacked is None:
-            return
-        _tag, player_id, platforms_reached = unpacked
-        addr_player_id = self.room_state.get_player_id_by_addr(addr)
-        if addr_player_id is None or addr_player_id != player_id:
-            return
-        self.room_state.touch_gameplay_player(player_id)
-        if self.room_state.state not in (STATE_IN_GAME, STATE_PAUSED):
-            return
-        prev = self._player_platform_max.get(player_id, 0)
-        self._player_platform_max[player_id] = max(prev, int(platforms_reached))
-
     def eliminate_player(self, player_id: int):
         if not self.room_state.is_alive(player_id):
             return
@@ -1052,9 +1034,6 @@ class LobbyServer:
             return
         if tag == ORB_COLLECT:
             self.handle_orb_collect(data, addr)
-            return
-        if tag == PLATFORM_PROGRESS:
-            self.handle_platform_progress(data, addr)
             return
         if tag == POSITION:
             self.handle_position(data, addr)

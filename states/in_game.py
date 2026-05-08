@@ -2,7 +2,6 @@ import logging
 from dataclasses import dataclass
 import math
 import random
-import time
 import zlib
 
 import pygame
@@ -465,14 +464,13 @@ class InGameState(ScreenState):
 
         self.hero.update(dt, INTERNAL_WIDTH, INTERNAL_HEIGHT, self.platforms)
 
-        for powerup in self.powerups:
-            powerup.update(dt)
-
         # Check powerup collisions
-        for powerup in self.powerups:
-            if not powerup.collected and self.hero.rect.colliderect(powerup.rect):
-                powerup.collected = True
+        for i, powerup in enumerate(self.powerups):
+            if powerup.active and self.hero.rect.colliderect(powerup.rect):
+                cooldown_sec = random.randint(protocol.ORB_COOLDOWN_MIN_SEC, protocol.ORB_COOLDOWN_MAX_SEC)
+                powerup.start_cooldown(float(cooldown_sec))
                 actual_effect = self.hero.collect_power_up(powerup.effect_type)
+                net.send_orb_collect(i, cooldown_sec)
                 readable = {
                     'speed': 'Speed Buff',
                     'jump': 'Jump Buff',
@@ -662,7 +660,7 @@ class InGameState(ScreenState):
             self.goal.draw(surface, camera)
 
         for powerup in self.powerups:
-            if not powerup.collected:
+            if powerup.active:
                 powerup.draw(surface, camera)
 
         my_id = self.context.network.id if self.context.network else -1

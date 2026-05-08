@@ -118,6 +118,7 @@ MATCH_PAUSE = b"PAUS"
 MATCH_RESUME = b"RSUM"
 ROOM_NAME_UPDATE = b"RNAM"
 LEVEL_SELECT = b"LVSL"
+ORB_COLLECT = b"ORBC"
 
 FRMT_PACKET = "!4sffi"  # Legacy packet: command, x, y, player_id
 PACKET_SIZE = struct.calcsize(FRMT_PACKET)
@@ -192,6 +193,10 @@ FRMT_MATCH_PAUSE = "!4sif"
 FRMT_MATCH_RESUME = "!4s"
 FRMT_ROOM_NAME_UPDATE = "!4si32s"
 FRMT_LEVEL_SELECT = "!4siB"
+FRMT_ORB_COLLECT = "!4siii"  # player_id, orb_index, cooldown_sec (1–10)
+ORB_COLLECT_PACKET_SIZE = struct.calcsize(FRMT_ORB_COLLECT)
+ORB_COOLDOWN_MIN_SEC = 1
+ORB_COOLDOWN_MAX_SEC = 10
 
 
 def _pack_name(name: str) -> bytes:
