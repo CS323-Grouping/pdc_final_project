@@ -1,6 +1,8 @@
 from dataclasses import dataclass
+import random
 
 from world.shapes import platform as plat
+from world.shapes import powerup as pu
 from world.constants import CHUNK_HEIGHT, INTERNAL_WIDTH, PLATFORM_NORMAL_SIZE
 
 
@@ -144,4 +146,25 @@ def create_level_1(platform_image):
             collision_size=PLATFORM_NORMAL_SIZE,
         )
         for spec in LEVEL_1_PLATFORMS
+    ]
+
+
+def create_level_1_powerups():
+    powerups = []
+    # Place orb powerups randomly on platforms above the starter area.
+    # Use a local random generator for deterministic platform selection.
+    rng = random.Random(42)
+    eligible_platforms = list(LEVEL_1_PLATFORMS[3:])
+    if not eligible_platforms:
+        eligible_platforms = list(LEVEL_1_PLATFORMS)
+    selected_platforms = rng.sample(eligible_platforms, max(1, len(eligible_platforms) // 4))
+    for spec in selected_platforms:
+        effect_type = 'orb'
+        # Place powerup on top of platform, centered
+        x = spec.x + PLATFORM_NORMAL_SIZE[0] // 2
+        y = spec.y - 20  # Above the platform
+        powerups.append((x, y, effect_type))
+    return [
+        pu.PowerUp((x, y), effect_type)
+        for x, y, effect_type in powerups
     ]

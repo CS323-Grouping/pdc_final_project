@@ -24,9 +24,10 @@ from world.constants import (
     PLAYER_HITBOX_HEIGHT,
     PLAYER_HITBOX_WIDTH,
 )
-from world.level_1 import create_level_1, LEVEL_1_GOAL_CENTER_X, LEVEL_1_GOAL_Y
+from world.level_1 import create_level_1, create_level_1_powerups, LEVEL_1_GOAL_CENTER_X, LEVEL_1_GOAL_Y
 from world.rendering import LevelRenderer
 from world.shapes.goal import Goal
+from world.shapes.powerup import PowerUp
 from player_scripts import camera
 
 LOGGER = logging.getLogger(__name__)
@@ -103,6 +104,7 @@ class InGameState(ScreenState):
         self.world_assets = load_world_assets(self.context.project_root)
         self.level_renderer = LevelRenderer(self.world_assets)
         self.platforms = create_level_1(self.world_assets.platform_normal)
+        self.powerups = create_level_1_powerups()
         sp = self.context.start_pos
         if isinstance(sp, (list, tuple)) and len(sp) >= 2:
             base_start = (float(sp[0]), float(sp[1]))
@@ -419,6 +421,29 @@ class InGameState(ScreenState):
 
         self.hero.update(dt, INTERNAL_WIDTH, INTERNAL_HEIGHT, self.platforms)
 
+        for powerup in self.powerups:
+            powerup.update(dt)
+
+        # Check powerup collisions
+        for powerup in self.powerups:
+            if not powerup.collected and self.hero.rect.colliderect(powerup.rect):
+                powerup.collected = True
+                actual_effect = self.hero.collect_power_up(powerup.effect_type)
+                readable = {
+                    'speed': 'Speed Buff',
+                    'jump': 'Jump Buff',
+                    'shield': 'Shield Buff',
+                    'double_jump': 'Double Jump Buff',
+                    'launch': 'Launch Buff',
+                    'reverse_control': 'Reverse Control',
+                    'slippery': 'Slippery',
+                    'slow_falling': 'Slow Falling',
+                    'heavy': 'Heavy',
+                    'weak_jump': 'Weak Jump',
+                    'shield_blocked': 'Shield Destroyed',
+                }.get(actual_effect, 'Unknown')
+                self.context.set_status(f"Orb: {readable}", duration=3.0)
+
         for remote in self._remote_players.values():
             remote.animation.update(dt)
 
@@ -579,6 +604,10 @@ class InGameState(ScreenState):
         if self.goal is not None:
             self.goal.draw(surface, camera)
 
+        for powerup in self.powerups:
+            if not powerup.collected:
+                powerup.draw(surface, camera)
+
         my_id = self.context.network.id if self.context.network else -1
 
         for p_id, p_pos in self._remote_positions.items():
@@ -593,12 +622,29 @@ class InGameState(ScreenState):
         if self.level_renderer is not None:
             self.level_renderer.draw_borders(surface)
 
+        self._draw_active_effect_timers(surface, theme)
+
         ui.draw_elimination_feed(
             surface,
             self.context.tiny_font,
             self._elimination_feed,
             theme
         )
+
+    def _draw_active_effect_timers(self, surface, theme):
+        if self.hero is None:
+            return
+        timers = self.hero.active_power_up_timers()
+        if not timers:
+            return
+        labels = [self.context.tiny_font.render(f"{name}: {remaining:.1f}s", True, theme.text) for name, remaining in timers.items()]
+        line_height = max(label.get_height() for label in labels)
+        total_height = len(labels) * (line_height + 2) - 2
+        x = 8
+        y = INTERNAL_HEIGHT - total_height - 8
+        for label in labels:
+            surface.blit(label, (x, y))
+            y += line_height + 2
 
     def _draw_remote_player(self, surface, camera, position, theme, remote: RemotePlayer | None = None):
         hitbox = pygame.Rect(0, 0, PLAYER_HITBOX_WIDTH, PLAYER_HITBOX_HEIGHT)

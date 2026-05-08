@@ -1,4 +1,5 @@
 import pygame
+import random
 
 from player_scripts.animation import AnimationState, load_spritesheet_frames
 from player_scripts.avatar_sprite import compose_player_frames, make_default_avatar
@@ -38,6 +39,20 @@ class Player:
         self._jump_buffer = 0.0
         self._coyote_timer = 0.0
         self._air_animation_state = "jump_front"
+        self.speed_boost_timer = 0.0
+        self.speed_boost = 1.0
+        self.jump_boost_timer = 0.0
+        self.jump_boost = 1.0
+        self.shield_timer = 0.0
+        self.double_jump_timer = 0.0
+        self.has_double_jumped = False
+        self.reverse_control_timer = 0.0
+        self.slippery_timer = 0.0
+        self.slippery_boost = 1.0
+        self.slow_falling_timer = 0.0
+        self.heavy_timer = 0.0
+        self.launch_timer = 0.0
+        self.weak_jump_timer = 0.0
 
     def _sync_rect_from_pos(self):
         self.rect.center = (int(round(self.pos.x)), int(round(self.pos.y)))
@@ -66,12 +81,20 @@ class Player:
         if direction.length() > 0:
             direction = direction.normalize()
         self._move_dir = int(direction.x)
+
+        # Apply debuffs
+        if self.reverse_control_timer > 0:
+            direction.x *= -1
+        if self.slippery_timer > 0:
+            self.slippery_boost = 0.8  # Slower movement for slippery debuff
+        else:
+            self.slippery_boost = 1.0
         if self._move_dir == 0:
             self._idle_timer += dt
         else:
             self._idle_timer = 0.0
 
-        self.pos.x += direction.x * self.speed * dt
+        self.pos.x += direction.x * self.speed * self.speed_boost * self.slippery_boost * dt
         self._clamp_to_playable_width()
 
     def _supported_on_platform_top(self, platforms) -> bool:
@@ -200,30 +223,75 @@ class Player:
 
         if self.on_ground:
             self._coyote_timer = self.COYOTE_SECONDS
+            self.has_double_jumped = False
         else:
             self._coyote_timer = max(0.0, self._coyote_timer - dt)
 
         if self._jump_buffer > 0 and (self.on_ground or self._coyote_timer > 0):
             self._start_jump()
+        elif self._jump_buffer > 0 and not self.on_ground and not self.has_double_jumped and self.double_jump_timer > 0:
+            self._start_double_jump()
 
         if not self.on_ground:
-            self.vel.y += self.gravity * dt
+            gravity_modifier = 1.0
+            if self.vel.y > 0:  # Only apply gravity modifiers when falling
+                if self.slow_falling_timer > 0:
+                    gravity_modifier = 0.5
+                elif self.heavy_timer > 0:
+                    gravity_modifier = 1.5
+            self.vel.y += self.gravity * gravity_modifier * dt
 
         self.pos.y += self.vel.y * dt
 
-        self._resolve_platforms_vertical(entities)
+        if self.launch_timer <= 0:
+            self._resolve_platforms_vertical(entities)
         self._sync_rect_from_pos()
-        if not self.on_ground and self.vel.y >= 0:
+        if not self.on_ground and self.vel.y >= 0 and self.launch_timer <= 0:
             self._snap_to_supported_platform_top(entities)
         self._select_animation_state()
         self.animation.update(dt)
         self.image = self.animation.image
 
+        # Update power up timers
+        self.speed_boost_timer = max(0.0, self.speed_boost_timer - dt)
+        if self.speed_boost_timer == 0:
+            self.speed_boost = 1.0
+
+        self.jump_boost_timer = max(0.0, self.jump_boost_timer - dt)
+        if self.jump_boost_timer == 0:
+            self.jump_boost = 1.0
+
+        self.shield_timer = max(0.0, self.shield_timer - dt)
+
+        self.double_jump_timer = max(0.0, self.double_jump_timer - dt)
+
+        self.reverse_control_timer = max(0.0, self.reverse_control_timer - dt)
+
+        self.slippery_timer = max(0.0, self.slippery_timer - dt)
+
+        self.slow_falling_timer = max(0.0, self.slow_falling_timer - dt)
+
+        self.heavy_timer = max(0.0, self.heavy_timer - dt)
+
+        self.launch_timer = max(0.0, self.launch_timer - dt)
+
+        self.weak_jump_timer = max(0.0, self.weak_jump_timer - dt)
+
     def _start_jump(self):
         self._set_air_animation_from_ground_state()
-        self.vel.y = self.jump_velocity
+        jump_modifier = 1.0
+        if self.weak_jump_timer > 0:
+            jump_modifier = 0.5  # Weaker jump
+        self.vel.y = self.jump_velocity * self.jump_boost * jump_modifier
         self.on_ground = False
         self._coyote_timer = 0.0
+        self._jump_buffer = 0.0
+        self.has_double_jumped = False
+        self.animation.set_state(self._air_animation_state)
+
+    def _start_double_jump(self):
+        self.vel.y = self.jump_velocity * 1.25  # Slightly stronger double jump
+        self.has_double_jumped = True
         self._jump_buffer = 0.0
         self.animation.set_state(self._air_animation_state)
 
@@ -248,8 +316,78 @@ class Player:
     def body_image(self) -> pygame.Surface:
         return self.body_frames_by_state[self.animation.state][self.animation.frame_index]
 
+    def collect_power_up(self, effect_type):
+        if effect_type == 'orb':
+            effect_type = random.choice([
+                'speed', 'jump', 'shield', 'double_jump', 'launch',
+                'reverse_control', 'slippery', 'slow_falling', 'heavy', 'weak_jump'
+            ])
+
+        debuffs = {'reverse_control', 'slippery', 'slow_falling', 'heavy', 'weak_jump'}
+        if effect_type in debuffs and self.shield_timer > 0:
+            self.shield_timer = 0.0
+            return 'shield_blocked'
+
+        if effect_type == 'speed':
+            self.speed_boost_timer = 3.0
+            self.speed_boost = 1.5
+        elif effect_type == 'jump':
+            self.jump_boost_timer = 3.0
+            self.jump_boost = 1.5
+        elif effect_type == 'shield':
+            self.shield_timer = 15.0
+        elif effect_type == 'double_jump':
+            self.double_jump_timer = 3.0
+        elif effect_type == 'launch':
+            self.vel.y = -520.0  # Stronger launch upward
+            self.launch_timer = 1.0  # Bypass platforms for 1 second
+        elif effect_type == 'reverse_control':
+            self.shield_timer = 0.0
+            self.reverse_control_timer = 5.0
+        elif effect_type == 'slippery':
+            self.shield_timer = 0.0
+            self.slippery_timer = 5.0
+        elif effect_type == 'slow_falling':
+            self.shield_timer = 0.0
+            self.slow_falling_timer = 5.0
+        elif effect_type == 'heavy':
+            self.shield_timer = 0.0
+            self.heavy_timer = 5.0
+        elif effect_type == 'weak_jump':
+            self.shield_timer = 0.0
+            self.weak_jump_timer = 2.0
+
+        return effect_type
+
+    def active_power_up_timers(self) -> dict[str, float]:
+        timers = {}
+        if self.speed_boost_timer > 0:
+            timers['Speed Buff'] = self.speed_boost_timer
+        if self.jump_boost_timer > 0:
+            timers['Jump Buff'] = self.jump_boost_timer
+        if self.shield_timer > 0:
+            timers['Shield Aura'] = self.shield_timer
+        if self.double_jump_timer > 0:
+            timers['Double Jump'] = self.double_jump_timer
+        if self.launch_timer > 0:
+            timers['Launch'] = self.launch_timer
+        if self.reverse_control_timer > 0:
+            timers['Reverse Control'] = self.reverse_control_timer
+        if self.slippery_timer > 0:
+            timers['Slippery'] = self.slippery_timer
+        if self.slow_falling_timer > 0:
+            timers['Slow Falling'] = self.slow_falling_timer
+        if self.heavy_timer > 0:
+            timers['Heavy'] = self.heavy_timer
+        if self.weak_jump_timer > 0:
+            timers['Weak Jump'] = self.weak_jump_timer
+        return timers
+
     def draw(self, surface, camera=None):
         rect = self.visual_rect()
         if camera is not None:
             rect = rect.move(-int(round(camera.x)), -int(round(camera.y)))
         surface.blit(self.image, rect)
+        if self.shield_timer > 0:
+            center = rect.center
+            pygame.draw.circle(surface, (0, 255, 255), center, 30, 2)  # Cyan aura for shield
