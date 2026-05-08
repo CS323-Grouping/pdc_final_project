@@ -58,15 +58,11 @@ class Player:
         self.has_double_jumped = False
         self.reverse_control_timer = 0.0
         self.slippery_timer = 0.0
-        self.hvel = 0.0
-        self._slippery_prev_input_dir = 0
         self.slippery_boost = 1.0
-        self._visited_platform_indices: set[int] = set()
         self.slow_falling_timer = 0.0
         self.heavy_timer = 0.0
         self.launch_timer = 0.0
         self.weak_jump_timer = 0.0
-        self._launch_overlap_escape = False
 
     def _sync_rect_from_pos(self):
         self.rect.center = (int(round(self.pos.x)), int(round(self.pos.y)))
@@ -96,40 +92,20 @@ class Player:
             direction = direction.normalize()
         self._move_dir = int(direction.x)
 
-        # Apply debuffs on input direction
+        # Apply debuffs
         if self.reverse_control_timer > 0:
             direction.x *= -1
-
         if self.slippery_timer > 0:
-            input_dir = int(round(direction.x)) if self._move_dir != 0 else 0
-
-            accel = (
-                self.speed
-                * self.speed_boost
-                * self.slippery_boost
-                * SLIPPERY_ACCEL_SCALE
-            )
-            if input_dir != 0:
-                self.hvel += input_dir * accel * dt
-            else:
-                self.hvel *= max(0.0, 1.0 - (6.0 * dt))
-
-            max_hvel = self.speed * self.speed_boost * 2.0
-            self.hvel = max(-max_hvel, min(max_hvel, self.hvel))
-
-            self.pos.x += self.hvel * dt
-            self._clamp_to_playable_width()
+            self.slippery_boost = 0.8  # Slower movement for slippery debuff
         else:
-
-            if self._move_dir == 0:
-                self._idle_timer += dt
-            else:
-                self._idle_timer = 0.0
-
-            self.hvel = 0.0
             self.slippery_boost = 1.0
-            self.pos.x += direction.x * self.speed * self.speed_boost * self.slippery_boost * dt
-            self._clamp_to_playable_width()
+        if self._move_dir == 0:
+            self._idle_timer += dt
+        else:
+            self._idle_timer = 0.0
+
+        self.pos.x += direction.x * self.speed * self.speed_boost * self.slippery_boost * dt
+        self._clamp_to_playable_width()
 
     def _supported_on_platform_top(self, platforms) -> bool:
         """Feet sit on a platform surface (horizontal overlap + small vertical band)."""
@@ -317,16 +293,10 @@ class Player:
 
         self.pos.y += self.vel.y * dt
 
-        skip_solids_post, skip_mode_post = self._launch_platform_collision_mode(entities)
-
-        if skip_solids_post and skip_mode_post == "escape":
-            self._launch_overlap_centroid_nudge(entities)
-            skip_solids_post, skip_mode_post = self._launch_platform_collision_mode(entities)
-
-        if not skip_solids_post:
+        if self.launch_timer <= 0:
             self._resolve_platforms_vertical(entities)
         self._sync_rect_from_pos()
-        if not skip_solids_post and not self.on_ground and self.vel.y >= 0:
+        if not self.on_ground and self.vel.y >= 0 and self.launch_timer <= 0:
             self._snap_to_supported_platform_top(entities)
         self._select_animation_state()
         self.animation.update(dt)
@@ -356,23 +326,6 @@ class Player:
         self.launch_timer = max(0.0, self.launch_timer - dt)
 
         self.weak_jump_timer = max(0.0, self.weak_jump_timer - dt)
-
-        self.register_grounded_platforms(entities)
-
-    def register_grounded_platforms(self, platforms) -> None:
-        """Count unique platforms the player has landed on (by level platform index)."""
-        if not self.on_ground:
-            return
-        for i, p in enumerate(platforms):
-            overlap_x = min(self.rect.right, p.rect.right) - max(self.rect.left, p.rect.left)
-            if overlap_x <= 2:
-                continue
-            dy = self.rect.bottom - p.rect.top
-            if 0 <= dy <= 10:
-                self._visited_platform_indices.add(i)
-
-    def platforms_reached_count(self) -> int:
-        return len(self._visited_platform_indices)
 
     def _start_jump(self):
         self._set_air_animation_from_ground_state()
@@ -437,8 +390,7 @@ class Player:
             self.double_jump_timer = 3.0
         elif effect_type == 'launch':
             self.vel.y = -520.0  # Stronger launch upward
-            self.launch_timer = 1.0  # Air control window; solids use phased collision rules
-            self._launch_overlap_escape = False
+            self.launch_timer = 1.0  # Bypass platforms for 1 second
         elif effect_type == 'reverse_control':
             self.shield_timer = 0.0
             self.reverse_control_timer = 5.0
