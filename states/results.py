@@ -5,14 +5,18 @@ from ui import components as ui
 from ui.theme import DEFAULT_THEME
 
 
+RESULTS_AUTO_HIDE_SECONDS = 5.0
+RESULTS_MIN_VISIBLE_SECONDS = 1.0
+
+
 class ResultsState(ScreenState):
     def __init__(self, machine, context, **kwargs):
         super().__init__(machine, context, **kwargs)
-        self._auto_hide = 5.0
+        self._auto_hide = RESULTS_AUTO_HIDE_SECONDS
         self._elapsed = 0.0
 
     def enter(self):
-        self._auto_hide = 5.0
+        self._auto_hide = RESULTS_AUTO_HIDE_SECONDS
         self._elapsed = 0.0
         self.context.countdown_remaining = None
 
@@ -25,6 +29,8 @@ class ResultsState(ScreenState):
     def handle_event(self, event):
         super().handle_event(event)
         if event.type in (pygame.KEYDOWN, pygame.MOUSEBUTTONDOWN):
+            if self._elapsed < RESULTS_MIN_VISIBLE_SECONDS:
+                return
             self._finish()
 
     def _finish(self):
@@ -58,9 +64,8 @@ class ResultsState(ScreenState):
             theme,
         )
 
-        hint = self.context.tiny_font.render(
-            f"Continue in {max(0, int(self._auto_hide + 0.99))}s · any key / click",
-            True,
-            theme.text_muted,
-        )
+        hint_text = f"Continue in {max(0, int(self._auto_hide + 0.99))}s"
+        if self._elapsed >= RESULTS_MIN_VISIBLE_SECONDS:
+            hint_text += " · any key / click"
+        hint = self.context.tiny_font.render(hint_text, True, theme.text_muted)
         surface.blit(hint, hint.get_rect(center=(w // 2, h - 42)))

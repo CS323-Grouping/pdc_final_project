@@ -23,6 +23,7 @@ class PlayerEntry:
     connected: bool
     placement: Optional[int]
     last_seen: float
+    last_gameplay_seen: float
     disconnected_at: Optional[float] = None
     reconnect_deadline: Optional[float] = None
 
@@ -66,6 +67,10 @@ class RoomState:
                 state=self.state,
                 game_port=self.game_port,
             )
+
+    def set_room_name(self, room_name: str):
+        with self.lock:
+            self.room_name = room_name
 
     def connected_count(self) -> int:
         with self.lock:
@@ -118,6 +123,7 @@ class RoomState:
                 connected=True,
                 placement=None,
                 last_seen=now,
+                last_gameplay_seen=now,
             )
             if self.host_id is None:
                 self.host_id = player_id
@@ -133,6 +139,14 @@ class RoomState:
             player = self._players.get(player_id)
             if player is not None and player.connected:
                 player.last_seen = time.monotonic() if now is None else now
+
+    def touch_gameplay_player(self, player_id: int, now: Optional[float] = None):
+        with self.lock:
+            player = self._players.get(player_id)
+            if player is not None and player.connected:
+                now = time.monotonic() if now is None else now
+                player.last_seen = now
+                player.last_gameplay_seen = now
 
     def touch_addr(self, addr: Address, now: Optional[float] = None) -> Optional[int]:
         with self.lock:
@@ -208,6 +222,7 @@ class RoomState:
             player.connected = True
             player.ready = False
             player.last_seen = now
+            player.last_gameplay_seen = now
             player.disconnected_at = None
             player.reconnect_deadline = None
             return self._positions.get(player_id, self.start_position)
@@ -243,6 +258,7 @@ class RoomState:
             player.connected = True
             player.ready = False
             player.last_seen = now
+            player.last_gameplay_seen = now
             player.disconnected_at = None
             player.reconnect_deadline = None
             return player_id, self._positions.get(player_id, self.start_position), player.session_token
@@ -284,6 +300,16 @@ class RoomState:
             for player_id, player in self._players.items():
                 if not player.alive or not player.connected:
                     continue
+                if (now - player.last_gameplay_seen) > timeout_seconds:
+                    output.append(player_id)
+            return sorted(output)
+
+    def timed_out_connected_ids(self, now: float, timeout_seconds: float) -> List[int]:
+        with self.lock:
+            output: List[int] = []
+            for player_id, player in self._players.items():
+                if not player.connected:
+                    continue
                 if (now - player.last_seen) > timeout_seconds:
                     output.append(player_id)
             return sorted(output)
@@ -313,12 +339,14 @@ class RoomState:
                     entries.append((player.player_id, player.ready, player.name))
             return entries
 
-    def set_ready(self, player_id: int, ready_flag: bool):
+    def set_ready(self, player_id: int, ready_flag: bool) -> bool:
         with self.lock:
             player = self._players.get(player_id)
             if player is None or not player.connected:
-                return
+                return False
+            changed = player.ready != ready_flag
             player.ready = ready_flag
+            return changed
 
     def all_non_host_ready(self) -> bool:
         with self.lock:
@@ -383,6 +411,7 @@ class RoomState:
                     player.alive = True
                     player.placement = None
                     player.last_seen = now
+                    player.last_gameplay_seen = now
                     player.disconnected_at = None
                     player.reconnect_deadline = None
 
@@ -431,9 +460,10 @@ class RoomState:
             rows.sort(key=lambda row: (row[1], row[0]))
             return rows
 
-    def reset_for_lobby(self):
+    def reset_for_lobby(self, now: Optional[float] = None):
         with self.lock:
             self.countdown_deadline = None
+            now = time.monotonic() if now is None else now
             disconnected_ids = [player_id for player_id, player in self._players.items() if not player.connected]
             for player_id in disconnected_ids:
                 self._players.pop(player_id, None)
@@ -442,6 +472,8 @@ class RoomState:
                 player.ready = False
                 player.alive = False
                 player.placement = None
+                player.last_seen = now
+                player.last_gameplay_seen = now
 
     def alive_positions(self) -> Dict[int, Position]:
         with self.lock:

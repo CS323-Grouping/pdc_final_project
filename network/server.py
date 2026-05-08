@@ -27,6 +27,8 @@ try:
         CDWNX_REASON_HOST_LEFT,
         CDWNX_REASON_NOT_ENOUGH_PLAYERS,
         DEAD,
+        DEFAULT_MODEL_COLOR,
+        DEFAULT_MODEL_TYPE,
         GOAL,
         DISCOVER,
         DISCOVERY_PORT,
@@ -36,10 +38,12 @@ try:
         GEND_REASON_FORFEIT,
         GEND_REASON_NORMAL,
         GSTART,
+        HEARTBEAT,
         KICK,
         KICKED_REASON_KICKED,
         KICKED_REASON_NOT_READY,
         KICKED_REASON_ROOM_CLOSED,
+        LOBBY_PLAYER_TIMEOUT_SECONDS,
         MIN_PLAYERS,
         MATCH_PAUSE,
         MATCH_RESUME,
@@ -55,9 +59,13 @@ try:
         RECONNECT_DENY_NOT_IN_GAME,
         RECONNECT_DENY_NO_SLOT,
         RECONNECT_GRACE_SECONDS,
+        ROOM_NAME_UPDATE,
         ROOM_NAME_MAX_LEN,
         ROOM_NAME_MIN_LEN,
         START,
+        START_ACTION_CANCEL,
+        START_ACTION_START,
+        START_ACTION_TOGGLE_LEGACY,
         STATE_COUNTDOWN,
         STATE_IN_GAME,
         STATE_LOBBY,
@@ -74,6 +82,7 @@ try:
         pack_elim,
         pack_gend,
         pack_gstart,
+        pack_heartbeat_ack,
         pack_kicked,
         pack_list,
         pack_match_pause,
@@ -82,6 +91,7 @@ try:
         pack_player_state,
         pack_reconnect_no,
         pack_reconnect_ok,
+        pack_room_name_update,
         pack_session,
         safe_unpack,
         safe_unpack_avatar_chunk,
@@ -89,10 +99,12 @@ try:
         safe_unpack_conn,
         safe_unpack_dead,
         safe_unpack_goal,
+        safe_unpack_heartbeat,
         safe_unpack_kick,
         safe_unpack_player_state,
         safe_unpack_ready,
         safe_unpack_reconnect,
+        safe_unpack_room_name_update,
         safe_unpack_start,
         tag_of,
     )
@@ -118,6 +130,8 @@ except ModuleNotFoundError:
         CDWNX_REASON_HOST_LEFT,
         CDWNX_REASON_NOT_ENOUGH_PLAYERS,
         DEAD,
+        DEFAULT_MODEL_COLOR,
+        DEFAULT_MODEL_TYPE,
         GOAL,
         DISCOVER,
         DISCOVERY_PORT,
@@ -127,10 +141,12 @@ except ModuleNotFoundError:
         GEND_REASON_FORFEIT,
         GEND_REASON_NORMAL,
         GSTART,
+        HEARTBEAT,
         KICK,
         KICKED_REASON_KICKED,
         KICKED_REASON_NOT_READY,
         KICKED_REASON_ROOM_CLOSED,
+        LOBBY_PLAYER_TIMEOUT_SECONDS,
         MIN_PLAYERS,
         MATCH_PAUSE,
         MATCH_RESUME,
@@ -146,9 +162,13 @@ except ModuleNotFoundError:
         RECONNECT_DENY_NOT_IN_GAME,
         RECONNECT_DENY_NO_SLOT,
         RECONNECT_GRACE_SECONDS,
+        ROOM_NAME_UPDATE,
         ROOM_NAME_MAX_LEN,
         ROOM_NAME_MIN_LEN,
         START,
+        START_ACTION_CANCEL,
+        START_ACTION_START,
+        START_ACTION_TOGGLE_LEGACY,
         STATE_COUNTDOWN,
         STATE_IN_GAME,
         STATE_LOBBY,
@@ -165,6 +185,7 @@ except ModuleNotFoundError:
         pack_elim,
         pack_gend,
         pack_gstart,
+        pack_heartbeat_ack,
         pack_kicked,
         pack_list,
         pack_match_pause,
@@ -173,6 +194,7 @@ except ModuleNotFoundError:
         pack_player_state,
         pack_reconnect_no,
         pack_reconnect_ok,
+        pack_room_name_update,
         pack_session,
         safe_unpack,
         safe_unpack_avatar_chunk,
@@ -180,10 +202,12 @@ except ModuleNotFoundError:
         safe_unpack_conn,
         safe_unpack_dead,
         safe_unpack_goal,
+        safe_unpack_heartbeat,
         safe_unpack_kick,
         safe_unpack_player_state,
         safe_unpack_ready,
         safe_unpack_reconnect,
+        safe_unpack_room_name_update,
         safe_unpack_start,
         tag_of,
     )
@@ -201,22 +225,30 @@ class LobbyServer:
         countdown_seconds: float,
         reconnect_grace_seconds: float = RECONNECT_GRACE_SECONDS,
         player_timeout_seconds: float = PLAYER_TIMEOUT_SECONDS,
+        lobby_player_timeout_seconds: float = LOBBY_PLAYER_TIMEOUT_SECONDS,
     ):
         self.sock = sock
         self.room_state = room_state
         self.countdown_seconds = countdown_seconds
         self.reconnect_grace_seconds = reconnect_grace_seconds
         self.player_timeout_seconds = player_timeout_seconds
+        self.lobby_player_timeout_seconds = lobby_player_timeout_seconds
         self.cooldowns = KickCooldownTable()
         self.end_policy = GameEndPolicy()
         self.running = True
         self._last_cdwn_broadcast = 0.0
         self._last_pause_broadcast = 0.0
+        self._reliable_broadcasts: list[dict] = []
+        self._countdown_id: int = 0
+        self._next_countdown_id: int = 1
+        self._match_id: int = 0
+        self._next_match_id: int = 1
+        self._lobby_prune_blocked_until: float = 0.0
         self._game_start_time: float = 0.0
         # Maps player_id -> elapsed seconds when they touched the goal.
         self._finish_times: dict[int, float] = {}
         self._match_player_count: int = 0
-        self._avatar_headers: dict[int, tuple[int, int, int]] = {}
+        self._avatar_headers: dict[int, tuple[int, int, int, str, str]] = {}
         self._avatar_chunks: dict[tuple[int, int], dict[int, bytes]] = {}
 
     def broadcast(self, payload: bytes, exclude_addr=None):
@@ -225,6 +257,49 @@ class LobbyServer:
                 self.sock.sendto(payload, other_addr)
             except OSError as error:
                 LOGGER.debug("Broadcast failed to %s: %s", other_addr, error)
+
+    def reliable_broadcast(self, payload: bytes, repeats: int = 6, interval: float = 0.25, exclude_addr=None):
+        peers = self.room_state.peers(exclude_addr=exclude_addr)
+        for other_addr in peers:
+            try:
+                self.sock.sendto(payload, other_addr)
+            except OSError as error:
+                LOGGER.debug("Reliable broadcast failed to %s: %s", other_addr, error)
+        remaining = max(0, int(repeats) - 1)
+        if remaining <= 0:
+            return
+        self._reliable_broadcasts.append(
+            {
+                "payload": payload,
+                "peers": peers,
+                "remaining": remaining,
+                "interval": max(0.05, float(interval)),
+                "next_at": time.monotonic() + max(0.05, float(interval)),
+            }
+        )
+
+    def tick_reliable_broadcasts(self):
+        if not self._reliable_broadcasts:
+            return
+        now = time.monotonic()
+        pending = []
+        for item in self._reliable_broadcasts:
+            if now < item["next_at"]:
+                pending.append(item)
+                continue
+            for other_addr in item["peers"]:
+                try:
+                    self.sock.sendto(item["payload"], other_addr)
+                except OSError as error:
+                    LOGGER.debug("Reliable rebroadcast failed to %s: %s", other_addr, error)
+            item["remaining"] -= 1
+            if item["remaining"] > 0:
+                item["next_at"] = now + item["interval"]
+                pending.append(item)
+        self._reliable_broadcasts = pending
+
+    def block_lobby_pruning(self, seconds: float = 2.0):
+        self._lobby_prune_blocked_until = max(self._lobby_prune_blocked_until, time.monotonic() + max(0.0, seconds))
 
     def broadcast_roster(self):
         if self.room_state.state == STATE_IN_GAME:
@@ -238,13 +313,21 @@ class LobbyServer:
             if key[0] == player_id:
                 self._avatar_chunks.pop(key, None)
 
-    def _cache_avatar_header(self, player_id: int, avatar_id: int, total_chunks: int, payload_size: int):
+    def _cache_avatar_header(
+        self,
+        player_id: int,
+        avatar_id: int,
+        total_chunks: int,
+        payload_size: int,
+        model_type: str,
+        model_color: str,
+    ):
         if total_chunks <= 0 or payload_size <= 0:
             return
         previous = self._avatar_headers.get(player_id)
         if previous is not None and previous[0] != avatar_id:
             self._avatar_chunks.pop((player_id, previous[0]), None)
-        self._avatar_headers[player_id] = (avatar_id, total_chunks, payload_size)
+        self._avatar_headers[player_id] = (avatar_id, total_chunks, payload_size, model_type, model_color)
         self._avatar_chunks.setdefault((player_id, avatar_id), {})
 
     def _cache_avatar_chunk(
@@ -259,14 +342,20 @@ class LobbyServer:
             return
         header = self._avatar_headers.get(player_id)
         if header is None or header[0] != avatar_id:
-            self._avatar_headers[player_id] = (avatar_id, total_chunks, 0)
+            self._avatar_headers[player_id] = (
+                avatar_id,
+                total_chunks,
+                0,
+                DEFAULT_MODEL_TYPE,
+                DEFAULT_MODEL_COLOR,
+            )
         self._avatar_chunks.setdefault((player_id, avatar_id), {})[chunk_index] = payload
 
     def _avatar_cache_complete(self, player_id: int) -> bool:
         header = self._avatar_headers.get(player_id)
         if header is None:
             return False
-        avatar_id, total_chunks, payload_size = header
+        avatar_id, total_chunks, payload_size, _model_type, _model_color = header
         if total_chunks <= 0 or payload_size <= 0:
             return False
         chunks = self._avatar_chunks.get((player_id, avatar_id), {})
@@ -280,10 +369,13 @@ class LobbyServer:
                 continue
             if not self._avatar_cache_complete(player_id):
                 continue
-            avatar_id, total_chunks, payload_size = self._avatar_headers[player_id]
+            avatar_id, total_chunks, payload_size, model_type, model_color = self._avatar_headers[player_id]
             chunks = self._avatar_chunks.get((player_id, avatar_id), {})
             try:
-                self.sock.sendto(pack_avatar_header(player_id, avatar_id, total_chunks, payload_size), addr)
+                self.sock.sendto(
+                    pack_avatar_header(player_id, avatar_id, total_chunks, payload_size, model_type, model_color),
+                    addr,
+                )
                 for chunk_index in range(total_chunks):
                     self.sock.sendto(
                         pack_avatar_chunk(
@@ -343,6 +435,34 @@ class LobbyServer:
         LOGGER.info("Match resumed")
         self.broadcast(pack_match_resume())
 
+    def prune_lobby_timeouts(self, now: Optional[float] = None) -> bool:
+        if self.room_state.state not in (STATE_LOBBY, STATE_COUNTDOWN):
+            return False
+        now = time.monotonic() if now is None else now
+        if now < self._lobby_prune_blocked_until:
+            return False
+        timed_out = self.room_state.timed_out_connected_ids(now, self.lobby_player_timeout_seconds)
+        if not timed_out:
+            return False
+
+        changed = False
+        for player_id in timed_out:
+            if player_id == self.room_state.host_id:
+                LOGGER.warning("Host timed out in lobby/countdown player_id=%s; closing room", player_id)
+                self.close_room()
+                return True
+            LOGGER.warning("Removing stale lobby player_id=%s", player_id)
+            self.room_state.remove_player(player_id)
+            self._drop_avatar_cache(player_id)
+            changed = True
+
+        if changed:
+            if self.room_state.state == STATE_COUNTDOWN and self.room_state.connected_count() < MIN_PLAYERS:
+                self.cancel_countdown(CDWNX_REASON_NOT_ENOUGH_PLAYERS)
+            else:
+                self.broadcast_roster()
+        return False
+
     def broadcast_match_snapshot(self):
         for player_id, (x, y) in self.room_state.connected_positions().items():
             self.broadcast(pack_player_state(x, y, player_id, "idle_front"))
@@ -354,6 +474,9 @@ class LobbyServer:
     def handle_conn(self, data: bytes, addr):
         unpacked = safe_unpack_conn(data)
         if unpacked is None:
+            return
+
+        if self.prune_lobby_timeouts():
             return
 
         _tag, proto_version, player_name = unpacked
@@ -462,27 +585,51 @@ class LobbyServer:
         self.room_state.touch_player(player_id)
         if self.room_state.state not in (STATE_LOBBY, STATE_COUNTDOWN):
             return
-        self.room_state.set_ready(player_id, ready_flag)
-        self.broadcast_roster()
+        if self.room_state.set_ready(player_id, ready_flag):
+            self.broadcast_roster()
+
+    def handle_heartbeat(self, data: bytes, addr):
+        unpacked = safe_unpack_heartbeat(data)
+        if unpacked is None:
+            return
+        _tag, player_id, session_token, _client_state, _countdown_id, _match_id = unpacked
+        addr_player_id = self.room_state.get_player_id_by_addr(addr)
+        if addr_player_id != player_id:
+            return
+        expected_token = self.room_state.session_token(player_id)
+        if expected_token is not None and expected_token != session_token:
+            LOGGER.debug("Ignoring heartbeat with bad token player_id=%s addr=%s", player_id, addr)
+            return
+        self.room_state.touch_player(player_id)
+        try:
+            self.sock.sendto(pack_heartbeat_ack(self.room_state.state, self._countdown_id, self._match_id), addr)
+        except OSError as error:
+            LOGGER.debug("Heartbeat ack failed player_id=%s addr=%s: %s", player_id, addr, error)
 
     def start_countdown(self):
         now = time.monotonic()
+        self._countdown_id = self._next_countdown_id
+        self._next_countdown_id += 1
         self.room_state.state = STATE_COUNTDOWN
         self.room_state.begin_countdown(now + self.countdown_seconds)
         self._last_cdwn_broadcast = 0.0
-        self.broadcast(pack_cdwn(self.countdown_seconds))
+        self.block_lobby_pruning()
+        self.broadcast(pack_cdwn(self.countdown_seconds, self._countdown_id))
 
     def cancel_countdown(self, reason_code: int):
+        if self.room_state.state != STATE_COUNTDOWN:
+            return
         self.room_state.state = STATE_LOBBY
         self.room_state.cancel_countdown()
-        self.broadcast(pack_cdwnx(reason_code))
+        self.block_lobby_pruning()
+        self.reliable_broadcast(pack_cdwnx(reason_code, self._countdown_id))
         self.broadcast_roster()
 
     def handle_start(self, data: bytes, addr):
         unpacked = safe_unpack_start(data)
         if unpacked is None:
             return
-        _tag, host_id = unpacked
+        _tag, host_id, action = unpacked
         addr_player_id = self.room_state.get_player_id_by_addr(addr)
         if addr_player_id != host_id:
             return
@@ -490,15 +637,21 @@ class LobbyServer:
         if host_id != self.room_state.host_id:
             return
 
-        if self.room_state.state == STATE_LOBBY:
+        if action == START_ACTION_TOGGLE_LEGACY:
+            action = START_ACTION_CANCEL if self.room_state.state == STATE_COUNTDOWN else START_ACTION_START
+
+        if action == START_ACTION_START and self.room_state.state == STATE_LOBBY:
             if self.room_state.can_start():
                 LOGGER.info("Host %s started countdown", host_id)
                 self.start_countdown()
             return
 
-        if self.room_state.state == STATE_COUNTDOWN:
+        if action == START_ACTION_CANCEL and self.room_state.state == STATE_COUNTDOWN:
             LOGGER.info("Host %s cancelled countdown", host_id)
             self.cancel_countdown(CDWNX_REASON_HOST_CANCELLED)
+            return
+
+        LOGGER.debug("Ignored start action=%s state=%s host_id=%s", action, self.room_state.state, host_id)
 
     def _check_game_end(self):
         """End the game when no alive players remain who haven't finished."""
@@ -515,15 +668,16 @@ class LobbyServer:
             # All eliminated, no one finished — forfeit.
             standings = self.room_state.standings()
             LOGGER.info("Game ended by forfeit standings=%s", standings)
-            self.broadcast(pack_gend(GEND_REASON_FORFEIT, standings))
+            self.reliable_broadcast(pack_gend(GEND_REASON_FORFEIT, standings, self._match_id))
         else:
             # Normal end: assign 1st place to the last finisher if not yet placed.
             standings = self.room_state.standings()
             LOGGER.info("Game ended normally standings=%s", standings)
-            self.broadcast(pack_gend(GEND_REASON_NORMAL, standings))
+            self.reliable_broadcast(pack_gend(GEND_REASON_NORMAL, standings, self._match_id))
 
         self.room_state.state = STATE_LOBBY
         self.room_state.reset_for_lobby()
+        self.block_lobby_pruning()
         self._finish_times = {}
         self._match_player_count = 0
         self.end_policy.clear_elimination_cooldown()
@@ -550,7 +704,7 @@ class LobbyServer:
         addr_player_id = self.room_state.get_player_id_by_addr(addr)
         if addr_player_id != player_id:
             return
-        self.room_state.touch_player(player_id)
+        self.room_state.touch_gameplay_player(player_id)
         if self.room_state.state != STATE_IN_GAME:
             return
         if not self.room_state.is_alive(player_id):
@@ -587,7 +741,7 @@ class LobbyServer:
         addr_player_id = self.room_state.get_player_id_by_addr(addr)
         if addr_player_id != player_id:
             return
-        self.room_state.touch_player(player_id)
+        self.room_state.touch_gameplay_player(player_id)
         if self.room_state.state != STATE_IN_GAME:
             return
         LOGGER.info("Received DEAD player_id=%s addr=%s", player_id, addr)
@@ -633,6 +787,23 @@ class LobbyServer:
             self.eliminate_player(target_player_id)
         self.kick_player(target_player_id, KICKED_REASON_KICKED)
 
+    def handle_room_name_update(self, data: bytes, addr):
+        unpacked = safe_unpack_room_name_update(data)
+        if unpacked is None:
+            return
+        _tag, host_id, room_name = unpacked
+        addr_player_id = self.room_state.get_player_id_by_addr(addr)
+        if addr_player_id != host_id or host_id != self.room_state.host_id:
+            return
+        if self.room_state.state not in (STATE_LOBBY, STATE_COUNTDOWN):
+            return
+        if not is_valid_room_name(room_name):
+            return
+        self.room_state.touch_player(host_id)
+        self.room_state.set_room_name(room_name)
+        LOGGER.info("Host %s renamed room to %s", host_id, room_name)
+        self.broadcast(pack_room_name_update(host_id, room_name))
+
     def handle_position(self, data: bytes, addr):
         unpacked = safe_unpack(data)
         if unpacked is None:
@@ -647,7 +818,7 @@ class LobbyServer:
             return
         if not self.room_state.is_alive(player_id):
             return
-        self.room_state.touch_player(player_id)
+        self.room_state.touch_gameplay_player(player_id)
         if self.room_state.state == STATE_PAUSED:
             return
         self.room_state.update_position(player_id, x, y)
@@ -666,7 +837,7 @@ class LobbyServer:
             return
         if not self.room_state.is_alive(player_id):
             return
-        self.room_state.touch_player(player_id)
+        self.room_state.touch_gameplay_player(player_id)
         if self.room_state.state == STATE_PAUSED:
             return
         self.room_state.update_position(player_id, x, y)
@@ -684,14 +855,14 @@ class LobbyServer:
         unpacked = safe_unpack_avatar_header(data)
         if unpacked is None:
             return
-        _cmd, recv_id, avatar_id, total_chunks, payload_size = unpacked
+        _cmd, recv_id, avatar_id, total_chunks, payload_size, model_type, model_color = unpacked
         player_id = self.room_state.get_player_id_by_addr(addr)
         if player_id is None or player_id != recv_id:
             return
         self.room_state.touch_player(player_id)
-        self._cache_avatar_header(player_id, avatar_id, total_chunks, payload_size)
+        self._cache_avatar_header(player_id, avatar_id, total_chunks, payload_size, model_type, model_color)
         self.broadcast(
-            pack_avatar_header(player_id, avatar_id, total_chunks, payload_size),
+            pack_avatar_header(player_id, avatar_id, total_chunks, payload_size, model_type, model_color),
             exclude_addr=addr,
         )
 
@@ -777,11 +948,17 @@ class LobbyServer:
         if tag == READY:
             self.handle_ready(data, addr)
             return
+        if tag == HEARTBEAT:
+            self.handle_heartbeat(data, addr)
+            return
         if tag == START:
             self.handle_start(data, addr)
             return
         if tag == KICK:
             self.handle_kick(data, addr)
+            return
+        if tag == ROOM_NAME_UPDATE:
+            self.handle_room_name_update(data, addr)
             return
         if tag == DEAD:
             self.handle_dead(data, addr)
@@ -814,7 +991,7 @@ class LobbyServer:
         remaining = max(0.0, deadline - now)
 
         if self._last_cdwn_broadcast == 0.0 or (now - self._last_cdwn_broadcast) >= 1.0:
-            self.broadcast(pack_cdwn(remaining))
+            self.broadcast(pack_cdwn(remaining, self._countdown_id))
             self._last_cdwn_broadcast = now
 
         if remaining > 0:
@@ -834,12 +1011,14 @@ class LobbyServer:
 
         self.room_state.state = STATE_IN_GAME
         self.room_state.enter_game()
+        self._match_id = self._next_match_id
+        self._next_match_id += 1
         self._finish_times = {}
         self._match_player_count = self.room_state.connected_count()
         self.end_policy.clear_elimination_cooldown()
         self._game_start_time = time.monotonic()
         LOGGER.info("Game started players=%s", self.room_state.connected_roster_entries())
-        self.broadcast(pack_gstart())
+        self.reliable_broadcast(pack_gstart(self._countdown_id, self._match_id))
         self.broadcast_match_snapshot()
 
     def tick_in_game(self):
@@ -876,6 +1055,9 @@ class LobbyServer:
         self.resume_if_ready()
 
     def tick(self):
+        self.tick_reliable_broadcasts()
+        if self.prune_lobby_timeouts():
+            return
         self.tick_countdown()
         self.tick_in_game()
         self.tick_paused()
@@ -900,6 +1082,12 @@ def parse_args():
         type=float,
         default=PLAYER_TIMEOUT_SECONDS,
         help="Seconds without in-game packets before pausing for reconnect",
+    )
+    parser.add_argument(
+        "--lobby-player-timeout-seconds",
+        type=float,
+        default=LOBBY_PLAYER_TIMEOUT_SECONDS,
+        help="Seconds without lobby heartbeat packets before removing a stale lobby player",
     )
     parser.add_argument(
         "--log-level",
@@ -977,6 +1165,7 @@ def create_server(args) -> Optional[LobbyServer]:
         countdown_seconds=args.countdown_seconds,
         reconnect_grace_seconds=args.reconnect_grace_seconds,
         player_timeout_seconds=args.player_timeout_seconds,
+        lobby_player_timeout_seconds=args.lobby_player_timeout_seconds,
     )
     server._beacon_broadcaster = beacon_broadcaster  # Internal lifecycle handle.
     return server
@@ -1010,6 +1199,9 @@ def main():
             server.tick()
     except KeyboardInterrupt:
         LOGGER.info("Server shutting down...")
+    except Exception as error:
+        LOGGER.exception("Server crashed: %s", error)
+        raise
     finally:
         server._beacon_broadcaster.stop()
         server.sock.close()

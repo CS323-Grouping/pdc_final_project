@@ -12,6 +12,13 @@ ROOM_NAME_MIN_LEN = 3
 ROOM_NAME_MAX_LEN = 16
 RECV_BUF = 1024
 
+MODEL_TYPES = ("Default",)
+MODEL_COLORS = ("Gray", "Black", "White", "Purple", "Green", "Red", "Blue")
+DEFAULT_MODEL_TYPE = "Default"
+DEFAULT_MODEL_COLOR = "Blue"
+MODEL_TYPE_IDS = {name: index for index, name in enumerate(MODEL_TYPES)}
+MODEL_COLOR_IDS = {name: index for index, name in enumerate(MODEL_COLORS)}
+
 DISCOVERY_PORT = 5556
 BEACON_INTERVAL = 1.0
 BEACON_TTL = 3.0
@@ -19,12 +26,20 @@ COUNTDOWN_SECONDS = 5.0
 LEFT_BEHIND_DISTANCE = 720.0
 LEFT_BEHIND_COOLDOWN_DISTANCE = 200.0
 PLAYER_TIMEOUT_SECONDS = 3.0
+LOBBY_PLAYER_TIMEOUT_SECONDS = 8.0
+HEARTBEAT_INTERVAL_SECONDS = 1.0
 RECONNECT_GRACE_SECONDS = 30.0
 
 STATE_LOBBY = 0
 STATE_COUNTDOWN = 1
 STATE_IN_GAME = 2
 STATE_PAUSED = 3
+
+CLIENT_STATE_LOBBY = 0
+CLIENT_STATE_COUNTDOWN = 1
+CLIENT_STATE_IN_GAME = 2
+CLIENT_STATE_SPECTATING = 3
+CLIENT_STATE_RESULTS = 4
 
 PRESENCE_STATUS_ONLINE = 0
 PRESENCE_STATUS_LOBBY = 1
@@ -48,6 +63,10 @@ UINT32_MAX = 0xFFFFFFFF
 CDWNX_REASON_HOST_CANCELLED = 0
 CDWNX_REASON_NOT_ENOUGH_PLAYERS = 1
 CDWNX_REASON_HOST_LEFT = 2
+
+START_ACTION_START = 0
+START_ACTION_CANCEL = 1
+START_ACTION_TOGGLE_LEGACY = 255
 
 KICKED_REASON_KICKED = 0
 KICKED_REASON_ROOM_CLOSED = 1
@@ -75,6 +94,8 @@ CONOK = b"CONO"
 CONNO = b"CNOO"
 LIST = b"LIST"
 READY = b"REDY"
+HEARTBEAT = b"HRTB"
+HEARTBEAT_ACK = b"HBAK"
 START = b"STRT"
 CDWN = b"CDWN"
 CDWNX = b"CANX"
@@ -91,6 +112,7 @@ RECONNECT_OK = b"RCOK"
 RECONNECT_NO = b"RCNO"
 MATCH_PAUSE = b"PAUS"
 MATCH_RESUME = b"RSUM"
+ROOM_NAME_UPDATE = b"RNAM"
 
 FRMT_PACKET = "!4sffi"  # Legacy packet: command, x, y, player_id
 PACKET_SIZE = struct.calcsize(FRMT_PACKET)
@@ -115,9 +137,11 @@ NETWORK_AVATAR_BYTES = NETWORK_AVATAR_SIZE * NETWORK_AVATAR_SIZE * 4
 AVATAR_CHUNK_PAYLOAD_SIZE = 900
 AVATAR_MAX_CHUNKS = 64
 
-FRMT_AVATAR_HEADER = "!4siHHI"
+FRMT_AVATAR_HEADER_LEGACY = "!4siHHI"
+FRMT_AVATAR_HEADER = "!4siHHIBB"
 AVATAR_HEADER_PACKET_SIZE = struct.calcsize(FRMT_AVATAR_HEADER)
-AvatarHeaderPacket = Tuple[bytes, int, int, int, int]
+AVATAR_HEADER_LEGACY_PACKET_SIZE = struct.calcsize(FRMT_AVATAR_HEADER_LEGACY)
+AvatarHeaderPacket = Tuple[bytes, int, int, int, int, str, str]
 
 FRMT_AVATAR_CHUNK_HEAD = "!4siHHH"
 AVATAR_CHUNK_HEAD_SIZE = struct.calcsize(FRMT_AVATAR_CHUNK_HEAD)
@@ -140,19 +164,27 @@ FRMT_RECONNECT_NO = "!4sB"
 FRMT_LIST_HEAD = "!4sB"
 FRMT_LIST_ITEM = "!iB32s"
 FRMT_READY = "!4siB"
-FRMT_START = "!4si"
-FRMT_CDWN = "!4sf"
-FRMT_CDWNX = "!4sB"
-FRMT_GSTART = "!4s"
+FRMT_HEARTBEAT = "!4siIBII"
+FRMT_HEARTBEAT_ACK = "!4sBII"
+FRMT_START_LEGACY = "!4si"
+FRMT_START = "!4siB"
+FRMT_CDWN_LEGACY = "!4sf"
+FRMT_CDWN = "!4sIf"
+FRMT_CDWNX_LEGACY = "!4sB"
+FRMT_CDWNX = "!4sIB"
+FRMT_GSTART_LEGACY = "!4s"
+FRMT_GSTART = "!4sII"
 FRMT_DEAD = "!4siB"
 FRMT_GOAL = "!4si"   # tag, player_id
 FRMT_ELIM = "!4siB"
-FRMT_GEND_HEAD = "!4sBB"
+FRMT_GEND_HEAD_LEGACY = "!4sBB"
+FRMT_GEND_HEAD = "!4sIBB"
 FRMT_GEND_ITEM = "!iB32s"
 FRMT_KICK = "!4sii"
 FRMT_KICKED = "!4sB"
 FRMT_MATCH_PAUSE = "!4sif"
 FRMT_MATCH_RESUME = "!4s"
+FRMT_ROOM_NAME_UPDATE = "!4si32s"
 
 
 def _pack_name(name: str) -> bytes:
@@ -239,6 +271,40 @@ def animation_state_name(state_id: int) -> str:
     return ANIMATION_STATE_NAMES[0]
 
 
+def normalize_model_type(model_type: str) -> str:
+    for value in MODEL_TYPES:
+        if value.casefold() == (model_type or "").casefold():
+            return value
+    return DEFAULT_MODEL_TYPE
+
+
+def normalize_model_color(model_color: str) -> str:
+    for value in MODEL_COLORS:
+        if value.casefold() == (model_color or "").casefold():
+            return value
+    return DEFAULT_MODEL_COLOR
+
+
+def model_type_id(model_type: str) -> int:
+    return MODEL_TYPE_IDS.get(normalize_model_type(model_type), MODEL_TYPE_IDS[DEFAULT_MODEL_TYPE])
+
+
+def model_color_id(model_color: str) -> int:
+    return MODEL_COLOR_IDS.get(normalize_model_color(model_color), MODEL_COLOR_IDS[DEFAULT_MODEL_COLOR])
+
+
+def model_type_name(type_id: int) -> str:
+    if 0 <= int(type_id) < len(MODEL_TYPES):
+        return MODEL_TYPES[int(type_id)]
+    return DEFAULT_MODEL_TYPE
+
+
+def model_color_name(color_id: int) -> str:
+    if 0 <= int(color_id) < len(MODEL_COLORS):
+        return MODEL_COLORS[int(color_id)]
+    return DEFAULT_MODEL_COLOR
+
+
 def pack_player_state(x: float, y: float, player_id: int, animation_state: str | int) -> bytes:
     if isinstance(animation_state, str):
         state_id = animation_state_id(animation_state)
@@ -261,25 +327,51 @@ def safe_unpack_player_state(data: bytes) -> Optional[PlayerStatePacket]:
     return tag, x, y, player_id, state_id
 
 
-def pack_avatar_header(player_id: int, avatar_id: int, total_chunks: int, payload_size: int) -> bytes:
+def pack_avatar_header(
+    player_id: int,
+    avatar_id: int,
+    total_chunks: int,
+    payload_size: int,
+    model_type: str = DEFAULT_MODEL_TYPE,
+    model_color: str = DEFAULT_MODEL_COLOR,
+) -> bytes:
     avatar_id = int(avatar_id) & 0xFFFF
     total_chunks = max(0, min(AVATAR_MAX_CHUNKS, int(total_chunks)))
     payload_size = max(0, min(NETWORK_AVATAR_BYTES, int(payload_size)))
-    return struct.pack(FRMT_AVATAR_HEADER, AVATAR_HEADER, player_id, avatar_id, total_chunks, payload_size)
+    return struct.pack(
+        FRMT_AVATAR_HEADER,
+        AVATAR_HEADER,
+        player_id,
+        avatar_id,
+        total_chunks,
+        payload_size,
+        model_type_id(model_type),
+        model_color_id(model_color),
+    )
 
 
 def safe_unpack_avatar_header(data: bytes) -> Optional[AvatarHeaderPacket]:
+    if len(data) == AVATAR_HEADER_LEGACY_PACKET_SIZE:
+        try:
+            tag, player_id, avatar_id, total_chunks, payload_size = struct.unpack(FRMT_AVATAR_HEADER_LEGACY, data)
+        except struct.error:
+            return None
+        if tag != AVATAR_HEADER:
+            return None
+        if total_chunks > AVATAR_MAX_CHUNKS or payload_size > NETWORK_AVATAR_BYTES:
+            return None
+        return tag, player_id, avatar_id, total_chunks, payload_size, DEFAULT_MODEL_TYPE, DEFAULT_MODEL_COLOR
     if len(data) != AVATAR_HEADER_PACKET_SIZE:
         return None
     try:
-        tag, player_id, avatar_id, total_chunks, payload_size = struct.unpack(FRMT_AVATAR_HEADER, data)
+        tag, player_id, avatar_id, total_chunks, payload_size, type_id, color_id = struct.unpack(FRMT_AVATAR_HEADER, data)
     except struct.error:
         return None
     if tag != AVATAR_HEADER:
         return None
     if total_chunks > AVATAR_MAX_CHUNKS or payload_size > NETWORK_AVATAR_BYTES:
         return None
-    return tag, player_id, avatar_id, total_chunks, payload_size
+    return tag, player_id, avatar_id, total_chunks, payload_size, model_type_name(type_id), model_color_name(color_id)
 
 
 def pack_avatar_chunk(player_id: int, avatar_id: int, chunk_index: int, total_chunks: int, payload: bytes) -> bytes:
@@ -526,60 +618,132 @@ def safe_unpack_ready(data: bytes) -> Optional[Tuple[bytes, int, bool]]:
     return tag, player_id, bool(ready_flag)
 
 
-def pack_start(host_id: int) -> bytes:
-    return struct.pack(FRMT_START, START, host_id)
+def pack_heartbeat(
+    player_id: int,
+    session_token: int,
+    client_state: int = CLIENT_STATE_LOBBY,
+    countdown_id: int = 0,
+    match_id: int = 0,
+) -> bytes:
+    return struct.pack(
+        FRMT_HEARTBEAT,
+        HEARTBEAT,
+        player_id,
+        int(session_token) & UINT32_MAX,
+        max(0, min(255, int(client_state))),
+        int(countdown_id) & UINT32_MAX,
+        int(match_id) & UINT32_MAX,
+    )
 
 
-def safe_unpack_start(data: bytes) -> Optional[Tuple[bytes, int]]:
+def safe_unpack_heartbeat(data: bytes) -> Optional[Tuple[bytes, int, int, int, int, int]]:
+    unpacked = _safe_unpack_exact(data, FRMT_HEARTBEAT)
+    if unpacked is None:
+        return None
+    tag, player_id, session_token, client_state, countdown_id, match_id = unpacked
+    if tag != HEARTBEAT:
+        return None
+    return tag, player_id, session_token, client_state, countdown_id, match_id
+
+
+def pack_heartbeat_ack(server_state: int, countdown_id: int = 0, match_id: int = 0) -> bytes:
+    return struct.pack(
+        FRMT_HEARTBEAT_ACK,
+        HEARTBEAT_ACK,
+        max(0, min(255, int(server_state))),
+        int(countdown_id) & UINT32_MAX,
+        int(match_id) & UINT32_MAX,
+    )
+
+
+def safe_unpack_heartbeat_ack(data: bytes) -> Optional[Tuple[bytes, int, int, int]]:
+    unpacked = _safe_unpack_exact(data, FRMT_HEARTBEAT_ACK)
+    if unpacked is None:
+        return None
+    tag, server_state, countdown_id, match_id = unpacked
+    if tag != HEARTBEAT_ACK:
+        return None
+    return tag, server_state, countdown_id, match_id
+
+
+def pack_start(host_id: int, action: int = START_ACTION_START) -> bytes:
+    return struct.pack(FRMT_START, START, host_id, max(0, min(255, int(action))))
+
+
+def safe_unpack_start(data: bytes) -> Optional[Tuple[bytes, int, int]]:
+    legacy = _safe_unpack_exact(data, FRMT_START_LEGACY)
+    if legacy is not None:
+        tag, host_id = legacy
+        if tag != START:
+            return None
+        return tag, host_id, START_ACTION_TOGGLE_LEGACY
     unpacked = _safe_unpack_exact(data, FRMT_START)
     if unpacked is None:
         return None
-    tag, host_id = unpacked
+    tag, host_id, action = unpacked
     if tag != START:
         return None
-    return tag, host_id
+    return tag, host_id, action
 
 
-def pack_cdwn(seconds_until_start: float) -> bytes:
-    return struct.pack(FRMT_CDWN, CDWN, seconds_until_start)
+def pack_cdwn(seconds_until_start: float, countdown_id: int = 0) -> bytes:
+    return struct.pack(FRMT_CDWN, CDWN, int(countdown_id) & UINT32_MAX, seconds_until_start)
 
 
-def safe_unpack_cdwn(data: bytes) -> Optional[Tuple[bytes, float]]:
+def safe_unpack_cdwn(data: bytes) -> Optional[Tuple[bytes, int, float]]:
+    legacy = _safe_unpack_exact(data, FRMT_CDWN_LEGACY)
+    if legacy is not None:
+        tag, seconds_until_start = legacy
+        if tag != CDWN:
+            return None
+        return tag, 0, seconds_until_start
     unpacked = _safe_unpack_exact(data, FRMT_CDWN)
     if unpacked is None:
         return None
-    tag, seconds_until_start = unpacked
+    tag, countdown_id, seconds_until_start = unpacked
     if tag != CDWN:
         return None
-    return tag, seconds_until_start
+    return tag, countdown_id, seconds_until_start
 
 
-def pack_cdwnx(reason_code: int) -> bytes:
-    return struct.pack(FRMT_CDWNX, CDWNX, reason_code)
+def pack_cdwnx(reason_code: int, countdown_id: int = 0) -> bytes:
+    return struct.pack(FRMT_CDWNX, CDWNX, int(countdown_id) & UINT32_MAX, reason_code)
 
 
-def safe_unpack_cdwnx(data: bytes) -> Optional[Tuple[bytes, int]]:
+def safe_unpack_cdwnx(data: bytes) -> Optional[Tuple[bytes, int, int]]:
+    legacy = _safe_unpack_exact(data, FRMT_CDWNX_LEGACY)
+    if legacy is not None:
+        tag, reason_code = legacy
+        if tag != CDWNX:
+            return None
+        return tag, 0, reason_code
     unpacked = _safe_unpack_exact(data, FRMT_CDWNX)
     if unpacked is None:
         return None
-    tag, reason_code = unpacked
+    tag, countdown_id, reason_code = unpacked
     if tag != CDWNX:
         return None
-    return tag, reason_code
+    return tag, countdown_id, reason_code
 
 
-def pack_gstart() -> bytes:
-    return struct.pack(FRMT_GSTART, GSTART)
+def pack_gstart(countdown_id: int = 0, match_id: int = 0) -> bytes:
+    return struct.pack(FRMT_GSTART, GSTART, int(countdown_id) & UINT32_MAX, int(match_id) & UINT32_MAX)
 
 
-def safe_unpack_gstart(data: bytes) -> Optional[Tuple[bytes]]:
+def safe_unpack_gstart(data: bytes) -> Optional[Tuple[bytes, int, int]]:
+    legacy = _safe_unpack_exact(data, FRMT_GSTART_LEGACY)
+    if legacy is not None:
+        (tag,) = legacy
+        if tag != GSTART:
+            return None
+        return tag, 0, 0
     unpacked = _safe_unpack_exact(data, FRMT_GSTART)
     if unpacked is None:
         return None
-    (tag,) = unpacked
+    tag, countdown_id, match_id = unpacked
     if tag != GSTART:
         return None
-    return (tag,)
+    return tag, countdown_id, match_id
 
 
 def pack_dead(player_id: int, cause: int = 0) -> bytes:
@@ -624,19 +788,36 @@ def safe_unpack_elim(data: bytes) -> Optional[Tuple[bytes, int, int]]:
     return tag, player_id, placement
 
 
-def pack_gend(reason_code: int, standings: List[Tuple[int, int, str]]) -> bytes:
-    payload = struct.pack(FRMT_GEND_HEAD, GEND, reason_code, len(standings))
+def pack_gend(reason_code: int, standings: List[Tuple[int, int, str]], match_id: int = 0) -> bytes:
+    payload = struct.pack(FRMT_GEND_HEAD, GEND, int(match_id) & UINT32_MAX, reason_code, len(standings))
     for player_id, placement, name in standings:
         payload += struct.pack(FRMT_GEND_ITEM, player_id, placement, _pack_name(name))
     return payload
 
 
-def safe_unpack_gend(data: bytes) -> Optional[Tuple[int, List[Tuple[int, int, str]]]]:
+def safe_unpack_gend(data: bytes) -> Optional[Tuple[int, int, List[Tuple[int, int, str]]]]:
+    legacy_head_size = struct.calcsize(FRMT_GEND_HEAD_LEGACY)
+    if len(data) >= legacy_head_size:
+        try:
+            tag, reason_code, count = struct.unpack(FRMT_GEND_HEAD_LEGACY, data[:legacy_head_size])
+        except struct.error:
+            return None
+        item_size = struct.calcsize(FRMT_GEND_ITEM)
+        expected = legacy_head_size + (count * item_size)
+        if tag == GEND and len(data) == expected:
+            standings: List[Tuple[int, int, str]] = []
+            offset = legacy_head_size
+            for _ in range(count):
+                player_id, placement, raw_name = struct.unpack(FRMT_GEND_ITEM, data[offset : offset + item_size])
+                standings.append((player_id, placement, _unpack_name(raw_name)))
+                offset += item_size
+            return 0, reason_code, standings
+
     head_size = struct.calcsize(FRMT_GEND_HEAD)
     if len(data) < head_size:
         return None
     try:
-        tag, reason_code, count = struct.unpack(FRMT_GEND_HEAD, data[:head_size])
+        tag, match_id, reason_code, count = struct.unpack(FRMT_GEND_HEAD, data[:head_size])
     except struct.error:
         return None
     if tag != GEND:
@@ -653,7 +834,7 @@ def safe_unpack_gend(data: bytes) -> Optional[Tuple[int, List[Tuple[int, int, st
         player_id, placement, raw_name = struct.unpack(FRMT_GEND_ITEM, data[offset : offset + item_size])
         standings.append((player_id, placement, _unpack_name(raw_name)))
         offset += item_size
-    return reason_code, standings
+    return match_id, reason_code, standings
 
 
 def pack_kick(host_id: int, target_player_id: int) -> bytes:
@@ -710,3 +891,17 @@ def safe_unpack_match_resume(data: bytes) -> Optional[Tuple[bytes]]:
     if tag != MATCH_RESUME:
         return None
     return (tag,)
+
+
+def pack_room_name_update(host_id: int, room_name: str) -> bytes:
+    return struct.pack(FRMT_ROOM_NAME_UPDATE, ROOM_NAME_UPDATE, host_id, _pack_name(room_name))
+
+
+def safe_unpack_room_name_update(data: bytes) -> Optional[Tuple[bytes, int, str]]:
+    unpacked = _safe_unpack_exact(data, FRMT_ROOM_NAME_UPDATE)
+    if unpacked is None:
+        return None
+    tag, host_id, raw_room_name = unpacked
+    if tag != ROOM_NAME_UPDATE:
+        return None
+    return tag, host_id, _unpack_name(raw_room_name)

@@ -6,6 +6,7 @@ import pygame
 
 from app.display import DisplayManager
 from app.logging_setup import configure_logging, create_instance_log_dir
+from app.profile_store import load_profile_session
 from app.state_machine import AppContext, StateMachine
 from network import network_handler as nw
 from network import protocol
@@ -45,6 +46,11 @@ def parse_args():
         metavar="HOST:PORT",
         help="Emergency direct join (bypass discovery), e.g. 192.168.1.10:5555",
     )
+    parser.add_argument(
+        "--dev",
+        action="store_true",
+        help="Use an auto-assigned DevProfile1-DevProfile5 profile slot for multi-instance testing",
+    )
     return parser.parse_args()
 
 
@@ -82,8 +88,16 @@ def main():
         display_manager=display_manager,
     )
 
+    try:
+        ctx.apply_profile_session(load_profile_session(args.dev, ctx.player_name))
+    except RuntimeError as error:
+        print(error)
+        pygame.quit()
+        sys.exit(1)
+
     if args.name:
         ctx.player_name = args.name.strip() or ctx.player_name
+        ctx.save_profile()
 
     ctx.log_dir = create_instance_log_dir(ctx.project_root, ctx.player_name)
     configure_logging(args.log_level, ctx.log_dir / "client.log")

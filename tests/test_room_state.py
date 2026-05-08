@@ -105,3 +105,35 @@ def test_enter_game_resets_connected_player_positions_for_rematch():
     positions = room_state.connected_positions()
     assert positions[first_id] == (100.0, 100.0)
     assert positions[second_id] == (112.0, 100.0)
+
+
+def test_ready_state_reports_whether_value_changed():
+    room_state = RoomState(room_name="TestRoom", game_port=5555)
+    player_id, _ = room_state.add_or_get_player(("127.0.0.1", 12001), "Alpha")
+
+    assert room_state.set_ready(player_id, False) is False
+    assert room_state.set_ready(player_id, True) is True
+    assert room_state.set_ready(player_id, True) is False
+
+
+def test_room_state_reports_timed_out_connected_players():
+    room_state = RoomState(room_name="TestRoom", game_port=5555)
+    active_id, _ = room_state.add_or_get_player(("127.0.0.1", 12001), "Alpha")
+    stale_id, _ = room_state.add_or_get_player(("127.0.0.1", 12002), "Bravo")
+
+    room_state.touch_player(active_id, now=10.0)
+    room_state.touch_player(stale_id, now=0.0)
+
+    assert room_state.timed_out_connected_ids(now=12.0, timeout_seconds=8.0) == [stale_id]
+
+
+def test_reset_for_lobby_refreshes_liveness_after_long_match():
+    room_state = RoomState(room_name="TestRoom", game_port=5555)
+    first_id, _ = room_state.add_or_get_player(("127.0.0.1", 12001), "Alpha")
+    second_id, _ = room_state.add_or_get_player(("127.0.0.1", 12002), "Bravo")
+    room_state.touch_player(first_id, now=0.0)
+    room_state.touch_player(second_id, now=0.0)
+
+    room_state.reset_for_lobby(now=60.0)
+
+    assert room_state.timed_out_connected_ids(now=61.0, timeout_seconds=8.0) == []
