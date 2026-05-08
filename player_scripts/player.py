@@ -15,6 +15,13 @@ from world.constants import (
     PLAYER_MOVE_SPEED,
 )
 
+# Launch boost: ghost through platforms while ascending; overlap escape afterwards (apex = vel.y near zero).
+LAUNCH_PHASE_APEX_EPS = 0.5
+LAUNCH_OVERLAP_NUDGE_PX = 2
+
+# Slippery ice: how fast horizontal momentum ramps up (higher = snappier start, less "slow motion").
+SLIPPERY_ACCEL_SCALE = 3.25
+
 
 class Player:
     IDLE_DEBOUNCE_SECONDS = 0.1
@@ -51,11 +58,14 @@ class Player:
         self.has_double_jumped = False
         self.reverse_control_timer = 0.0
         self.slippery_timer = 0.0
+        self.hvel = 0.0
+        self._slippery_prev_input_dir = 0
         self.slippery_boost = 1.0
         self.slow_falling_timer = 0.0
         self.heavy_timer = 0.0
         self.launch_timer = 0.0
         self.weak_jump_timer = 0.0
+        self._launch_overlap_escape = False
 
     def _sync_rect_from_pos(self):
         self.rect.center = (int(round(self.pos.x)), int(round(self.pos.y)))
@@ -85,20 +95,40 @@ class Player:
             direction = direction.normalize()
         self._move_dir = int(direction.x)
 
-        # Apply debuffs
+        # Apply debuffs on input direction
         if self.reverse_control_timer > 0:
             direction.x *= -1
-        if self.slippery_timer > 0:
-            self.slippery_boost = 0.8  # Slower movement for slippery debuff
-        else:
-            self.slippery_boost = 1.0
-        if self._move_dir == 0:
-            self._idle_timer += dt
-        else:
-            self._idle_timer = 0.0
 
-        self.pos.x += direction.x * self.speed * self.speed_boost * self.slippery_boost * dt
-        self._clamp_to_playable_width()
+        if self.slippery_timer > 0:
+            input_dir = int(round(direction.x)) if self._move_dir != 0 else 0
+
+            accel = (
+                self.speed
+                * self.speed_boost
+                * self.slippery_boost
+                * SLIPPERY_ACCEL_SCALE
+            )
+            if input_dir != 0:
+                self.hvel += input_dir * accel * dt
+            else:
+                self.hvel *= max(0.0, 1.0 - (6.0 * dt))
+
+            max_hvel = self.speed * self.speed_boost * 2.0
+            self.hvel = max(-max_hvel, min(max_hvel, self.hvel))
+
+            self.pos.x += self.hvel * dt
+            self._clamp_to_playable_width()
+        else:
+
+            if self._move_dir == 0:
+                self._idle_timer += dt
+            else:
+                self._idle_timer = 0.0
+
+            self.hvel = 0.0
+            self.slippery_boost = 1.0
+            self.pos.x += direction.x * self.speed * self.speed_boost * self.slippery_boost * dt
+            self._clamp_to_playable_width()
 
     def _supported_on_platform_top(self, platforms) -> bool:
         """Feet sit on a platform surface (horizontal overlap + small vertical band)."""
@@ -173,6 +203,43 @@ class Player:
             if not moved:
                 break
 
+    def _any_platform_overlap(self, platforms) -> bool:
+        return any(self.rect.colliderect(p.rect) for p in platforms)
+
+    def _launch_platform_collision_mode(self, platforms) -> tuple[bool, str | None]:
+        """Return (skip_platform_solids, mode) with mode \"ascent\", \"escape\", or None."""
+        ascend = self.launch_timer > 0 and self.vel.y < -LAUNCH_PHASE_APEX_EPS
+        if ascend:
+            return True, "ascent"
+
+        overlap = self._any_platform_overlap(platforms)
+        overlap_escape_needed = overlap and (
+            (self.launch_timer > 0 and self.vel.y >= -LAUNCH_PHASE_APEX_EPS)
+            or self._launch_overlap_escape
+        )
+        if overlap_escape_needed:
+            self._launch_overlap_escape = True
+            return True, "escape"
+
+        self._launch_overlap_escape = False
+        return False, None
+
+    def _launch_overlap_centroid_nudge(self, platforms) -> None:
+        """Small separation when stuck overlapping after apex; favors down when tied."""
+        overlapping = [p for p in platforms if self.rect.colliderect(p.rect)]
+        if not overlapping:
+            return
+        score = sum(1 if self.rect.centery > p.rect.centery else -1 for p in overlapping)
+        if score > 0:
+            dy = LAUNCH_OVERLAP_NUDGE_PX
+        elif score < 0:
+            dy = -LAUNCH_OVERLAP_NUDGE_PX
+        else:
+            dy = LAUNCH_OVERLAP_NUDGE_PX
+        self.pos.y += dy
+        self._sync_rect_from_pos()
+        self._clamp_to_playable_width()
+
     def _resolve_platforms_vertical(self, platforms):
         """Top (land) and bottom (bonk) collision after vertical move."""
         self._sync_rect_from_pos()
@@ -216,11 +283,14 @@ class Player:
     def update(self, dt, screen_width, screen_height, entities):
         self.handle_input(dt, screen_width, screen_height)
 
-        self._resolve_platforms_horizontal(entities)
+        skip_solids_horizontal, _ = self._launch_platform_collision_mode(entities)
 
-        if self.vel.y >= 0 and self._supported_on_platform_top(entities):
+        if not skip_solids_horizontal:
+            self._resolve_platforms_horizontal(entities)
+
+        if not skip_solids_horizontal and self.vel.y >= 0 and self._supported_on_platform_top(entities):
             self._snap_to_supported_platform_top(entities)
-        elif self.on_ground:
+        elif self.on_ground and not skip_solids_horizontal:
             self.on_ground = False
             self._set_air_animation_from_ground_state()
 
@@ -246,10 +316,16 @@ class Player:
 
         self.pos.y += self.vel.y * dt
 
-        if self.launch_timer <= 0:
+        skip_solids_post, skip_mode_post = self._launch_platform_collision_mode(entities)
+
+        if skip_solids_post and skip_mode_post == "escape":
+            self._launch_overlap_centroid_nudge(entities)
+            skip_solids_post, skip_mode_post = self._launch_platform_collision_mode(entities)
+
+        if not skip_solids_post:
             self._resolve_platforms_vertical(entities)
         self._sync_rect_from_pos()
-        if not self.on_ground and self.vel.y >= 0 and self.launch_timer <= 0:
+        if not skip_solids_post and not self.on_ground and self.vel.y >= 0:
             self._snap_to_supported_platform_top(entities)
         self._select_animation_state()
         self.animation.update(dt)
@@ -343,7 +419,8 @@ class Player:
             self.double_jump_timer = 3.0
         elif effect_type == 'launch':
             self.vel.y = -520.0  # Stronger launch upward
-            self.launch_timer = 1.0  # Bypass platforms for 1 second
+            self.launch_timer = 1.0  # Air control window; solids use phased collision rules
+            self._launch_overlap_escape = False
         elif effect_type == 'reverse_control':
             self.shield_timer = 0.0
             self.reverse_control_timer = 5.0

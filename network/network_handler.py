@@ -39,6 +39,7 @@ from network.protocol import (
     POSITION,
     PROTO_VERSION,
     READY,
+    ORB_COLLECT,
     RECV_BUF,
     RECONNECT_NO,
     RECONNECT_OK,
@@ -62,6 +63,7 @@ from network.protocol import (
     pack_reconnect,
     pack_level_select,
     pack_room_name_update,
+    pack_orb_collect,
     pack_start,
     safe_unpack,
     safe_unpack_avatar_chunk,
@@ -78,6 +80,7 @@ from network.protocol import (
     safe_unpack_list,
     safe_unpack_match_pause,
     safe_unpack_match_resume,
+    safe_unpack_orb_collect,
     safe_unpack_player_state,
     safe_unpack_reconnect_no,
     safe_unpack_reconnect_ok,
@@ -101,7 +104,7 @@ def _packet_tag_name(payload: bytes) -> str:
 
 
 def _event_log_level(event: "NetworkEvent") -> int:
-    if isinstance(event, (PositionEvent, PlayerStateEvent, AvatarChunkEvent)):
+    if isinstance(event, (PositionEvent, PlayerStateEvent, AvatarChunkEvent, OrbCollectEvent)):
         return logging.DEBUG
     if isinstance(event, ErrorEvent):
         return logging.WARNING
@@ -159,6 +162,11 @@ def _event_summary(event: "NetworkEvent") -> str:
         return f"RoomNameEvent room_name={event.room_name}"
     if isinstance(event, LevelSelectEvent):
         return f"LevelSelectEvent level={event.level_id}"
+    if isinstance(event, OrbCollectEvent):
+        return (
+            f"OrbCollectEvent player_id={event.player_id} orb_index={event.orb_index} "
+            f"cooldown_sec={event.cooldown_sec}"
+        )
     if isinstance(event, ConnectDeniedEvent):
         return f"ConnectDeniedEvent reason={event.reason_code} extra={event.extra}"
     if isinstance(event, ConnectionLostEvent):
@@ -291,6 +299,13 @@ class LevelSelectEvent:
 
 
 @dataclass(frozen=True)
+class OrbCollectEvent:
+    player_id: int
+    orb_index: int
+    cooldown_sec: int
+
+
+@dataclass(frozen=True)
 class ConnectDeniedEvent:
     reason_code: int
     extra: int
@@ -324,6 +339,7 @@ NetworkEvent = Union[
     HeartbeatAckEvent,
     RoomNameEvent,
     LevelSelectEvent,
+    OrbCollectEvent,
     ConnectDeniedEvent,
     ConnectionLostEvent,
     ErrorEvent,
@@ -746,6 +762,11 @@ class Network:
             return
         self._sendto(pack_player_state(x, y, self.id, animation_state))
 
+    def send_orb_collect(self, orb_index: int, cooldown_sec: int):
+        if self.id < 0:
+            return
+        self._sendto(pack_orb_collect(self.id, int(orb_index), int(cooldown_sec)))
+
     def send_avatar(
         self,
         avatar_id: int,
@@ -862,6 +883,12 @@ class Network:
             _tag, _host_id, level_id = unpacked
             self.selected_level = level_id
             return LevelSelectEvent(level_id=level_id)
+        if tag == ORB_COLLECT:
+            unpacked = safe_unpack_orb_collect(data)
+            if unpacked is None:
+                return ErrorEvent("Malformed ORBC packet")
+            _tag, picker_id, orb_index, cooldown_sec = unpacked
+            return OrbCollectEvent(player_id=picker_id, orb_index=orb_index, cooldown_sec=cooldown_sec)
         if tag == CONNO:
             unpacked = safe_unpack_conno(data)
             if unpacked is None:

@@ -117,6 +117,7 @@ MATCH_PAUSE = b"PAUS"
 MATCH_RESUME = b"RSUM"
 ROOM_NAME_UPDATE = b"RNAM"
 LEVEL_SELECT = b"LVSL"
+ORB_COLLECT = b"ORBC"
 
 FRMT_PACKET = "!4sffi"  # Legacy packet: command, x, y, player_id
 PACKET_SIZE = struct.calcsize(FRMT_PACKET)
@@ -191,6 +192,10 @@ FRMT_MATCH_PAUSE = "!4sif"
 FRMT_MATCH_RESUME = "!4s"
 FRMT_ROOM_NAME_UPDATE = "!4si32s"
 FRMT_LEVEL_SELECT = "!4siB"
+FRMT_ORB_COLLECT = "!4siii"  # player_id, orb_index, cooldown_sec (1–10)
+ORB_COLLECT_PACKET_SIZE = struct.calcsize(FRMT_ORB_COLLECT)
+ORB_COOLDOWN_MIN_SEC = 1
+ORB_COOLDOWN_MAX_SEC = 10
 
 
 def _pack_name(name: str) -> bytes:
@@ -810,6 +815,28 @@ def safe_unpack_goal(data: bytes) -> Optional[Tuple[bytes, int]]:
     if tag != GOAL:
         return None
     return tag, player_id
+
+
+def pack_orb_collect(player_id: int, orb_index: int, cooldown_sec: int) -> bytes:
+    cd = int(cooldown_sec)
+    cd = max(ORB_COOLDOWN_MIN_SEC, min(ORB_COOLDOWN_MAX_SEC, cd))
+    return struct.pack(FRMT_ORB_COLLECT, ORB_COLLECT, int(player_id), int(orb_index), cd)
+
+
+def safe_unpack_orb_collect(data: bytes) -> Optional[Tuple[bytes, int, int, int]]:
+    if len(data) != ORB_COLLECT_PACKET_SIZE:
+        return None
+    unpacked = _safe_unpack_exact(data, FRMT_ORB_COLLECT)
+    if unpacked is None:
+        return None
+    tag, player_id, orb_index, cooldown_sec = unpacked
+    if tag != ORB_COLLECT:
+        return None
+    if orb_index < 0 or orb_index > 8192:
+        return None
+    if not (ORB_COOLDOWN_MIN_SEC <= cooldown_sec <= ORB_COOLDOWN_MAX_SEC):
+        return None
+    return tag, player_id, orb_index, cooldown_sec
 
 
 def pack_elim(player_id: int, placement: int) -> bytes:
