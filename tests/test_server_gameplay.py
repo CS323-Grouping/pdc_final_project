@@ -218,6 +218,28 @@ def test_tick_in_game_eliminates_left_behind_player():
     )
 
 
+def test_tick_stops_after_host_timeout_closes_room():
+    room_state = RoomState(room_name="TestRoom", game_port=5555)
+    host_addr = ("127.0.0.1", 12001)
+    guest_addr = ("127.0.0.1", 12002)
+    host_id, _ = room_state.add_or_get_player(host_addr, "Alpha")
+    room_state.add_or_get_player(guest_addr, "Bravo")
+    room_state.touch_player(host_id, now=0.0)
+    room_state.touch_player(room_state.get_player_id_by_addr(guest_addr), now=time.monotonic())
+    sock = FakeSocket()
+    server = LobbyServer(sock, room_state, countdown_seconds=0.0, lobby_player_timeout_seconds=1.0)
+    calls = []
+
+    server.tick_countdown = lambda: calls.append("countdown")
+    server.tick_in_game = lambda: calls.append("in_game")
+    server.tick_paused = lambda: calls.append("paused")
+
+    server.tick()
+
+    assert not server.running
+    assert calls == []
+
+
 def test_goal_finish_and_later_elimination_use_distinct_placements():
     room_state = RoomState(room_name="TestRoom", game_port=5555)
     players = []

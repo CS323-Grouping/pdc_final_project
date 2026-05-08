@@ -1056,7 +1056,8 @@ class LobbyServer:
 
     def tick(self):
         self.tick_reliable_broadcasts()
-        self.prune_lobby_timeouts()
+        if self.prune_lobby_timeouts():
+            return
         self.tick_countdown()
         self.tick_in_game()
         self.tick_paused()
