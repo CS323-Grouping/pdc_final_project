@@ -6,8 +6,8 @@ GOAL_HEIGHT = 16
 
 
 class Goal:
-    def __init__(self, center_x: int, world_y: int):
-        self.rect = pygame.Rect(0, 0, GOAL_WIDTH, GOAL_HEIGHT)
+    def __init__(self, center_x: int, world_y: int, width: int = GOAL_WIDTH):
+        self.rect = pygame.Rect(0, 0, max(1, int(width)), GOAL_HEIGHT)
         self.rect.centerx = center_x
         self.rect.top = world_y
         self._pulse = 0.0

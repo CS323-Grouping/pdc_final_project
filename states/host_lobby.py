@@ -291,6 +291,14 @@ class HostLobbyState(ScreenState):
                 self._open_room_name_edit()
                 return
 
+            if isinstance(action, tuple) and action[0] == "level":
+                _kind, step = action
+                next_level = protocol.cycle_level_id(self.context.selected_level, step)
+                self.context.selected_level = next_level
+                if self.context.network:
+                    self.context.network.send_level_select(next_level)
+                return
+
             if action == "secondary":
                 self._confirm_close_room = True
                 self._confirm_hovered = None
@@ -341,7 +349,10 @@ class HostLobbyState(ScreenState):
                 action = None
             if action is None and not in_cd and self._room_ui.room_name_hit_test(mp, self.context.room_name, host_view=True):
                 action = "room_name"
-            self._hovered = ("kick", action[1]) if isinstance(action, tuple) and action[0] == "kick" else action
+            if isinstance(action, tuple) and action[0] == "kick":
+                self._hovered = ("kick", action[1])
+            else:
+                self._hovered = action
         else:
             self._layout_setup()
             self.open_button.enabled = protocol.is_valid_room_name(self.room_input)
@@ -429,4 +440,7 @@ class HostLobbyState(ScreenState):
             countdown_remaining=self.context.countdown_remaining,
             pulse_t=self._pulse_t,
             room_name_hovered=self._hovered == "room_name",
+            selected_level=self.context.selected_level,
+            level_select_enabled=not in_cd,
+            level_hovered=self._hovered if isinstance(self._hovered, tuple) and self._hovered[0] == "level" else None,
         )

@@ -60,7 +60,9 @@ class JoinedLobbyState(ScreenState):
         for event in self.context.drain_network_events():
             heard_server = True
             if self.handle_common_network_event(event):
-                return True
+                if self.context.network is None:
+                    return True
+                continue
             if self._room_ui.handle_avatar_event(event, my_id):
                 continue
             if isinstance(event, nw.RosterEvent):
@@ -183,4 +185,5 @@ class JoinedLobbyState(ScreenState):
             secondary_label="LEAVE",
             countdown_remaining=self.context.countdown_remaining,
             pulse_t=self._pulse_t,
+            selected_level=self.context.selected_level,
         )

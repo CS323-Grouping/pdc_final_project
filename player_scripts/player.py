@@ -7,8 +7,11 @@ from world.constants import (
     PLAYABLE_X,
     PLAYER_FRAME_HEIGHT,
     PLAYER_FRAME_WIDTH,
+    PLAYER_GRAVITY,
     PLAYER_HITBOX_HEIGHT,
     PLAYER_HITBOX_WIDTH,
+    PLAYER_JUMP_VELOCITY,
+    PLAYER_MOVE_SPEED,
 )
 
 
@@ -25,9 +28,9 @@ class Player:
         self.image = self.animation.image
         self.vel = pygame.Vector2(0, 0)
         self.pos = pygame.Vector2(start_pos)
-        self.speed = 90.0
-        self.gravity = 520.0
-        self.jump_velocity = -220.0
+        self.speed = PLAYER_MOVE_SPEED
+        self.gravity = PLAYER_GRAVITY
+        self.jump_velocity = PLAYER_JUMP_VELOCITY
         self.rect = pygame.Rect(0, 0, PLAYER_HITBOX_WIDTH, PLAYER_HITBOX_HEIGHT)
         self.rect.center = (int(self.pos.x), int(self.pos.y))
         self.on_ground = False
