@@ -1,4 +1,3 @@
-import random
 import logging
 from dataclasses import dataclass
 import math
@@ -25,9 +24,7 @@ from world.constants import (
     PLAYER_HITBOX_HEIGHT,
     PLAYER_HITBOX_WIDTH,
 )
-from world.level_1 import create_level_1, LEVEL_1_GOAL_CENTER_X, LEVEL_1_GOAL_Y
-from world.level_2 import create_level_2, LEVEL_2_GOAL_CENTER_X, LEVEL_2_GOAL_Y
-from world.level_3 import create_level_3, LEVEL_3_GOAL_CENTER_X, LEVEL_3_GOAL_Y
+from world.level_system import create_level_platforms, generate_level, level_preview_seed
 from world.rendering import LevelRenderer
 from world.shapes.goal import Goal
 from player_scripts import camera
@@ -105,22 +102,21 @@ class InGameState(ScreenState):
         self._name_by_id = {pid: name for pid, _r, name in self.context.roster}
         self.world_assets = load_world_assets(self.context.project_root)
         self.level_renderer = LevelRenderer(self.world_assets)
-        random.seed(1)
-        self.current_level = random.randint(1, 3)
-        if self.current_level == 1:
-            self.platforms = create_level_1(self.world_assets.platform_normal)
-            goal_x = LEVEL_1_GOAL_CENTER_X
-            goal_y = LEVEL_1_GOAL_Y
-
-        elif self.current_level == 2:
-            self.platforms = create_level_2(self.world_assets.platform_normal)
-            goal_x = LEVEL_2_GOAL_CENTER_X
-            goal_y = LEVEL_2_GOAL_Y
-
-        else:
-            self.platforms = create_level_3(self.world_assets.platform_normal)
-            goal_x = LEVEL_3_GOAL_CENTER_X
-            goal_y = LEVEL_3_GOAL_Y
+        selected_level = protocol.normalize_level_id(getattr(self.context, "selected_level", protocol.DEFAULT_LEVEL_ID))
+        level_seed = int(getattr(self.context, "level_seed", 0) or 0) & protocol.UINT32_MAX
+        if level_seed == 0:
+            level_seed = level_preview_seed(selected_level)
+        level = generate_level(selected_level, level_seed)
+        self.current_level = level.level_id
+        self.platforms = create_level_platforms(level, self.world_assets.platform_normal)
+        LOGGER.info(
+            "Loaded level=%s seed=%s platforms=%s goal=(%s,%s)",
+            level.level_id,
+            level.seed,
+            len(level.platforms),
+            level.goal_center_x,
+            level.goal_y,
+        )
         sp = self.context.start_pos
         if isinstance(sp, (list, tuple)) and len(sp) >= 2:
             base_start = (float(sp[0]), float(sp[1]))
@@ -153,7 +149,7 @@ class InGameState(ScreenState):
         self._spectate_player_id = None
         self._spectate_snap_pending = False
         self._placements_by_id = {}
-        self.goal = Goal(goal_x, goal_y)
+        self.goal = Goal(level.goal_center_x, level.goal_y, width=level.goal_width)
         self._goal_reached = False
         self._seed_remote_players_from_roster(base_start)
         self._send_initial_player_state()

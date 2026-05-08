@@ -19,6 +19,7 @@ ROOM_LOBBY_RECTS = {
     "background": pygame.Rect(0, 0, INTERNAL_WIDTH, INTERNAL_HEIGHT),
     "screen": pygame.Rect(24, 32, 272, 102),
     "room_name": pygame.Rect(31, 14, 129, 18),
+    "level_select": pygame.Rect(166, 14, 66, 18),
     "player_count": pygame.Rect(239, 14, 50, 18),
 }
 
@@ -351,6 +352,18 @@ class RoomLobbyUi:
         frame = ROOM_LOBBY_RECTS["player_count"]
         return pygame.Rect(frame.x + 4, frame.bottom - 13, frame.w - 8, 12)
 
+    def level_select_rect(self) -> pygame.Rect:
+        return ROOM_LOBBY_RECTS["level_select"].copy()
+
+    def level_select_hit_test(self, pos: tuple[int, int], host_view: bool):
+        if not host_view:
+            return None
+        rect = self.level_select_rect()
+        if not rect.collidepoint(pos):
+            return None
+        step = -1 if pos[0] < rect.centerx else 1
+        return ("level", step)
+
     def starting_window_rect(self) -> pygame.Rect:
         asset = self._assets.get("starting_window")
         frame_w, frame_h = asset.get_size() if asset is not None else (148, 84)
@@ -480,6 +493,9 @@ class RoomLobbyUi:
             return "secondary"
         if host_view and buttons["kick_toggle"].collidepoint(pos):
             return "kick_toggle"
+        level_action = self.level_select_hit_test(pos, host_view)
+        if level_action is not None:
+            return level_action
         if host_view and kick_mode:
             for index, entry in enumerate(self.sorted_roster(roster)):
                 if index >= len(PLAYER_CARD_RECTS):
@@ -622,6 +638,38 @@ class RoomLobbyUi:
         y = rect.y + (rect.h - font.get_height()) // 2
         surface.blit(label, (rect.right - label.get_width(), y))
 
+    def _draw_level_select(
+        self,
+        surface: pygame.Surface,
+        selected_level: int,
+        host_view: bool,
+        enabled: bool,
+        hovered=None,
+    ):
+        theme = DEFAULT_THEME
+        rect = self.level_select_rect()
+        scaled = self._scale_rect(rect)
+        border = theme.border_focus if enabled and hovered is not None else (60, 82, 105)
+        pygame.draw.rect(surface, (13, 25, 38), scaled, border_radius=2)
+        pygame.draw.rect(surface, border, scaled, width=max(1, self._window_scale()), border_radius=2)
+        color = theme.text if enabled or not host_view else theme.text_muted
+        if host_view:
+            left_color = (255, 236, 170) if enabled and hovered == ("level", -1) else theme.text_muted
+            right_color = (255, 236, 170) if enabled and hovered == ("level", 1) else theme.text_muted
+            self._draw_text_center(surface, 6, "<", pygame.Rect(rect.x + 2, rect.y + 3, 10, 12), left_color, shadow=False)
+            self._draw_text_center(surface, 6, ">", pygame.Rect(rect.right - 12, rect.y + 3, 10, 12), right_color, shadow=False)
+            text_rect = pygame.Rect(rect.x + 12, rect.y + 3, rect.w - 24, 12)
+        else:
+            text_rect = pygame.Rect(rect.x + 4, rect.y + 3, rect.w - 8, 12)
+        self._draw_text_center(
+            surface,
+            6,
+            f"LVL {protocol.normalize_level_id(selected_level)}",
+            text_rect,
+            color,
+            shadow=False,
+        )
+
     def _draw_text_caret(
         self,
         surface: pygame.Surface,
@@ -742,6 +790,9 @@ class RoomLobbyUi:
         countdown_remaining: float | None = None,
         pulse_t: float = 0.0,
         room_name_hovered: bool = False,
+        selected_level: int = protocol.DEFAULT_LEVEL_ID,
+        level_select_enabled: bool = False,
+        level_hovered=None,
     ):
         theme = DEFAULT_THEME
         buttons = self.button_layout(host_view)
@@ -751,6 +802,14 @@ class RoomLobbyUi:
             if host_view:
                 primary_color = theme.text if primary_enabled else theme.text_muted
                 self._draw_text_center(surface, 7, primary_label, buttons["primary"].inflate(-10, -6), primary_color)
+            self._draw_text_center(
+                surface,
+                6,
+                f"LEVEL {protocol.normalize_level_id(selected_level)}",
+                pygame.Rect(116, 96, 88, 12),
+                theme.text,
+                shadow=True,
+            )
             self.draw_window_global_messages(surface)
             return
 
@@ -769,6 +828,13 @@ class RoomLobbyUi:
             f"{len(roster)}/{protocol.MAX_PLAYERS}",
             self.player_count_text_rect(),
             theme.text,
+        )
+        self._draw_level_select(
+            surface,
+            selected_level,
+            host_view,
+            level_select_enabled,
+            level_hovered,
         )
 
         entries = self.sorted_roster(roster)

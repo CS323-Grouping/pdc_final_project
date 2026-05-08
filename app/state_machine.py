@@ -100,6 +100,8 @@ class AppContext:
     roster: list = None
     countdown_remaining: Optional[float] = None
     start_pos: tuple = (100.0, 100.0)
+    selected_level: int = protocol.DEFAULT_LEVEL_ID
+    level_seed: int = 0
     results_standings: list = None
     return_state_after_results: str = "joined_lobby"
     active_countdown_id: int = 0
@@ -343,6 +345,8 @@ class AppContext:
         self.is_host = is_host
         self.room_name = room_name
         self.start_pos = start_pos or (100.0, 100.0)
+        self.selected_level = protocol.normalize_level_id(getattr(network_obj, "selected_level", protocol.DEFAULT_LEVEL_ID))
+        self.level_seed = 0
         self.roster = []
         self.countdown_remaining = None
         self.active_countdown_id = 0

@@ -68,6 +68,9 @@ START_ACTION_START = 0
 START_ACTION_CANCEL = 1
 START_ACTION_TOGGLE_LEGACY = 255
 
+DEFAULT_LEVEL_ID = 1
+LEVEL_IDS = tuple(range(1, 11))
+
 KICKED_REASON_KICKED = 0
 KICKED_REASON_ROOM_CLOSED = 1
 KICKED_REASON_NOT_READY = 2
@@ -113,6 +116,7 @@ RECONNECT_NO = b"RCNO"
 MATCH_PAUSE = b"PAUS"
 MATCH_RESUME = b"RSUM"
 ROOM_NAME_UPDATE = b"RNAM"
+LEVEL_SELECT = b"LVSL"
 
 FRMT_PACKET = "!4sffi"  # Legacy packet: command, x, y, player_id
 PACKET_SIZE = struct.calcsize(FRMT_PACKET)
@@ -173,7 +177,8 @@ FRMT_CDWN = "!4sIf"
 FRMT_CDWNX_LEGACY = "!4sB"
 FRMT_CDWNX = "!4sIB"
 FRMT_GSTART_LEGACY = "!4s"
-FRMT_GSTART = "!4sII"
+FRMT_GSTART_COMPAT = "!4sII"
+FRMT_GSTART = "!4sIIBI"
 FRMT_DEAD = "!4siB"
 FRMT_GOAL = "!4si"   # tag, player_id
 FRMT_ELIM = "!4siB"
@@ -185,6 +190,7 @@ FRMT_KICKED = "!4sB"
 FRMT_MATCH_PAUSE = "!4sif"
 FRMT_MATCH_RESUME = "!4s"
 FRMT_ROOM_NAME_UPDATE = "!4si32s"
+FRMT_LEVEL_SELECT = "!4siB"
 
 
 def _pack_name(name: str) -> bytes:
@@ -206,6 +212,20 @@ def is_valid_player_name(name: str) -> bool:
 
 def normalize_player_name(name: str) -> str:
     return (name or "").casefold()
+
+
+def normalize_level_id(level_id: int) -> int:
+    level_id = int(level_id)
+    if level_id in LEVEL_IDS:
+        return level_id
+    return DEFAULT_LEVEL_ID
+
+
+def cycle_level_id(current_level_id: int, step: int) -> int:
+    current = normalize_level_id(current_level_id)
+    direction = -1 if int(step) < 0 else 1
+    index = LEVEL_IDS.index(current)
+    return LEVEL_IDS[(index + direction) % len(LEVEL_IDS)]
 
 
 def _is_ascii_alnum(char: str) -> bool:
@@ -726,24 +746,42 @@ def safe_unpack_cdwnx(data: bytes) -> Optional[Tuple[bytes, int, int]]:
     return tag, countdown_id, reason_code
 
 
-def pack_gstart(countdown_id: int = 0, match_id: int = 0) -> bytes:
-    return struct.pack(FRMT_GSTART, GSTART, int(countdown_id) & UINT32_MAX, int(match_id) & UINT32_MAX)
+def pack_gstart(
+    countdown_id: int = 0,
+    match_id: int = 0,
+    selected_level: int = DEFAULT_LEVEL_ID,
+    level_seed: int = 0,
+) -> bytes:
+    return struct.pack(
+        FRMT_GSTART,
+        GSTART,
+        int(countdown_id) & UINT32_MAX,
+        int(match_id) & UINT32_MAX,
+        normalize_level_id(selected_level),
+        int(level_seed) & UINT32_MAX,
+    )
 
 
-def safe_unpack_gstart(data: bytes) -> Optional[Tuple[bytes, int, int]]:
+def safe_unpack_gstart(data: bytes) -> Optional[Tuple[bytes, int, int, int, int]]:
     legacy = _safe_unpack_exact(data, FRMT_GSTART_LEGACY)
     if legacy is not None:
         (tag,) = legacy
         if tag != GSTART:
             return None
-        return tag, 0, 0
+        return tag, 0, 0, DEFAULT_LEVEL_ID, 0
+    compat = _safe_unpack_exact(data, FRMT_GSTART_COMPAT)
+    if compat is not None:
+        tag, countdown_id, match_id = compat
+        if tag != GSTART:
+            return None
+        return tag, countdown_id, match_id, DEFAULT_LEVEL_ID, 0
     unpacked = _safe_unpack_exact(data, FRMT_GSTART)
     if unpacked is None:
         return None
-    tag, countdown_id, match_id = unpacked
+    tag, countdown_id, match_id, selected_level, level_seed = unpacked
     if tag != GSTART:
         return None
-    return tag, countdown_id, match_id
+    return tag, countdown_id, match_id, normalize_level_id(selected_level), level_seed
 
 
 def pack_dead(player_id: int, cause: int = 0) -> bytes:
@@ -905,3 +943,17 @@ def safe_unpack_room_name_update(data: bytes) -> Optional[Tuple[bytes, int, str]
     if tag != ROOM_NAME_UPDATE:
         return None
     return tag, host_id, _unpack_name(raw_room_name)
+
+
+def pack_level_select(host_id: int, level_id: int) -> bytes:
+    return struct.pack(FRMT_LEVEL_SELECT, LEVEL_SELECT, host_id, normalize_level_id(level_id))
+
+
+def safe_unpack_level_select(data: bytes) -> Optional[Tuple[bytes, int, int]]:
+    unpacked = _safe_unpack_exact(data, FRMT_LEVEL_SELECT)
+    if unpacked is None:
+        return None
+    tag, host_id, level_id = unpacked
+    if tag != LEVEL_SELECT:
+        return None
+    return tag, host_id, normalize_level_id(level_id)
