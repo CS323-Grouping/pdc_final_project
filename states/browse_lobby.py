@@ -169,7 +169,7 @@ class BrowseLobbyState(ScreenState):
             return False
         ticket = self.context.reconnect_ticket
         if ticket is None:
-            return True
+            return False
         if ticket.addr != room.addr or ticket.port != room.game_port:
             return False
         if ticket.room_name and ticket.room_name != room.room_name:

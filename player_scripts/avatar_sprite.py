@@ -42,7 +42,8 @@ def compose_player_frames(
         composed[state] = []
         for body_frame in frames:
             frame = pygame.Surface(PLAYER_FRAME_SIZE, pygame.SRCALPHA)
-            frame.blit(prepared_avatar, AVATAR_RECT.topleft)
             frame.blit(body_frame, (0, 0))
+            frame.fill((0, 0, 0, 0), AVATAR_RECT)
+            frame.blit(prepared_avatar, AVATAR_RECT.topleft)
             composed[state].append(frame)
     return composed

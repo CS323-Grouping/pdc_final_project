@@ -39,7 +39,6 @@ class HostLobbyState(ScreenState):
         self._room_name_edit_value = context.room_name
         self._room_name_edit_hovered = None
         self._pulse_t = 0.0
-        self._heartbeat_elapsed = 0.0
         self._open_h = self._start_h = self._cancel_h = self._close_h = False
         self._kick_hover: Optional[int] = None
         self._kick_mode_on = False
@@ -59,7 +58,6 @@ class HostLobbyState(ScreenState):
         self._room_name_edit_hovered = None
         self._kick_mode_on = False
         self._hovered = None
-        self._heartbeat_elapsed = 0.0
         if not self._session_open:
             self.room_input = self.context.room_name or self.room_input
 
@@ -174,16 +172,19 @@ class HostLobbyState(ScreenState):
                 self.context.roster = entries
                 self._room_ui.retain_remote_avatars(new_ids)
             elif isinstance(event, nw.CountdownEvent):
-                self.context.countdown_remaining = event.seconds_until_start
+                self.accept_countdown_event(event)
             elif isinstance(event, nw.CountdownCancelEvent):
-                self.context.countdown_remaining = None
+                self.accept_countdown_cancel_event(event)
             elif isinstance(event, nw.RoomNameEvent):
                 self.context.room_name = event.room_name
             elif isinstance(event, nw.GameStartEvent):
-                self.context.countdown_remaining = None
+                if not self.accept_game_start_event(event):
+                    continue
                 self.switch("in_game")
                 return
             elif isinstance(event, nw.GameEndEvent):
+                if not self.accept_game_end_event(event):
+                    continue
                 self.context.reset_lobby_after_game()
                 self.context.results_standings = list(event.standings)
                 self.context.return_state_after_results = "host_lobby"
@@ -314,11 +315,6 @@ class HostLobbyState(ScreenState):
 
     def update(self, dt: float):
         self._pulse_t += dt
-        if self._session_open and self.context.network is not None:
-            self._heartbeat_elapsed += dt
-            if self._heartbeat_elapsed >= 1.0:
-                self._heartbeat_elapsed = 0.0
-                self.context.network.send_ready(False)
         mp = self.context.mouse_pos
         if self._room_name_edit_open:
             self._room_name_edit_hovered = self._room_ui.room_name_edit_hit_test(mp)

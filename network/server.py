@@ -38,6 +38,7 @@ try:
         GEND_REASON_FORFEIT,
         GEND_REASON_NORMAL,
         GSTART,
+        HEARTBEAT,
         KICK,
         KICKED_REASON_KICKED,
         KICKED_REASON_NOT_READY,
@@ -62,6 +63,9 @@ try:
         ROOM_NAME_MAX_LEN,
         ROOM_NAME_MIN_LEN,
         START,
+        START_ACTION_CANCEL,
+        START_ACTION_START,
+        START_ACTION_TOGGLE_LEGACY,
         STATE_COUNTDOWN,
         STATE_IN_GAME,
         STATE_LOBBY,
@@ -78,6 +82,7 @@ try:
         pack_elim,
         pack_gend,
         pack_gstart,
+        pack_heartbeat_ack,
         pack_kicked,
         pack_list,
         pack_match_pause,
@@ -94,6 +99,7 @@ try:
         safe_unpack_conn,
         safe_unpack_dead,
         safe_unpack_goal,
+        safe_unpack_heartbeat,
         safe_unpack_kick,
         safe_unpack_player_state,
         safe_unpack_ready,
@@ -135,6 +141,7 @@ except ModuleNotFoundError:
         GEND_REASON_FORFEIT,
         GEND_REASON_NORMAL,
         GSTART,
+        HEARTBEAT,
         KICK,
         KICKED_REASON_KICKED,
         KICKED_REASON_NOT_READY,
@@ -159,6 +166,9 @@ except ModuleNotFoundError:
         ROOM_NAME_MAX_LEN,
         ROOM_NAME_MIN_LEN,
         START,
+        START_ACTION_CANCEL,
+        START_ACTION_START,
+        START_ACTION_TOGGLE_LEGACY,
         STATE_COUNTDOWN,
         STATE_IN_GAME,
         STATE_LOBBY,
@@ -175,6 +185,7 @@ except ModuleNotFoundError:
         pack_elim,
         pack_gend,
         pack_gstart,
+        pack_heartbeat_ack,
         pack_kicked,
         pack_list,
         pack_match_pause,
@@ -191,6 +202,7 @@ except ModuleNotFoundError:
         safe_unpack_conn,
         safe_unpack_dead,
         safe_unpack_goal,
+        safe_unpack_heartbeat,
         safe_unpack_kick,
         safe_unpack_player_state,
         safe_unpack_ready,
@@ -227,6 +239,11 @@ class LobbyServer:
         self._last_cdwn_broadcast = 0.0
         self._last_pause_broadcast = 0.0
         self._reliable_broadcasts: list[dict] = []
+        self._countdown_id: int = 0
+        self._next_countdown_id: int = 1
+        self._match_id: int = 0
+        self._next_match_id: int = 1
+        self._lobby_prune_blocked_until: float = 0.0
         self._game_start_time: float = 0.0
         # Maps player_id -> elapsed seconds when they touched the goal.
         self._finish_times: dict[int, float] = {}
@@ -280,6 +297,9 @@ class LobbyServer:
                 item["next_at"] = now + item["interval"]
                 pending.append(item)
         self._reliable_broadcasts = pending
+
+    def block_lobby_pruning(self, seconds: float = 2.0):
+        self._lobby_prune_blocked_until = max(self._lobby_prune_blocked_until, time.monotonic() + max(0.0, seconds))
 
     def broadcast_roster(self):
         if self.room_state.state == STATE_IN_GAME:
@@ -419,6 +439,8 @@ class LobbyServer:
         if self.room_state.state not in (STATE_LOBBY, STATE_COUNTDOWN):
             return False
         now = time.monotonic() if now is None else now
+        if now < self._lobby_prune_blocked_until:
+            return False
         timed_out = self.room_state.timed_out_connected_ids(now, self.lobby_player_timeout_seconds)
         if not timed_out:
             return False
@@ -566,24 +588,48 @@ class LobbyServer:
         if self.room_state.set_ready(player_id, ready_flag):
             self.broadcast_roster()
 
+    def handle_heartbeat(self, data: bytes, addr):
+        unpacked = safe_unpack_heartbeat(data)
+        if unpacked is None:
+            return
+        _tag, player_id, session_token, _client_state, _countdown_id, _match_id = unpacked
+        addr_player_id = self.room_state.get_player_id_by_addr(addr)
+        if addr_player_id != player_id:
+            return
+        expected_token = self.room_state.session_token(player_id)
+        if expected_token is not None and expected_token != session_token:
+            LOGGER.debug("Ignoring heartbeat with bad token player_id=%s addr=%s", player_id, addr)
+            return
+        self.room_state.touch_player(player_id)
+        try:
+            self.sock.sendto(pack_heartbeat_ack(self.room_state.state, self._countdown_id, self._match_id), addr)
+        except OSError as error:
+            LOGGER.debug("Heartbeat ack failed player_id=%s addr=%s: %s", player_id, addr, error)
+
     def start_countdown(self):
         now = time.monotonic()
+        self._countdown_id = self._next_countdown_id
+        self._next_countdown_id += 1
         self.room_state.state = STATE_COUNTDOWN
         self.room_state.begin_countdown(now + self.countdown_seconds)
         self._last_cdwn_broadcast = 0.0
-        self.broadcast(pack_cdwn(self.countdown_seconds))
+        self.block_lobby_pruning()
+        self.broadcast(pack_cdwn(self.countdown_seconds, self._countdown_id))
 
     def cancel_countdown(self, reason_code: int):
+        if self.room_state.state != STATE_COUNTDOWN:
+            return
         self.room_state.state = STATE_LOBBY
         self.room_state.cancel_countdown()
-        self.reliable_broadcast(pack_cdwnx(reason_code))
+        self.block_lobby_pruning()
+        self.reliable_broadcast(pack_cdwnx(reason_code, self._countdown_id))
         self.broadcast_roster()
 
     def handle_start(self, data: bytes, addr):
         unpacked = safe_unpack_start(data)
         if unpacked is None:
             return
-        _tag, host_id = unpacked
+        _tag, host_id, action = unpacked
         addr_player_id = self.room_state.get_player_id_by_addr(addr)
         if addr_player_id != host_id:
             return
@@ -591,15 +637,21 @@ class LobbyServer:
         if host_id != self.room_state.host_id:
             return
 
-        if self.room_state.state == STATE_LOBBY:
+        if action == START_ACTION_TOGGLE_LEGACY:
+            action = START_ACTION_CANCEL if self.room_state.state == STATE_COUNTDOWN else START_ACTION_START
+
+        if action == START_ACTION_START and self.room_state.state == STATE_LOBBY:
             if self.room_state.can_start():
                 LOGGER.info("Host %s started countdown", host_id)
                 self.start_countdown()
             return
 
-        if self.room_state.state == STATE_COUNTDOWN:
+        if action == START_ACTION_CANCEL and self.room_state.state == STATE_COUNTDOWN:
             LOGGER.info("Host %s cancelled countdown", host_id)
             self.cancel_countdown(CDWNX_REASON_HOST_CANCELLED)
+            return
+
+        LOGGER.debug("Ignored start action=%s state=%s host_id=%s", action, self.room_state.state, host_id)
 
     def _check_game_end(self):
         """End the game when no alive players remain who haven't finished."""
@@ -616,15 +668,16 @@ class LobbyServer:
             # All eliminated, no one finished — forfeit.
             standings = self.room_state.standings()
             LOGGER.info("Game ended by forfeit standings=%s", standings)
-            self.reliable_broadcast(pack_gend(GEND_REASON_FORFEIT, standings))
+            self.reliable_broadcast(pack_gend(GEND_REASON_FORFEIT, standings, self._match_id))
         else:
             # Normal end: assign 1st place to the last finisher if not yet placed.
             standings = self.room_state.standings()
             LOGGER.info("Game ended normally standings=%s", standings)
-            self.reliable_broadcast(pack_gend(GEND_REASON_NORMAL, standings))
+            self.reliable_broadcast(pack_gend(GEND_REASON_NORMAL, standings, self._match_id))
 
         self.room_state.state = STATE_LOBBY
         self.room_state.reset_for_lobby()
+        self.block_lobby_pruning()
         self._finish_times = {}
         self._match_player_count = 0
         self.end_policy.clear_elimination_cooldown()
@@ -651,7 +704,7 @@ class LobbyServer:
         addr_player_id = self.room_state.get_player_id_by_addr(addr)
         if addr_player_id != player_id:
             return
-        self.room_state.touch_player(player_id)
+        self.room_state.touch_gameplay_player(player_id)
         if self.room_state.state != STATE_IN_GAME:
             return
         if not self.room_state.is_alive(player_id):
@@ -688,7 +741,7 @@ class LobbyServer:
         addr_player_id = self.room_state.get_player_id_by_addr(addr)
         if addr_player_id != player_id:
             return
-        self.room_state.touch_player(player_id)
+        self.room_state.touch_gameplay_player(player_id)
         if self.room_state.state != STATE_IN_GAME:
             return
         LOGGER.info("Received DEAD player_id=%s addr=%s", player_id, addr)
@@ -765,7 +818,7 @@ class LobbyServer:
             return
         if not self.room_state.is_alive(player_id):
             return
-        self.room_state.touch_player(player_id)
+        self.room_state.touch_gameplay_player(player_id)
         if self.room_state.state == STATE_PAUSED:
             return
         self.room_state.update_position(player_id, x, y)
@@ -784,7 +837,7 @@ class LobbyServer:
             return
         if not self.room_state.is_alive(player_id):
             return
-        self.room_state.touch_player(player_id)
+        self.room_state.touch_gameplay_player(player_id)
         if self.room_state.state == STATE_PAUSED:
             return
         self.room_state.update_position(player_id, x, y)
@@ -895,6 +948,9 @@ class LobbyServer:
         if tag == READY:
             self.handle_ready(data, addr)
             return
+        if tag == HEARTBEAT:
+            self.handle_heartbeat(data, addr)
+            return
         if tag == START:
             self.handle_start(data, addr)
             return
@@ -935,7 +991,7 @@ class LobbyServer:
         remaining = max(0.0, deadline - now)
 
         if self._last_cdwn_broadcast == 0.0 or (now - self._last_cdwn_broadcast) >= 1.0:
-            self.broadcast(pack_cdwn(remaining))
+            self.broadcast(pack_cdwn(remaining, self._countdown_id))
             self._last_cdwn_broadcast = now
 
         if remaining > 0:
@@ -955,12 +1011,14 @@ class LobbyServer:
 
         self.room_state.state = STATE_IN_GAME
         self.room_state.enter_game()
+        self._match_id = self._next_match_id
+        self._next_match_id += 1
         self._finish_times = {}
         self._match_player_count = self.room_state.connected_count()
         self.end_policy.clear_elimination_cooldown()
         self._game_start_time = time.monotonic()
         LOGGER.info("Game started players=%s", self.room_state.connected_roster_entries())
-        self.reliable_broadcast(pack_gstart())
+        self.reliable_broadcast(pack_gstart(self._countdown_id, self._match_id))
         self.broadcast_match_snapshot()
 
     def tick_in_game(self):

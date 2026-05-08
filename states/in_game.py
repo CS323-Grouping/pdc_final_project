@@ -309,6 +309,8 @@ class InGameState(ScreenState):
                 if event.player_id == my_id:
                     self._observing = True
                     self._dead_sent = True
+                    if self.context.network is not None:
+                        self.context.network.set_client_state(protocol.CLIENT_STATE_SPECTATING)
                     self._set_spectator_target(self._default_spectator_target(), snap=True)
                     LOGGER.info("Local player eliminated; switched to observing player_id=%s", event.player_id)
                     self.context.set_status("Eliminated. Observing the remaining players.", duration=3.0)
@@ -321,6 +323,8 @@ class InGameState(ScreenState):
                         self._set_spectator_target(self._default_spectator_target(), snap=True)
                 self._paused_players.pop(event.player_id, None)
             elif isinstance(event, nw.GameEndEvent):
+                if not self.accept_game_end_event(event):
+                    continue
                 LOGGER.info("Game end received reason=%s standings=%s", event.reason_code, event.standings)
                 self.context.reset_lobby_after_game()
                 self.context.results_standings = list(event.standings)

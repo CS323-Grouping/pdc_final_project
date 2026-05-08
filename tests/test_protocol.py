@@ -238,31 +238,44 @@ def test_ready_round_trip():
 
 
 def test_start_round_trip():
-    p = protocol.pack_start(0)
+    p = protocol.pack_start(0, protocol.START_ACTION_CANCEL)
     u = protocol.safe_unpack_start(p)
     assert u is not None
-    assert u[1] == 0
+    assert u[1:] == (0, protocol.START_ACTION_CANCEL)
+
+
+def test_heartbeat_round_trip():
+    p = protocol.pack_heartbeat(3, 1234, protocol.CLIENT_STATE_RESULTS, countdown_id=7, match_id=9)
+    u = protocol.safe_unpack_heartbeat(p)
+    assert u is not None
+    assert u[1:] == (3, 1234, protocol.CLIENT_STATE_RESULTS, 7, 9)
+
+    ack = protocol.pack_heartbeat_ack(protocol.STATE_LOBBY, countdown_id=7, match_id=9)
+    ack_u = protocol.safe_unpack_heartbeat_ack(ack)
+    assert ack_u is not None
+    assert ack_u[1:] == (protocol.STATE_LOBBY, 7, 9)
 
 
 def test_cdwn_round_trip():
-    p = protocol.pack_cdwn(4.5)
+    p = protocol.pack_cdwn(4.5, countdown_id=12)
     u = protocol.safe_unpack_cdwn(p)
     assert u is not None
-    assert u[1] == pytest.approx(4.5)
+    assert u[1] == 12
+    assert u[2] == pytest.approx(4.5)
 
 
 def test_cdwnx_round_trip():
-    p = protocol.pack_cdwnx(protocol.CDWNX_REASON_HOST_CANCELLED)
+    p = protocol.pack_cdwnx(protocol.CDWNX_REASON_HOST_CANCELLED, countdown_id=12)
     u = protocol.safe_unpack_cdwnx(p)
     assert u is not None
-    assert u[1] == protocol.CDWNX_REASON_HOST_CANCELLED
+    assert u[1:] == (12, protocol.CDWNX_REASON_HOST_CANCELLED)
 
 
 def test_gstart_round_trip():
-    p = protocol.pack_gstart()
+    p = protocol.pack_gstart(countdown_id=12, match_id=3)
     u = protocol.safe_unpack_gstart(p)
     assert u is not None
-    assert u[0] == protocol.GSTART
+    assert u == (protocol.GSTART, 12, 3)
 
 
 def test_dead_elim_round_trip():
@@ -279,16 +292,17 @@ def test_dead_elim_round_trip():
 
 def test_gend_round_trip():
     standings = [(0, 1, "W"), (1, 2, "L")]
-    p = protocol.pack_gend(protocol.GEND_REASON_NORMAL, standings)
+    p = protocol.pack_gend(protocol.GEND_REASON_NORMAL, standings, match_id=4)
     u = protocol.safe_unpack_gend(p)
     assert u is not None
-    reason, back = u
+    match_id, reason, back = u
+    assert match_id == 4
     assert reason == protocol.GEND_REASON_NORMAL
     assert back == standings
 
 
 def test_gend_rejects_wrong_count():
-    head = struct.pack(protocol.FRMT_GEND_HEAD, protocol.GEND, 0, 1)
+    head = struct.pack(protocol.FRMT_GEND_HEAD, protocol.GEND, 1, 0, 1)
     assert protocol.safe_unpack_gend(head) is None
 
 

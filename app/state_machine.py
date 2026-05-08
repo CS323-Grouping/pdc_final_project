@@ -62,6 +62,13 @@ PRESENCE_BY_STATE = {
     "in_game": protocol.PRESENCE_STATUS_IN_GAME,
 }
 
+NETWORK_CLIENT_STATE_BY_STATE = {
+    "host_lobby": protocol.CLIENT_STATE_LOBBY,
+    "joined_lobby": protocol.CLIENT_STATE_LOBBY,
+    "results": protocol.CLIENT_STATE_RESULTS,
+    "in_game": protocol.CLIENT_STATE_IN_GAME,
+}
+
 
 @dataclass
 class AppContext:
@@ -95,6 +102,10 @@ class AppContext:
     start_pos: tuple = (100.0, 100.0)
     results_standings: list = None
     return_state_after_results: str = "joined_lobby"
+    active_countdown_id: int = 0
+    last_countdown_id: int = 0
+    current_match_id: int = 0
+    last_results_match_id: int = 0
     mouse_pos: tuple[int, int] = (0, 0)
     presence_instance_id: int = 0
     presence_status: int = protocol.PRESENCE_STATUS_ONLINE
@@ -334,6 +345,10 @@ class AppContext:
         self.start_pos = start_pos or (100.0, 100.0)
         self.roster = []
         self.countdown_remaining = None
+        self.active_countdown_id = 0
+        self.last_countdown_id = 0
+        self.current_match_id = 0
+        self.last_results_match_id = 0
         self.results_standings = []
         self.remember_reconnect_ticket()
         self.network.start_receiver()
@@ -452,6 +467,10 @@ class StateMachine:
         if self.current_state is not None:
             self.current_state.exit()
         self.context.presence_status = PRESENCE_BY_STATE.get(state_name, protocol.PRESENCE_STATUS_ONLINE)
+        if self.context.network is not None:
+            self.context.network.set_client_state(
+                NETWORK_CLIENT_STATE_BY_STATE.get(state_name, protocol.CLIENT_STATE_LOBBY)
+            )
         LOGGER.info("State change -> %s", state_name)
         state_cls = self.state_map[state_name]
         self.current_state = state_cls(self, self.context, **kwargs)

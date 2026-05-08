@@ -27,6 +27,8 @@ from network.protocol import (
     ELIM,
     GEND,
     GSTART,
+    HEARTBEAT_ACK,
+    HEARTBEAT_INTERVAL_SECONDS,
     KICK,
     KICKED,
     LIST,
@@ -42,12 +44,15 @@ from network.protocol import (
     ROOM_NAME_UPDATE,
     SESSION,
     START,
+    START_ACTION_CANCEL,
+    START_ACTION_START,
     UINT32_MAX,
     pack_conn,
     pack_avatar_chunk,
     pack_avatar_header,
     pack_dead,
     pack_goal,
+    pack_heartbeat,
     pack_kick,
     pack_packet,
     pack_player_state,
@@ -64,6 +69,8 @@ from network.protocol import (
     safe_unpack_conok,
     safe_unpack_elim,
     safe_unpack_gend,
+    safe_unpack_gstart,
+    safe_unpack_heartbeat_ack,
     safe_unpack_kicked,
     safe_unpack_list,
     safe_unpack_match_pause,
@@ -101,15 +108,15 @@ def _event_summary(event: "NetworkEvent") -> str:
     if isinstance(event, RosterEvent):
         return f"RosterEvent entries={event.entries}"
     if isinstance(event, CountdownEvent):
-        return f"CountdownEvent seconds={event.seconds_until_start:.2f}"
+        return f"CountdownEvent id={event.countdown_id} seconds={event.seconds_until_start:.2f}"
     if isinstance(event, CountdownCancelEvent):
-        return f"CountdownCancelEvent reason={event.reason_code}"
+        return f"CountdownCancelEvent id={event.countdown_id} reason={event.reason_code}"
     if isinstance(event, GameStartEvent):
-        return "GameStartEvent"
+        return f"GameStartEvent countdown_id={event.countdown_id} match_id={event.match_id}"
     if isinstance(event, EliminationEvent):
         return f"EliminationEvent player_id={event.player_id} placement={event.placement}"
     if isinstance(event, GameEndEvent):
-        return f"GameEndEvent reason={event.reason_code} standings={event.standings}"
+        return f"GameEndEvent match_id={event.match_id} reason={event.reason_code} standings={event.standings}"
     if isinstance(event, KickedEvent):
         return f"KickedEvent reason={event.reason_code}"
     if isinstance(event, PositionEvent):
@@ -136,6 +143,8 @@ def _event_summary(event: "NetworkEvent") -> str:
         return f"MatchPauseEvent player_id={event.player_id} remaining={event.seconds_remaining:.2f}"
     if isinstance(event, MatchResumeEvent):
         return "MatchResumeEvent"
+    if isinstance(event, HeartbeatAckEvent):
+        return f"HeartbeatAckEvent state={event.server_state} countdown_id={event.countdown_id} match_id={event.match_id}"
     if isinstance(event, RoomNameEvent):
         return f"RoomNameEvent room_name={event.room_name}"
     if isinstance(event, ConnectDeniedEvent):
@@ -165,17 +174,20 @@ class RosterEvent:
 
 @dataclass(frozen=True)
 class CountdownEvent:
+    countdown_id: int
     seconds_until_start: float
 
 
 @dataclass(frozen=True)
 class CountdownCancelEvent:
+    countdown_id: int
     reason_code: int
 
 
 @dataclass(frozen=True)
 class GameStartEvent:
-    pass
+    countdown_id: int = 0
+    match_id: int = 0
 
 
 @dataclass(frozen=True)
@@ -186,6 +198,7 @@ class EliminationEvent:
 
 @dataclass(frozen=True)
 class GameEndEvent:
+    match_id: int
     reason_code: int
     standings: List[Tuple[int, int, str]]
 
@@ -247,6 +260,13 @@ class MatchResumeEvent:
 
 
 @dataclass(frozen=True)
+class HeartbeatAckEvent:
+    server_state: int
+    countdown_id: int
+    match_id: int
+
+
+@dataclass(frozen=True)
 class RoomNameEvent:
     room_name: str
 
@@ -282,6 +302,7 @@ NetworkEvent = Union[
     SessionEvent,
     MatchPauseEvent,
     MatchResumeEvent,
+    HeartbeatAckEvent,
     RoomNameEvent,
     ConnectDeniedEvent,
     ConnectionLostEvent,
@@ -301,6 +322,11 @@ class Network:
         self.room_name = ""
         self.session_token = 0
         self._closed = False
+        self._client_state = 0
+        self._countdown_id = 0
+        self._match_id = 0
+        self._heartbeat_thread: Optional[threading.Thread] = None
+        self._heartbeat_lock = threading.Lock()
 
         self.events: "queue.Queue[NetworkEvent]" = queue.Queue()
         self._recv_thread: Optional[threading.Thread] = None
@@ -368,9 +394,49 @@ class Network:
             if isinstance(event, SessionEvent):
                 self.id = event.player_id
                 self.session_token = event.session_token
+            elif isinstance(event, CountdownEvent):
+                with self._heartbeat_lock:
+                    self._countdown_id = event.countdown_id
+            elif isinstance(event, CountdownCancelEvent):
+                with self._heartbeat_lock:
+                    if event.countdown_id == 0 or event.countdown_id >= self._countdown_id:
+                        self._countdown_id = event.countdown_id
+            elif isinstance(event, GameStartEvent):
+                with self._heartbeat_lock:
+                    self._countdown_id = event.countdown_id
+                    self._match_id = event.match_id
+            elif isinstance(event, GameEndEvent):
+                with self._heartbeat_lock:
+                    self._match_id = max(self._match_id, event.match_id)
+            elif isinstance(event, HeartbeatAckEvent):
+                with self._heartbeat_lock:
+                    self._countdown_id = max(self._countdown_id, event.countdown_id)
+                    self._match_id = max(self._match_id, event.match_id)
             LOGGER.log(_event_log_level(event), "recv %s", _event_summary(event))
             self.events.put(event)
         LOGGER.info("Network receiver stopped player_id=%s addr=%s", self.id, self.addr)
+
+    def _heartbeat_loop(self):
+        while not self._stop_event.is_set() and not self._closed:
+            self.send_heartbeat()
+            self._stop_event.wait(HEARTBEAT_INTERVAL_SECONDS)
+
+    def set_client_state(self, client_state: int):
+        with self._heartbeat_lock:
+            self._client_state = max(0, min(255, int(client_state)))
+
+    def send_heartbeat(self):
+        if self.id < 0:
+            return
+        with self._heartbeat_lock:
+            payload = pack_heartbeat(
+                self.id,
+                self.session_token,
+                self._client_state,
+                self._countdown_id,
+                self._match_id,
+            )
+        self._sendto(payload, report_error=False)
 
     def start_receiver(self):
         if self._closed:
@@ -380,12 +446,16 @@ class Network:
         self._stop_event.clear()
         self._recv_thread = threading.Thread(target=self._recv_event_loop, daemon=True, name="network-receiver")
         self._recv_thread.start()
+        self._heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True, name="network-heartbeat")
+        self._heartbeat_thread.start()
         LOGGER.info("Started network receiver thread addr=%s", self.addr)
 
     def stop_receiver(self, timeout: float = 2.0):
         self._stop_event.set()
         if self._recv_thread and self._recv_thread.is_alive():
             self._recv_thread.join(timeout=timeout)
+        if self._heartbeat_thread and self._heartbeat_thread.is_alive():
+            self._heartbeat_thread.join(timeout=timeout)
 
     def discover_servers(self, timeout_seconds: float = 2.0) -> List[Tuple[str, int]]:
         discover_msg = pack_packet(DISCOVER, 0.0, 0.0, 0)
@@ -603,11 +673,14 @@ class Network:
     def send_start(self):
         if self.id < 0:
             return
-        LOGGER.info("send START/CANCEL player_id=%s", self.id)
-        self._sendto(pack_start(self.id))
+        LOGGER.info("send START player_id=%s", self.id)
+        self._sendto(pack_start(self.id, START_ACTION_START))
 
     def cancel_countdown(self):
-        self.send_start()
+        if self.id < 0:
+            return
+        LOGGER.info("send CANCEL player_id=%s", self.id)
+        self._sendto(pack_start(self.id, START_ACTION_CANCEL))
 
     def send_kick(self, target_id: int):
         if self.id < 0:
@@ -686,16 +759,20 @@ class Network:
             unpacked = safe_unpack_cdwn(data)
             if unpacked is None:
                 return ErrorEvent("Malformed CDWN packet")
-            _tag, seconds_until_start = unpacked
-            return CountdownEvent(seconds_until_start=seconds_until_start)
+            _tag, countdown_id, seconds_until_start = unpacked
+            return CountdownEvent(countdown_id=countdown_id, seconds_until_start=seconds_until_start)
         if tag == CDWNX:
             unpacked = safe_unpack_cdwnx(data)
             if unpacked is None:
                 return ErrorEvent("Malformed CDWNX packet")
-            _tag, reason_code = unpacked
-            return CountdownCancelEvent(reason_code=reason_code)
+            _tag, countdown_id, reason_code = unpacked
+            return CountdownCancelEvent(countdown_id=countdown_id, reason_code=reason_code)
         if tag == GSTART:
-            return GameStartEvent()
+            unpacked = safe_unpack_gstart(data)
+            if unpacked is None:
+                return ErrorEvent("Malformed GSTR packet")
+            _tag, countdown_id, match_id = unpacked
+            return GameStartEvent(countdown_id=countdown_id, match_id=match_id)
         if tag == ELIM:
             unpacked = safe_unpack_elim(data)
             if unpacked is None:
@@ -706,8 +783,8 @@ class Network:
             unpacked = safe_unpack_gend(data)
             if unpacked is None:
                 return ErrorEvent("Malformed GEND packet")
-            reason_code, standings = unpacked
-            return GameEndEvent(reason_code=reason_code, standings=standings)
+            match_id, reason_code, standings = unpacked
+            return GameEndEvent(match_id=match_id, reason_code=reason_code, standings=standings)
         if tag == KICKED:
             unpacked = safe_unpack_kicked(data)
             if unpacked is None:
@@ -733,6 +810,12 @@ class Network:
             if unpacked is None:
                 return ErrorEvent("Malformed RSUM packet")
             return MatchResumeEvent()
+        if tag == HEARTBEAT_ACK:
+            unpacked = safe_unpack_heartbeat_ack(data)
+            if unpacked is None:
+                return ErrorEvent("Malformed HBAK packet")
+            _tag, server_state, countdown_id, match_id = unpacked
+            return HeartbeatAckEvent(server_state=server_state, countdown_id=countdown_id, match_id=match_id)
         if tag == ROOM_NAME_UPDATE:
             unpacked = safe_unpack_room_name_update(data)
             if unpacked is None:

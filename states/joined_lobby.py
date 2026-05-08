@@ -20,7 +20,6 @@ class JoinedLobbyState(ScreenState):
         super().__init__(machine, context, **kwargs)
         self._ready_on = False
         self._pulse_t = 0.0
-        self._heartbeat_elapsed = 0.0
         self._server_silence_elapsed = 0.0
         self._roster_ids: frozenset[int] = frozenset()
         self._row_flash: dict[int, float] = {}
@@ -31,7 +30,6 @@ class JoinedLobbyState(ScreenState):
         self._room_ui.enter()
         self._ready_on = False
         self._pulse_t = 0.0
-        self._heartbeat_elapsed = 0.0
         self._server_silence_elapsed = 0.0
         self._row_flash.clear()
         self._roster_ids = frozenset()
@@ -78,16 +76,19 @@ class JoinedLobbyState(ScreenState):
                 if lr is not None:
                     self._ready_on = lr
             elif isinstance(event, nw.CountdownEvent):
-                self.context.countdown_remaining = event.seconds_until_start
+                self.accept_countdown_event(event)
             elif isinstance(event, nw.CountdownCancelEvent):
-                self.context.countdown_remaining = None
+                self.accept_countdown_cancel_event(event)
             elif isinstance(event, nw.RoomNameEvent):
                 self.context.room_name = event.room_name
             elif isinstance(event, nw.GameStartEvent):
-                self.context.countdown_remaining = None
+                if not self.accept_game_start_event(event):
+                    continue
                 self.switch("in_game")
                 return True
             elif isinstance(event, nw.GameEndEvent):
+                if not self.accept_game_end_event(event):
+                    continue
                 self.context.reset_lobby_after_game()
                 self._ready_on = False
                 self.context.results_standings = list(event.standings)
@@ -103,6 +104,8 @@ class JoinedLobbyState(ScreenState):
             return
 
         if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+            if self.context.countdown_remaining is not None:
+                return
             self._leave_room()
             return
 
@@ -115,8 +118,6 @@ class JoinedLobbyState(ScreenState):
                 kick_mode=False,
             )
             if self.context.countdown_remaining is not None:
-                if action == "secondary":
-                    self._leave_room()
                 return
             if action == "secondary":
                 self._leave_room()
@@ -133,10 +134,6 @@ class JoinedLobbyState(ScreenState):
             self._server_silence_elapsed += dt
         if self.context.network is None:
             return
-        self._heartbeat_elapsed += dt
-        if self._heartbeat_elapsed >= 1.0:
-            self._heartbeat_elapsed = 0.0
-            self.context.network.send_ready(self._ready_on)
         if self._server_silence_elapsed >= 4.0:
             self.context.set_banner("Host closed the room or stopped responding.", duration=5.0)
             self.context.detach_network(send_disconnect=False, preserve_reconnect=True)
