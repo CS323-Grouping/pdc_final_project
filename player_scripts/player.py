@@ -51,7 +51,11 @@ class Player:
         self.has_double_jumped = False
         self.reverse_control_timer = 0.0
         self.slippery_timer = 0.0
-        self.slippery_boost = 1.0
+
+        self.hvel = 0.0
+        self._slippery_prev_input_dir = 0
+        self.slippery_boost = 0.8 
+
         self.slow_falling_timer = 0.0
         self.heavy_timer = 0.0
         self.launch_timer = 0.0
@@ -88,17 +92,33 @@ class Player:
         # Apply debuffs
         if self.reverse_control_timer > 0:
             direction.x *= -1
-        if self.slippery_timer > 0:
-            self.slippery_boost = 0.8  # Slower movement for slippery debuff
-        else:
-            self.slippery_boost = 1.0
-        if self._move_dir == 0:
-            self._idle_timer += dt
-        else:
-            self._idle_timer = 0.0
 
-        self.pos.x += direction.x * self.speed * self.speed_boost * self.slippery_boost * dt
-        self._clamp_to_playable_width()
+        if self.slippery_timer > 0:
+            input_dir = int(round(direction.x)) if self._move_dir != 0 else 0
+
+            accel = self.speed * self.speed_boost * self.slippery_boost
+            if input_dir != 0:
+                self.hvel += input_dir * accel * dt
+            else:
+                self.hvel *= max(0.0, 1.0 - (6.0 * dt))
+
+            max_hvel = self.speed * self.speed_boost * 2.0
+            self.hvel = max(-max_hvel, min(max_hvel, self.hvel))
+
+            self.pos.x += self.hvel * dt
+            self._clamp_to_playable_width()
+        else:
+
+            if self._move_dir == 0:
+                self._idle_timer += dt
+            else:
+                self._idle_timer = 0.0
+
+            self.hvel = 0.0
+            self.slippery_boost = 1.0
+            self.pos.x += direction.x * self.speed * self.speed_boost * self.slippery_boost * dt
+            self._clamp_to_playable_width()
+
 
     def _supported_on_platform_top(self, platforms) -> bool:
         """Feet sit on a platform surface (horizontal overlap + small vertical band)."""
@@ -259,25 +279,16 @@ class Player:
         self.speed_boost_timer = max(0.0, self.speed_boost_timer - dt)
         if self.speed_boost_timer == 0:
             self.speed_boost = 1.0
-
         self.jump_boost_timer = max(0.0, self.jump_boost_timer - dt)
         if self.jump_boost_timer == 0:
             self.jump_boost = 1.0
-
         self.shield_timer = max(0.0, self.shield_timer - dt)
-
         self.double_jump_timer = max(0.0, self.double_jump_timer - dt)
-
         self.reverse_control_timer = max(0.0, self.reverse_control_timer - dt)
-
         self.slippery_timer = max(0.0, self.slippery_timer - dt)
-
         self.slow_falling_timer = max(0.0, self.slow_falling_timer - dt)
-
         self.heavy_timer = max(0.0, self.heavy_timer - dt)
-
         self.launch_timer = max(0.0, self.launch_timer - dt)
-
         self.weak_jump_timer = max(0.0, self.weak_jump_timer - dt)
 
     def _start_jump(self):
