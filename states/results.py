@@ -14,21 +14,6 @@ RESULTS_AUTO_HIDE_SECONDS = 5.0
 RESULTS_MIN_VISIBLE_SECONDS = 1.0
 
 
-@dataclass
-class AvatarAssembly:
-    total_chunks: int
-    payload_size: int = 0
-    chunks: dict = None
-
-    def __post_init__(self):
-        if self.chunks is None:
-            self.chunks = {}
-
-
-RESULTS_AUTO_HIDE_SECONDS = 5.0
-RESULTS_MIN_VISIBLE_SECONDS = 1.0
-
-
 class ResultsState(ScreenState):
     def __init__(self, machine, context, **kwargs):
         super().__init__(machine, context, **kwargs)
@@ -155,7 +140,6 @@ class ResultsState(ScreenState):
         my_id = self.context.network.id if self.context.network is not None else None
         avatar = self.context.avatar_window_surface
         bottom_reserve = self.context.reserved_bottom_message_strip_px()
-        remote_avatars = getattr(self.context, "remote_avatar_surfaces", None) or {}
 
         ui.draw_results_table(
             surface,
@@ -168,11 +152,9 @@ class ResultsState(ScreenState):
             local_avatar=avatar,
             world_assets=self._world_assets,
             footer_reserve_extra=bottom_reserve,
-            remote_avatars=remote_avatars,
         )
 
-        hint_text = f"Continue in {max(0, int(self._auto_hide + 0.99))}s"
-        if self._elapsed >= RESULTS_MIN_VISIBLE_SECONDS:
-            hint_text += " · any key / click"
-        hint = self.context.tiny_font.render(hint_text, True, theme.text_muted)
-        surface.blit(hint, hint.get_rect(center=(w // 2, h - 42)))
+        hint_text = f"Press any key to continue  ·  {max(0, int(self._auto_hide + 0.99))}s"
+        hint = self.context.small_font.render(hint_text, True, theme.text_muted)
+        hint_margin = max(18, min(44, h // 16))
+        surface.blit(hint, hint.get_rect(midbottom=(w // 2, h - bottom_reserve - hint_margin)))

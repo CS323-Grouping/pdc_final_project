@@ -2,6 +2,7 @@ import logging
 from dataclasses import dataclass
 import math
 import random
+import time
 import zlib
 
 import pygame
@@ -90,6 +91,9 @@ class InGameState(ScreenState):
         self.goal: Goal | None = None
         self._goal_reached = False
         self.powerups: list = []
+        self._window_hud_font: pygame.font.Font | None = None
+        self._platform_send_elapsed = 0.0
+        self._last_platforms_sent = -1
 
     def enter(self):
         self.camera = camera.Camera(INTERNAL_WIDTH, INTERNAL_HEIGHT)
@@ -464,6 +468,16 @@ class InGameState(ScreenState):
 
         self.hero.update(dt, INTERNAL_WIDTH, INTERNAL_HEIGHT, self.platforms)
 
+        pr = self.hero.platforms_reached_count()
+        if pr != self._last_platforms_sent:
+            self._platform_send_elapsed += dt
+            if self._platform_send_elapsed >= 0.12:
+                net.send_platform_progress(pr)
+                self._last_platforms_sent = pr
+                self._platform_send_elapsed = 0.0
+        else:
+            self._platform_send_elapsed = 0.0
+
         # Check powerup collisions
         for i, powerup in enumerate(self.powerups):
             if powerup.active and self.hero.rect.colliderect(powerup.rect):
@@ -676,30 +690,6 @@ class InGameState(ScreenState):
 
         if self.level_renderer is not None:
             self.level_renderer.draw_borders(surface)
-
-        self._draw_active_effect_timers(surface, theme)
-
-        ui.draw_elimination_feed(
-            surface,
-            self.context.tiny_font,
-            self._elimination_feed,
-            theme
-        )
-
-    def _draw_active_effect_timers(self, surface, theme):
-        if self.hero is None:
-            return
-        timers = self.hero.active_power_up_timers()
-        if not timers:
-            return
-        labels = [self.context.tiny_font.render(f"{name}: {remaining:.1f}s", True, theme.text) for name, remaining in timers.items()]
-        line_height = max(label.get_height() for label in labels)
-        total_height = len(labels) * (line_height + 2) - 2
-        x = 8
-        y = INTERNAL_HEIGHT - total_height - 8
-        for label in labels:
-            surface.blit(label, (x, y))
-            y += line_height + 2
 
     def _draw_remote_player(self, surface, camera, position, theme, remote: RemotePlayer | None = None):
         hitbox = pygame.Rect(0, 0, PLAYER_HITBOX_WIDTH, PLAYER_HITBOX_HEIGHT)

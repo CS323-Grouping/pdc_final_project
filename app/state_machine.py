@@ -109,13 +109,13 @@ class AppContext:
     last_countdown_id: int = 0
     current_match_id: int = 0
     last_results_match_id: int = 0
+    match_start_unix_sec: int | None = None
     mouse_pos: tuple[int, int] = (0, 0)
     presence_instance_id: int = 0
     presence_status: int = protocol.PRESENCE_STATUS_ONLINE
     presence_broadcaster: Optional[PresenceBroadcaster] = None
     log_dir: Optional[Path] = None
     dock_global_messages_bottom: bool = False
-    remote_avatar_surfaces: Optional[dict] = None
 
     def __post_init__(self):
         if not self.player_name:
@@ -205,6 +205,12 @@ class AppContext:
         self.profile_session.data.model_color = protocol.normalize_model_color(self.model_color)
         self.profile_session.data.use_custom_head = self.use_custom_head
         self.profile_session.save()
+
+    def window_border_inset_px(self) -> int:
+        """Horizontal pillar width in **window** pixels (internal border is `BORDER_WIDTH` × scale)."""
+        if self.display_manager is None:
+            return BORDER_WIDTH
+        return BORDER_WIDTH * int(self.display_manager.config.selected_scale)
 
     def tick_timers(self, dt: float):
         if self.banner_timer > 0:

@@ -50,6 +50,7 @@ try:
         MATCH_PAUSE,
         MATCH_RESUME,
         ORB_COLLECT,
+        PLATFORM_PROGRESS,
         PLAYER_TIMEOUT_SECONDS,
         PLAYER_STATE,
         POSITION,
@@ -108,6 +109,7 @@ try:
         safe_unpack_heartbeat,
         safe_unpack_kick,
         safe_unpack_orb_collect,
+        safe_unpack_platform_progress,
         safe_unpack_player_state,
         safe_unpack_ready,
         safe_unpack_reconnect,
@@ -160,6 +162,7 @@ except ModuleNotFoundError:
         MATCH_PAUSE,
         MATCH_RESUME,
         ORB_COLLECT,
+        PLATFORM_PROGRESS,
         PLAYER_TIMEOUT_SECONDS,
         PLAYER_STATE,
         POSITION,
@@ -218,6 +221,7 @@ except ModuleNotFoundError:
         safe_unpack_heartbeat,
         safe_unpack_kick,
         safe_unpack_orb_collect,
+        safe_unpack_platform_progress,
         safe_unpack_player_state,
         safe_unpack_ready,
         safe_unpack_reconnect,
@@ -679,6 +683,15 @@ class LobbyServer:
 
         LOGGER.debug("Ignored start action=%s state=%s host_id=%s", action, self.room_state.state, host_id)
 
+    def _extended_gend_rows(self) -> list[tuple[int, int, str, int, int]]:
+        rows: list[tuple[int, int, str, int, int]] = []
+        for player_id, placement, name in self.room_state.standings():
+            elapsed = self._player_elapsed_at_result.get(player_id)
+            ecs = 0 if elapsed is None else min(UINT32_MAX, int(max(0.0, elapsed) * 100.0))
+            plat = min(65535, int(self._player_platform_max.get(player_id, 0)))
+            rows.append((player_id, placement, name, ecs, plat))
+        return rows
+
     def _check_game_end(self):
         """End the game when no alive players remain who haven't finished."""
         alive_ids = self.room_state.alive_ids()
@@ -767,6 +780,20 @@ class LobbyServer:
         if not self.room_state.is_alive(player_id):
             return
         self.broadcast(pack_orb_collect(player_id, orb_index, cooldown_sec))
+
+    def handle_platform_progress(self, data: bytes, addr):
+        unpacked = safe_unpack_platform_progress(data)
+        if unpacked is None:
+            return
+        _tag, player_id, platforms_reached = unpacked
+        addr_player_id = self.room_state.get_player_id_by_addr(addr)
+        if addr_player_id is None or addr_player_id != player_id:
+            return
+        self.room_state.touch_gameplay_player(player_id)
+        if self.room_state.state not in (STATE_IN_GAME, STATE_PAUSED):
+            return
+        prev = self._player_platform_max.get(player_id, 0)
+        self._player_platform_max[player_id] = max(prev, int(platforms_reached))
 
     def eliminate_player(self, player_id: int):
         if not self.room_state.is_alive(player_id):
@@ -1035,6 +1062,9 @@ class LobbyServer:
         if tag == ORB_COLLECT:
             self.handle_orb_collect(data, addr)
             return
+        if tag == PLATFORM_PROGRESS:
+            self.handle_platform_progress(data, addr)
+            return
         if tag == POSITION:
             self.handle_position(data, addr)
             return
@@ -1090,6 +1120,7 @@ class LobbyServer:
         self._match_player_count = self.room_state.connected_count()
         self.end_policy.clear_elimination_cooldown()
         self._game_start_time = time.monotonic()
+        match_start_unix_sec = int(time.time())
         LOGGER.info(
             "Game started players=%s level=%s seed=%s",
             self.room_state.connected_roster_entries(),
@@ -1102,6 +1133,7 @@ class LobbyServer:
                 self._match_id,
                 selected_level=selected_level,
                 level_seed=self._match_level_seed,
+                match_start_unix_sec=match_start_unix_sec,
             )
         )
         self.broadcast_match_snapshot()

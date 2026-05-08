@@ -61,6 +61,7 @@ class Player:
         self.hvel = 0.0
         self._slippery_prev_input_dir = 0
         self.slippery_boost = 1.0
+        self._visited_platform_indices: set[int] = set()
         self.slow_falling_timer = 0.0
         self.heavy_timer = 0.0
         self.launch_timer = 0.0
@@ -355,6 +356,23 @@ class Player:
         self.launch_timer = max(0.0, self.launch_timer - dt)
 
         self.weak_jump_timer = max(0.0, self.weak_jump_timer - dt)
+
+        self.register_grounded_platforms(entities)
+
+    def register_grounded_platforms(self, platforms) -> None:
+        """Count unique platforms the player has landed on (by level platform index)."""
+        if not self.on_ground:
+            return
+        for i, p in enumerate(platforms):
+            overlap_x = min(self.rect.right, p.rect.right) - max(self.rect.left, p.rect.left)
+            if overlap_x <= 2:
+                continue
+            dy = self.rect.bottom - p.rect.top
+            if 0 <= dy <= 10:
+                self._visited_platform_indices.add(i)
+
+    def platforms_reached_count(self) -> int:
+        return len(self._visited_platform_indices)
 
     def _start_jump(self):
         self._set_air_animation_from_ground_state()

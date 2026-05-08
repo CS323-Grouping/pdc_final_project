@@ -64,6 +64,7 @@ from network.protocol import (
     pack_level_select,
     pack_room_name_update,
     pack_orb_collect,
+    pack_platform_progress,
     pack_start,
     safe_unpack,
     safe_unpack_avatar_chunk,
@@ -210,6 +211,7 @@ class GameStartEvent:
     match_id: int = 0
     selected_level: int = DEFAULT_LEVEL_ID
     level_seed: int = 0
+    match_start_unix_sec: int = 0
 
 
 @dataclass(frozen=True)
@@ -767,6 +769,11 @@ class Network:
             return
         self._sendto(pack_orb_collect(self.id, int(orb_index), int(cooldown_sec)))
 
+    def send_platform_progress(self, platforms_reached: int):
+        if self.id < 0:
+            return
+        self._sendto(pack_platform_progress(self.id, int(platforms_reached)))
+
     def send_avatar(
         self,
         avatar_id: int,
@@ -819,12 +826,13 @@ class Network:
             unpacked = safe_unpack_gstart(data)
             if unpacked is None:
                 return ErrorEvent("Malformed GSTR packet")
-            _tag, countdown_id, match_id, selected_level, level_seed = unpacked
+            _tag, countdown_id, match_id, selected_level, level_seed, match_start_unix_sec = unpacked
             return GameStartEvent(
                 countdown_id=countdown_id,
                 match_id=match_id,
                 selected_level=selected_level,
                 level_seed=level_seed,
+                match_start_unix_sec=int(match_start_unix_sec) & UINT32_MAX,
             )
         if tag == ELIM:
             unpacked = safe_unpack_elim(data)
