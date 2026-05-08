@@ -97,7 +97,6 @@ def main():
 
     if args.name:
         ctx.player_name = args.name.strip() or ctx.player_name
-        ctx.save_profile()
 
     ctx.log_dir = create_instance_log_dir(ctx.project_root, ctx.player_name)
     configure_logging(args.log_level, ctx.log_dir / "client.log")
@@ -111,6 +110,8 @@ def main():
         )
         pygame.quit()
         sys.exit(1)
+    if args.name:
+        ctx.save_profile()
 
     initial_state = "menu"
     machine = StateMachine(ctx)

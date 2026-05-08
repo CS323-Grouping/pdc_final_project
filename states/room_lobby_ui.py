@@ -708,17 +708,13 @@ class RoomLobbyUi:
         if body_frame is None:
             return
         frame_rect = self._scale_rect(logical_rect)
-        avatar_logical = pygame.Rect(
-            logical_rect.x + AVATAR_RECT.x,
-            logical_rect.y + AVATAR_RECT.y,
-            AVATAR_RECT.w,
-            AVATAR_RECT.h,
+        body = body_frame.copy()
+        body.fill((0, 0, 0, 0), AVATAR_RECT)
+        body.blit(
+            pygame.transform.smoothscale(crop_square(avatar), AVATAR_RECT.size),
+            AVATAR_RECT.topleft,
         )
-        avatar_rect = self._scale_rect(avatar_logical)
-        avatar_image = pygame.transform.smoothscale(crop_square(avatar), avatar_rect.size)
-        body = pygame.transform.scale(body_frame, frame_rect.size)
-        surface.blit(avatar_image, avatar_rect)
-        surface.blit(body, frame_rect)
+        surface.blit(pygame.transform.scale(body, frame_rect.size), frame_rect)
 
     def _status_color(self, status: LobbyPlayerStatus) -> tuple[int, int, int]:
         if status is LobbyPlayerStatus.HOST:

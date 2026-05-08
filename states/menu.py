@@ -557,17 +557,13 @@ class MainMenuState(ScreenState):
         frame_rect = self._scale_rect(
             pygame.Rect(model_rect.x, model_rect.y, PLAYER_FRAME_WIDTH, PLAYER_FRAME_HEIGHT)
         )
-        avatar_logical = pygame.Rect(
-            model_rect.x + AVATAR_RECT.x,
-            model_rect.y + AVATAR_RECT.y,
-            AVATAR_RECT.w,
-            AVATAR_RECT.h,
+        body = self._idle_body_frame.copy()
+        body.fill((0, 0, 0, 0), AVATAR_RECT)
+        body.blit(
+            pygame.transform.smoothscale(crop_square(self._current_avatar_source()), AVATAR_RECT.size),
+            AVATAR_RECT.topleft,
         )
-        avatar_rect = self._scale_rect(avatar_logical)
-        avatar = pygame.transform.smoothscale(crop_square(self._current_avatar_source()), avatar_rect.size)
-        body = pygame.transform.scale(self._idle_body_frame, frame_rect.size)
-        surface.blit(avatar, avatar_rect)
-        surface.blit(body, frame_rect)
+        surface.blit(pygame.transform.scale(body, frame_rect.size), frame_rect)
 
     def _draw_window_center_text(self, surface: pygame.Surface):
         play_color = (190, 225, 255) if self._is_name_valid() else (120, 130, 150)
