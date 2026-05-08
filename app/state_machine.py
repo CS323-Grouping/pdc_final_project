@@ -13,9 +13,12 @@ from typing import Dict, Optional, Type
 import pygame
 
 from app.display import DisplayConfig, DisplayManager
+from app.profile_store import ProfileSession
 from network import network_handler as nw
 from network import protocol
 from network.discovery import PresenceBroadcaster
+from player_scripts.avatar_sprite import prepare_avatar
+from player_scripts.model_assets import animation_path, load_default_head_texture
 from ui import components as ui
 from ui.theme import DEFAULT_THEME
 
@@ -33,8 +36,8 @@ RANDOM_PLAYER_NAME_CHARS = string.ascii_uppercase + string.digits
 GAME_PORT_SEARCH_LIMIT = 50
 
 
-def random_player_name(length: int = 10) -> str:
-    length = max(3, min(10, int(length)))
+def random_player_name(length: int = protocol.PLAYER_NAME_MAX_LEN) -> str:
+    length = max(protocol.PLAYER_NAME_MIN_LEN, min(protocol.PLAYER_NAME_MAX_LEN, int(length)))
     return "P" + "".join(secrets.choice(RANDOM_PLAYER_NAME_CHARS) for _ in range(length - 1))
 
 
@@ -59,6 +62,13 @@ PRESENCE_BY_STATE = {
     "in_game": protocol.PRESENCE_STATUS_IN_GAME,
 }
 
+NETWORK_CLIENT_STATE_BY_STATE = {
+    "host_lobby": protocol.CLIENT_STATE_LOBBY,
+    "joined_lobby": protocol.CLIENT_STATE_LOBBY,
+    "results": protocol.CLIENT_STATE_RESULTS,
+    "in_game": protocol.CLIENT_STATE_IN_GAME,
+}
+
 
 @dataclass
 class AppContext:
@@ -76,6 +86,10 @@ class AppContext:
     avatar_surface: Optional[pygame.Surface] = None
     avatar_window_surface: Optional[pygame.Surface] = None
     avatar_source_name: str = "Default avatar"
+    use_custom_head: bool = False
+    model_type: str = protocol.DEFAULT_MODEL_TYPE
+    model_color: str = protocol.DEFAULT_MODEL_COLOR
+    profile_session: Optional[ProfileSession] = None
     network: Optional[nw.Network] = None
     reconnect_ticket: Optional[ReconnectTicket] = None
     is_host: bool = False
@@ -88,6 +102,10 @@ class AppContext:
     start_pos: tuple = (100.0, 100.0)
     results_standings: list = None
     return_state_after_results: str = "joined_lobby"
+    active_countdown_id: int = 0
+    last_countdown_id: int = 0
+    current_match_id: int = 0
+    last_results_match_id: int = 0
     mouse_pos: tuple[int, int] = (0, 0)
     presence_instance_id: int = 0
     presence_status: int = protocol.PRESENCE_STATUS_ONLINE
@@ -109,6 +127,8 @@ class AppContext:
             self.roster = []
         if self.results_standings is None:
             self.results_standings = []
+        if self.avatar_surface is None or self.avatar_window_surface is None:
+            self.use_default_head(save=False)
 
     def set_banner(self, message: str, duration: float = 4.0):
         self.banner_message = message
@@ -117,6 +137,69 @@ class AppContext:
     def set_status(self, message: str, duration: float = 3.0):
         self.status_message = message
         self.status_timer = duration
+
+    def _set_avatar_source(self, source: pygame.Surface, source_name: str, use_custom_head: bool):
+        self.avatar_window_surface = source
+        self.avatar_surface = prepare_avatar(source)
+        self.avatar_source_name = source_name
+        self.use_custom_head = use_custom_head
+
+    def use_default_head(self, save: bool = True):
+        self._set_avatar_source(load_default_head_texture(self.project_root), "Default head", False)
+        if save:
+            self.save_profile()
+
+    def cache_custom_head(self, source: pygame.Surface, source_name: str):
+        self._set_avatar_source(source, source_name, True)
+        if self.profile_session is not None:
+            self.profile_session.profile_dir.mkdir(parents=True, exist_ok=True)
+            pygame.image.save(source, str(self.profile_session.custom_head_path))
+        self.save_profile()
+
+    def current_avatar_source(self) -> pygame.Surface:
+        if self.avatar_window_surface is not None:
+            return self.avatar_window_surface
+        return load_default_head_texture(self.project_root)
+
+    def current_avatar_frame(self) -> pygame.Surface:
+        if self.avatar_surface is not None:
+            return self.avatar_surface
+        return prepare_avatar(self.current_avatar_source())
+
+    def player_animation_path(self, model_type: str | None = None, model_color: str | None = None) -> Path:
+        return animation_path(
+            self.project_root,
+            model_type or self.model_type,
+            model_color or self.model_color,
+        )
+
+    def apply_profile_session(self, session: ProfileSession):
+        self.profile_session = session
+        self.player_name = session.data.player_name
+        self.model_type = protocol.normalize_model_type(session.data.model_type)
+        self.model_color = protocol.normalize_model_color(session.data.model_color)
+        if session.data.use_custom_head and session.custom_head_path.exists():
+            try:
+                source = pygame.image.load(str(session.custom_head_path)).convert_alpha()
+                self._set_avatar_source(source, session.custom_head_path.name, True)
+            except pygame.error:
+                self.use_default_head(save=False)
+        else:
+            self.use_default_head(save=False)
+
+    def set_model_color(self, model_color: str, save: bool = True):
+        self.model_color = protocol.normalize_model_color(model_color)
+        if save:
+            self.save_profile()
+
+    def save_profile(self):
+        if self.profile_session is None:
+            return
+        self.profile_session.data.player_name = self.player_name
+        self.profile_session.data.model_type = protocol.normalize_model_type(self.model_type)
+        self.profile_session.data.model_color = protocol.normalize_model_color(self.model_color)
+        self.profile_session.data.use_custom_head = self.use_custom_head
+        self.profile_session.save()
 
     def tick_timers(self, dt: float):
         if self.banner_timer > 0:
@@ -262,6 +345,10 @@ class AppContext:
         self.start_pos = start_pos or (100.0, 100.0)
         self.roster = []
         self.countdown_remaining = None
+        self.active_countdown_id = 0
+        self.last_countdown_id = 0
+        self.current_match_id = 0
+        self.last_results_match_id = 0
         self.results_standings = []
         self.remember_reconnect_ticket()
         self.network.start_receiver()
@@ -331,6 +418,7 @@ class AppContext:
 
     def shutdown(self):
         LOGGER.info("App shutdown requested host=%s network=%s", self.is_host, self.network is not None)
+        self.save_profile()
         self.stop_presence()
         if self.is_host and self.network is not None:
             LOGGER.info("Host shutdown: sending close room")
@@ -340,6 +428,8 @@ class AppContext:
         else:
             self.detach_network(send_disconnect=True)
         self.stop_server()
+        if self.profile_session is not None:
+            self.profile_session.release()
 
     def start_presence(self):
         if self.presence_broadcaster is not None:
@@ -377,6 +467,10 @@ class StateMachine:
         if self.current_state is not None:
             self.current_state.exit()
         self.context.presence_status = PRESENCE_BY_STATE.get(state_name, protocol.PRESENCE_STATUS_ONLINE)
+        if self.context.network is not None:
+            self.context.network.set_client_state(
+                NETWORK_CLIENT_STATE_BY_STATE.get(state_name, protocol.CLIENT_STATE_LOBBY)
+            )
         LOGGER.info("State change -> %s", state_name)
         state_cls = self.state_map[state_name]
         self.current_state = state_cls(self, self.context, **kwargs)

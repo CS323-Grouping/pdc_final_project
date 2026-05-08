@@ -7,7 +7,7 @@ def test_kick_cooldown_tiers_progress():
     name = "PlayerOne"
 
     table.register_kick(name)  # 0s
-    blocked, remaining = table.check(name)
+    blocked, remaining = table.check("playerone")
     assert blocked is False
     assert remaining == 0
 

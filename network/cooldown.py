@@ -3,9 +3,9 @@ import time
 from typing import Dict, Optional, Tuple
 
 try:
-    from network.protocol import UINT32_MAX
+    from network.protocol import UINT32_MAX, normalize_player_name
 except ModuleNotFoundError:
-    from protocol import UINT32_MAX  # type: ignore
+    from protocol import UINT32_MAX, normalize_player_name  # type: ignore
 
 KICK_COOLDOWNS = (0, 15, 30, 60, 300, math.inf)
 
@@ -16,7 +16,7 @@ class KickCooldownTable:
         self._blocked_until: Dict[str, float] = {}
 
     def register_kick(self, player_name: str):
-        key = player_name.lower()
+        key = normalize_player_name(player_name)
         kick_count = self._kick_counts.get(key, 0) + 1
         self._kick_counts[key] = kick_count
 
@@ -29,7 +29,7 @@ class KickCooldownTable:
             self._blocked_until[key] = 0.0
 
     def check(self, player_name: str) -> Tuple[bool, int]:
-        key = player_name.lower()
+        key = normalize_player_name(player_name)
         if key not in self._kick_counts:
             return False, 0
 
