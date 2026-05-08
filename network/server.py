@@ -239,6 +239,11 @@ class LobbyServer:
         self._last_cdwn_broadcast = 0.0
         self._last_pause_broadcast = 0.0
         self._reliable_broadcasts: list[dict] = []
+        self._countdown_id: int = 0
+        self._next_countdown_id: int = 1
+        self._match_id: int = 0
+        self._next_match_id: int = 1
+        self._lobby_prune_blocked_until: float = 0.0
         self._game_start_time: float = 0.0
         # Maps player_id -> elapsed seconds when they touched the goal.
         self._finish_times: dict[int, float] = {}
@@ -292,6 +297,9 @@ class LobbyServer:
                 item["next_at"] = now + item["interval"]
                 pending.append(item)
         self._reliable_broadcasts = pending
+
+    def block_lobby_pruning(self, seconds: float = 2.0):
+        self._lobby_prune_blocked_until = max(self._lobby_prune_blocked_until, time.monotonic() + max(0.0, seconds))
 
     def broadcast_roster(self):
         if self.room_state.state == STATE_IN_GAME:
@@ -431,6 +439,8 @@ class LobbyServer:
         if self.room_state.state not in (STATE_LOBBY, STATE_COUNTDOWN):
             return False
         now = time.monotonic() if now is None else now
+        if now < self._lobby_prune_blocked_until:
+            return False
         timed_out = self.room_state.timed_out_connected_ids(now, self.lobby_player_timeout_seconds)
         if not timed_out:
             return False
@@ -578,6 +588,24 @@ class LobbyServer:
         if self.room_state.set_ready(player_id, ready_flag):
             self.broadcast_roster()
 
+    def handle_heartbeat(self, data: bytes, addr):
+        unpacked = safe_unpack_heartbeat(data)
+        if unpacked is None:
+            return
+        _tag, player_id, session_token, _client_state, _countdown_id, _match_id = unpacked
+        addr_player_id = self.room_state.get_player_id_by_addr(addr)
+        if addr_player_id != player_id:
+            return
+        expected_token = self.room_state.session_token(player_id)
+        if expected_token is not None and expected_token != session_token:
+            LOGGER.debug("Ignoring heartbeat with bad token player_id=%s addr=%s", player_id, addr)
+            return
+        self.room_state.touch_player(player_id)
+        try:
+            self.sock.sendto(pack_heartbeat_ack(self.room_state.state, self._countdown_id, self._match_id), addr)
+        except OSError as error:
+            LOGGER.debug("Heartbeat ack failed player_id=%s addr=%s: %s", player_id, addr, error)
+
     def start_countdown(self):
         now = time.monotonic()
         self._countdown_id = self._next_countdown_id
@@ -593,7 +621,8 @@ class LobbyServer:
             return
         self.room_state.state = STATE_LOBBY
         self.room_state.cancel_countdown()
-        self.reliable_broadcast(pack_cdwnx(reason_code))
+        self.block_lobby_pruning()
+        self.reliable_broadcast(pack_cdwnx(reason_code, self._countdown_id))
         self.broadcast_roster()
 
     def handle_start(self, data: bytes, addr):
@@ -639,12 +668,12 @@ class LobbyServer:
             # All eliminated, no one finished — forfeit.
             standings = self.room_state.standings()
             LOGGER.info("Game ended by forfeit standings=%s", standings)
-            self.reliable_broadcast(pack_gend(GEND_REASON_FORFEIT, standings))
+            self.reliable_broadcast(pack_gend(GEND_REASON_FORFEIT, standings, self._match_id))
         else:
             # Normal end: assign 1st place to the last finisher if not yet placed.
             standings = self.room_state.standings()
             LOGGER.info("Game ended normally standings=%s", standings)
-            self.reliable_broadcast(pack_gend(GEND_REASON_NORMAL, standings))
+            self.reliable_broadcast(pack_gend(GEND_REASON_NORMAL, standings, self._match_id))
 
         self.room_state.state = STATE_LOBBY
         self.room_state.reset_for_lobby()
@@ -989,7 +1018,7 @@ class LobbyServer:
         self.end_policy.clear_elimination_cooldown()
         self._game_start_time = time.monotonic()
         LOGGER.info("Game started players=%s", self.room_state.connected_roster_entries())
-        self.reliable_broadcast(pack_gstart())
+        self.reliable_broadcast(pack_gstart(self._countdown_id, self._match_id))
         self.broadcast_match_snapshot()
 
     def tick_in_game(self):

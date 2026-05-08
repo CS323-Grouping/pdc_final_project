@@ -314,16 +314,6 @@ class RoomState:
                     output.append(player_id)
             return sorted(output)
 
-    def timed_out_connected_ids(self, now: float, timeout_seconds: float) -> List[int]:
-        with self.lock:
-            output: List[int] = []
-            for player_id, player in self._players.items():
-                if not player.connected:
-                    continue
-                if (now - player.last_seen) > timeout_seconds:
-                    output.append(player_id)
-            return sorted(output)
-
     def expired_reconnect_ids(self, now: float) -> List[int]:
         with self.lock:
             output: List[int] = []

@@ -78,7 +78,7 @@ class JoinedLobbyState(ScreenState):
             elif isinstance(event, nw.CountdownEvent):
                 self.accept_countdown_event(event)
             elif isinstance(event, nw.CountdownCancelEvent):
-                self.context.countdown_remaining = None
+                self.accept_countdown_cancel_event(event)
             elif isinstance(event, nw.RoomNameEvent):
                 self.context.room_name = event.room_name
             elif isinstance(event, nw.GameStartEvent):
@@ -104,6 +104,8 @@ class JoinedLobbyState(ScreenState):
             return
 
         if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+            if self.context.countdown_remaining is not None:
+                return
             self._leave_room()
             return
 
@@ -116,8 +118,6 @@ class JoinedLobbyState(ScreenState):
                 kick_mode=False,
             )
             if self.context.countdown_remaining is not None:
-                if action == "secondary":
-                    self._leave_room()
                 return
             if action == "secondary":
                 self._leave_room()

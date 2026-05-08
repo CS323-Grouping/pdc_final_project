@@ -244,12 +244,13 @@ class MainMenuState(ScreenState):
         total_button_w = button_w * 2 + button_gap
         save = pygame.Rect(frame.centerx - total_button_w // 2, button_y, button_w, button_h)
         cancel = pygame.Rect(save.right + button_gap, button_y, button_w, button_h)
+        count_w = 36
         return {
             "frame": frame,
             "title": title,
             "field": field,
-            "text": pygame.Rect(field.x + 5, field.y + 3, 124, 12),
-            "count": pygame.Rect(field.x + 7, field.y + 3, field.w - 14, 12),
+            "text": pygame.Rect(field.x + 5, field.y + 3, max(4, field.w - 17 - count_w), 12),
+            "count": pygame.Rect(field.right - 7 - count_w, field.y + 3, count_w, 12),
             "save": save,
             "cancel": cancel,
         }

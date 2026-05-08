@@ -143,6 +143,8 @@ def _event_summary(event: "NetworkEvent") -> str:
         return f"MatchPauseEvent player_id={event.player_id} remaining={event.seconds_remaining:.2f}"
     if isinstance(event, MatchResumeEvent):
         return "MatchResumeEvent"
+    if isinstance(event, HeartbeatAckEvent):
+        return f"HeartbeatAckEvent state={event.server_state} countdown_id={event.countdown_id} match_id={event.match_id}"
     if isinstance(event, RoomNameEvent):
         return f"RoomNameEvent room_name={event.room_name}"
     if isinstance(event, ConnectDeniedEvent):
@@ -258,6 +260,13 @@ class MatchResumeEvent:
 
 
 @dataclass(frozen=True)
+class HeartbeatAckEvent:
+    server_state: int
+    countdown_id: int
+    match_id: int
+
+
+@dataclass(frozen=True)
 class RoomNameEvent:
     room_name: str
 
@@ -293,6 +302,7 @@ NetworkEvent = Union[
     SessionEvent,
     MatchPauseEvent,
     MatchResumeEvent,
+    HeartbeatAckEvent,
     RoomNameEvent,
     ConnectDeniedEvent,
     ConnectionLostEvent,
@@ -800,6 +810,12 @@ class Network:
             if unpacked is None:
                 return ErrorEvent("Malformed RSUM packet")
             return MatchResumeEvent()
+        if tag == HEARTBEAT_ACK:
+            unpacked = safe_unpack_heartbeat_ack(data)
+            if unpacked is None:
+                return ErrorEvent("Malformed HBAK packet")
+            _tag, server_state, countdown_id, match_id = unpacked
+            return HeartbeatAckEvent(server_state=server_state, countdown_id=countdown_id, match_id=match_id)
         if tag == ROOM_NAME_UPDATE:
             unpacked = safe_unpack_room_name_update(data)
             if unpacked is None:
