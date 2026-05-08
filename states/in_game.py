@@ -115,7 +115,6 @@ class InGameState(ScreenState):
         level = generate_level(selected_level, level_seed)
         self.current_level = level.level_id
         self.platforms = create_level_platforms(level, self.world_assets.platform_normal)
-        self.powerups = create_orb_powerups_from_platform_specs(level.platforms, rng_seed=level.seed)
         LOGGER.info(
             "Loaded level=%s seed=%s platforms=%s goal=(%s,%s)",
             level.level_id,

@@ -5,9 +5,25 @@ import time
 from typing import Dict, List, Optional, Tuple
 
 try:
-    from network.protocol import MAX_PLAYERS, MIN_PLAYERS, RECONNECT_GRACE_SECONDS, STATE_LOBBY, normalize_player_name
+    from network.protocol import (
+        DEFAULT_LEVEL_ID,
+        MAX_PLAYERS,
+        MIN_PLAYERS,
+        RECONNECT_GRACE_SECONDS,
+        STATE_LOBBY,
+        normalize_level_id,
+        normalize_player_name,
+    )
 except ModuleNotFoundError:
-    from protocol import MAX_PLAYERS, MIN_PLAYERS, RECONNECT_GRACE_SECONDS, STATE_LOBBY, normalize_player_name  # type: ignore
+    from protocol import (  # type: ignore
+        DEFAULT_LEVEL_ID,
+        MAX_PLAYERS,
+        MIN_PLAYERS,
+        RECONNECT_GRACE_SECONDS,
+        STATE_LOBBY,
+        normalize_level_id,
+        normalize_player_name,
+    )
 
 Address = Tuple[str, int]
 Position = Tuple[float, float]
@@ -72,6 +88,18 @@ class RoomState:
     def set_room_name(self, room_name: str):
         with self.lock:
             self.room_name = room_name
+
+    def set_selected_level(self, level_id: int) -> bool:
+        with self.lock:
+            level_id = normalize_level_id(level_id)
+            if self.selected_level == level_id:
+                return False
+            self.selected_level = level_id
+            return True
+
+    def get_selected_level(self) -> int:
+        with self.lock:
+            return self.selected_level
 
     def connected_count(self) -> int:
         with self.lock:

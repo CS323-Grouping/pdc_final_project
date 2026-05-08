@@ -44,6 +44,7 @@ try:
         KICKED_REASON_KICKED,
         KICKED_REASON_NOT_READY,
         KICKED_REASON_ROOM_CLOSED,
+        LEVEL_SELECT,
         LOBBY_PLAYER_TIMEOUT_SECONDS,
         MIN_PLAYERS,
         MATCH_PAUSE,
@@ -96,6 +97,7 @@ try:
         pack_player_state,
         pack_reconnect_no,
         pack_reconnect_ok,
+        pack_level_select,
         pack_room_name_update,
         pack_session,
         safe_unpack,
@@ -111,6 +113,7 @@ try:
         safe_unpack_player_state,
         safe_unpack_ready,
         safe_unpack_reconnect,
+        safe_unpack_level_select,
         safe_unpack_room_name_update,
         safe_unpack_start,
         tag_of,
@@ -153,6 +156,7 @@ except ModuleNotFoundError:
         KICKED_REASON_KICKED,
         KICKED_REASON_NOT_READY,
         KICKED_REASON_ROOM_CLOSED,
+        LEVEL_SELECT,
         LOBBY_PLAYER_TIMEOUT_SECONDS,
         MIN_PLAYERS,
         MATCH_PAUSE,
@@ -205,6 +209,7 @@ except ModuleNotFoundError:
         pack_player_state,
         pack_reconnect_no,
         pack_reconnect_ok,
+        pack_level_select,
         pack_room_name_update,
         pack_session,
         safe_unpack,
@@ -220,6 +225,7 @@ except ModuleNotFoundError:
         safe_unpack_player_state,
         safe_unpack_ready,
         safe_unpack_reconnect,
+        safe_unpack_level_select,
         safe_unpack_room_name_update,
         safe_unpack_start,
         tag_of,
@@ -264,6 +270,7 @@ class LobbyServer:
         self._player_elapsed_at_result: dict[int, float] = {}
         self._player_platform_max: dict[int, int] = {}
         self._match_player_count: int = 0
+        self._match_level_seed: int = 0
         self._avatar_headers: dict[int, tuple[int, int, int, str, str]] = {}
         self._avatar_chunks: dict[tuple[int, int], dict[int, bytes]] = {}
 
@@ -563,6 +570,10 @@ class LobbyServer:
                 pack_reconnect_ok(reconnected_id, position[0], position[1], self.room_state.room_name),
                 addr,
             )
+            self.sock.sendto(
+                pack_level_select(self.room_state.host_id or reconnected_id, self.room_state.get_selected_level()),
+                addr,
+            )
             self.replay_cached_avatars(addr, exclude_player_id=reconnected_id)
             self.resume_if_ready()
             if self.room_state.state == STATE_PAUSED:
@@ -587,6 +598,7 @@ class LobbyServer:
         LOGGER.info("Reconnected player %s (%s) as id %s", player_name, addr, player_id)
         self.sock.sendto(pack_session(player_id, session_token), addr)
         self.sock.sendto(pack_reconnect_ok(player_id, position[0], position[1], self.room_state.room_name), addr)
+        self.sock.sendto(pack_level_select(self.room_state.host_id or player_id, self.room_state.get_selected_level()), addr)
         self.replay_cached_avatars(addr, exclude_player_id=player_id)
         self.resume_if_ready()
         if self.room_state.state == STATE_PAUSED:
@@ -858,6 +870,21 @@ class LobbyServer:
         LOGGER.info("Host %s renamed room to %s", host_id, room_name)
         self.broadcast(pack_room_name_update(host_id, room_name))
 
+    def handle_level_select(self, data: bytes, addr):
+        unpacked = safe_unpack_level_select(data)
+        if unpacked is None:
+            return
+        _tag, host_id, level_id = unpacked
+        addr_player_id = self.room_state.get_player_id_by_addr(addr)
+        if addr_player_id != host_id or host_id != self.room_state.host_id:
+            return
+        if self.room_state.state != STATE_LOBBY:
+            return
+        self.room_state.touch_player(host_id)
+        if self.room_state.set_selected_level(level_id):
+            LOGGER.info("Host %s selected level %s", host_id, level_id)
+        self.broadcast(pack_level_select(host_id, self.room_state.get_selected_level()))
+
     def handle_position(self, data: bytes, addr):
         unpacked = safe_unpack(data)
         if unpacked is None:
@@ -1014,6 +1041,9 @@ class LobbyServer:
         if tag == ROOM_NAME_UPDATE:
             self.handle_room_name_update(data, addr)
             return
+        if tag == LEVEL_SELECT:
+            self.handle_level_select(data, addr)
+            return
         if tag == DEAD:
             self.handle_dead(data, addr)
             return
@@ -1073,14 +1103,28 @@ class LobbyServer:
         self.room_state.enter_game()
         self._match_id = self._next_match_id
         self._next_match_id += 1
+        self._match_level_seed = secrets.randbits(32) or 1
+        selected_level = self.room_state.get_selected_level()
         self._finish_times = {}
         self._player_elapsed_at_result.clear()
         self._player_platform_max.clear()
         self._match_player_count = self.room_state.connected_count()
         self.end_policy.clear_elimination_cooldown()
         self._game_start_time = time.monotonic()
-        LOGGER.info("Game started players=%s", self.room_state.connected_roster_entries())
-        self.reliable_broadcast(pack_gstart(self._countdown_id, self._match_id))
+        LOGGER.info(
+            "Game started players=%s level=%s seed=%s",
+            self.room_state.connected_roster_entries(),
+            selected_level,
+            self._match_level_seed,
+        )
+        self.reliable_broadcast(
+            pack_gstart(
+                self._countdown_id,
+                self._match_id,
+                selected_level=selected_level,
+                level_seed=self._match_level_seed,
+            )
+        )
         self.broadcast_match_snapshot()
 
     def tick_in_game(self):

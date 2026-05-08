@@ -275,7 +275,21 @@ def test_gstart_round_trip():
     p = protocol.pack_gstart(countdown_id=12, match_id=3)
     u = protocol.safe_unpack_gstart(p)
     assert u is not None
-    assert u == (protocol.GSTART, 12, 3)
+    assert u == (protocol.GSTART, 12, 3, protocol.DEFAULT_LEVEL_ID, 0)
+
+
+def test_gstart_round_trip_with_level_seed():
+    p = protocol.pack_gstart(countdown_id=12, match_id=3, selected_level=3, level_seed=456)
+    u = protocol.safe_unpack_gstart(p)
+    assert u == (protocol.GSTART, 12, 3, 3, 456)
+
+
+def test_level_select_round_trip():
+    p = protocol.pack_level_select(host_id=2, level_id=99)
+    u = protocol.safe_unpack_level_select(p)
+    assert u == (protocol.LEVEL_SELECT, 2, protocol.DEFAULT_LEVEL_ID)
+    assert protocol.cycle_level_id(1, -1) == protocol.LEVEL_IDS[-1]
+    assert protocol.cycle_level_id(protocol.LEVEL_IDS[-1], 1) == 1
 
 
 def test_dead_elim_round_trip():

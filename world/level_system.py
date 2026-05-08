@@ -13,11 +13,6 @@ from world.constants import (
     PLAYER_MIN_PLATFORM_VERTICAL_GAP,
     PLAYER_MOVE_SPEED,
     PLAYER_PLATFORM_SIDE_CLEARANCE,
-    PLAYER_SAME_ROW_GAP_BASE,
-    PLAYER_SAME_ROW_GAP_MAX,
-    PLAYER_SAME_ROW_GAP_PER_LEVEL,
-    PLAYER_VERTICAL_MIN_GAP_EXTRA_MAX,
-    PLAYER_VERTICAL_MIN_GAP_EXTRA_PER_LEVEL_STEP,
     PLATFORM_NORMAL_HEIGHT,
     PLATFORM_NORMAL_WIDTH,
     PLAYABLE_RIGHT,
@@ -172,41 +167,18 @@ def _level_chunks(level_id: int) -> int:
     return LEVEL_CHUNK_START + (level_id - 1) * LEVEL_CHUNK_STEP
 
 
-def _scaled_min_horizontal_gap(level_id: int) -> int:
-    return min(
-        PLAYER_SAME_ROW_GAP_MAX,
-        PLAYER_SAME_ROW_GAP_BASE + (level_id - 1) * PLAYER_SAME_ROW_GAP_PER_LEVEL,
-    )
-
-
-def _scaled_max_config_horizontal_gap(level_id: int) -> int:
-    """Upper bound for horizontal offset in config; each jump still clamped by reachability."""
-    return min(72, 32 + (level_id - 1) * 4)
-
-
-def _scaled_vertical_gap_bounds(level_id: int) -> tuple[int, int]:
-    max_v = PLAYER_MAX_NORMAL_JUMP_PLATFORM_GAP
-    extra = min(
-        PLAYER_VERTICAL_MIN_GAP_EXTRA_MAX,
-        max(0, (level_id - 1) // PLAYER_VERTICAL_MIN_GAP_EXTRA_PER_LEVEL_STEP),
-    )
-    min_v = min(PLAYER_MIN_PLATFORM_VERTICAL_GAP + extra, max_v)
-    return min_v, max_v
-
-
 def _make_level_config(level_id: int) -> LevelConfig:
     chunks = _level_chunks(level_id)
     branch_chance = min(0.42, 0.10 + level_id * 0.032)
-    min_v, max_v = _scaled_vertical_gap_bounds(level_id)
     return LevelConfig(
         level_id=level_id,
         chunks=chunks,
         platform_count=chunks * LEVEL_PLATFORM_DENSITY,
         start_y=152,
-        min_vertical_gap=min_v,
-        max_vertical_gap=max_v,
-        min_horizontal_gap=_scaled_min_horizontal_gap(level_id),
-        max_horizontal_gap=_scaled_max_config_horizontal_gap(level_id),
+        min_vertical_gap=PLAYER_MIN_PLATFORM_VERTICAL_GAP,
+        max_vertical_gap=PLAYER_MAX_NORMAL_JUMP_PLATFORM_GAP,
+        min_horizontal_gap=PLAYER_HITBOX_WIDTH,
+        max_horizontal_gap=32,
         min_x=PLAYABLE_X,
         max_x=PLAYABLE_RIGHT,
         platform_widths=LEVEL_PLATFORM_WIDTH_PROFILES[level_id],
