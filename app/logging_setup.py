@@ -8,13 +8,14 @@ def safe_log_name(value: str, fallback: str = "instance") -> str:
     return safe or fallback
 
 
-def create_instance_log_dir(project_root: Path, player_name: str) -> Path:
+def create_instance_log_dir(writable_root: Path, player_name: str) -> Path:
+    """Create a unique `logs/<timestamp>-<player>/` folder under ``writable_root``."""
     stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
     folder_name = f"{stamp}-{safe_log_name(player_name, 'player')}"
-    log_dir = project_root / "logs" / folder_name
+    log_dir = writable_root / "logs" / folder_name
     suffix = 2
     while log_dir.exists():
-        log_dir = project_root / "logs" / f"{folder_name}-{suffix}"
+        log_dir = writable_root / "logs" / f"{folder_name}-{suffix}"
         suffix += 1
     log_dir.mkdir(parents=True, exist_ok=True)
     return log_dir

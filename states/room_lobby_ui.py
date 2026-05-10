@@ -52,7 +52,6 @@ class RoomLobbyUi:
         self._window_fonts: dict[tuple[int, bool], pygame.font.Font] = {}
         self._idle_body_frame: pygame.Surface | None = None
         self._body_frame_cache: dict[tuple[str, str], pygame.Surface] = {}
-        self._remote_avatar_surfaces: dict[int, pygame.Surface] = {}
         self._remote_models: dict[int, tuple[str, str]] = {}
         self._avatar_assemblies: dict[tuple[int, int], AvatarAssembly] = {}
         self._avatar_payload: bytes | None = None
@@ -64,7 +63,7 @@ class RoomLobbyUi:
         self._assets = self._load_assets()
         self._load_player_preview_frame()
         self._body_frame_cache.clear()
-        self._remote_avatar_surfaces.clear()
+        self.context.remote_avatar_surfaces.clear()
         self._remote_models.clear()
         self._avatar_assemblies.clear()
         self._avatar_payload = self._make_avatar_payload()
@@ -241,20 +240,20 @@ class RoomLobbyUi:
             ).convert_alpha()
         except (ValueError, pygame.error):
             return
-        self._remote_avatar_surfaces[player_id] = avatar
+        self.context.remote_avatar_surfaces[player_id] = avatar
         for old_key in list(self._avatar_assemblies.keys()):
             if old_key[0] == player_id:
                 self._avatar_assemblies.pop(old_key, None)
 
     def clear_remote_avatar(self, player_id: int):
-        self._remote_avatar_surfaces.pop(player_id, None)
+        self.context.remote_avatar_surfaces.pop(player_id, None)
         self._remote_models.pop(player_id, None)
         for key in list(self._avatar_assemblies.keys()):
             if key[0] == player_id:
                 self._avatar_assemblies.pop(key, None)
 
     def retain_remote_avatars(self, active_player_ids: set[int]):
-        for player_id in list(self._remote_avatar_surfaces.keys()):
+        for player_id in list(self.context.remote_avatar_surfaces.keys()):
             if player_id not in active_player_ids:
                 self.clear_remote_avatar(player_id)
 
@@ -728,7 +727,7 @@ class RoomLobbyUi:
     def _avatar_for_player(self, player_id: int, local_player_id: int | None) -> pygame.Surface:
         if local_player_id is not None and player_id == local_player_id:
             return self._current_avatar_source()
-        return self._remote_avatar_surfaces.get(player_id) or make_default_avatar(self.context.project_root)
+        return self.context.remote_avatar_surfaces.get(player_id) or make_default_avatar(self.context.project_root)
 
     def _body_frame_for_player(self, player_id: int, local_player_id: int | None) -> pygame.Surface | None:
         if local_player_id is not None and player_id == local_player_id:

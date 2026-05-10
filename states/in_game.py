@@ -76,7 +76,6 @@ class InGameState(ScreenState):
         self.remote_body_frames_by_state: dict[str, list[pygame.Surface]] | None = None
         self._remote_model_frames_cache: dict[tuple[str, str], dict[str, list[pygame.Surface]]] = {}
         self._remote_models: dict[int, tuple[str, str]] = {}
-        self._remote_avatar_surfaces: dict[int, pygame.Surface] = {}
         self._avatar_assemblies: dict[tuple[int, int], AvatarAssembly] = {}
         self._avatar_payload: bytes | None = None
         self._avatar_id = 0
@@ -101,7 +100,7 @@ class InGameState(ScreenState):
         self._elimination_feed = []
         self._remote_positions = {}
         self._remote_players = {}
-        self._remote_avatar_surfaces = {}
+        self.context.remote_avatar_surfaces.clear()
         self._remote_models = {}
         self._remote_model_frames_cache = {}
         self._avatar_assemblies = {}
@@ -359,7 +358,6 @@ class InGameState(ScreenState):
                 else:
                     self._remote_players.pop(event.player_id, None)
                     self._remote_positions.pop(event.player_id, None)
-                    self._remote_avatar_surfaces.pop(event.player_id, None)
                     self._remote_models.pop(event.player_id, None)
                     if self._spectate_player_id == event.player_id:
                         self._set_spectator_target(self._default_spectator_target(), snap=True)
@@ -380,7 +378,6 @@ class InGameState(ScreenState):
                     if player_id not in active_ids:
                         self._remote_positions.pop(player_id, None)
                         self._remote_players.pop(player_id, None)
-                        self._remote_avatar_surfaces.pop(player_id, None)
                         self._remote_models.pop(player_id, None)
                         if self._spectate_player_id == player_id:
                             self._set_spectator_target(self._default_spectator_target(), snap=True)
@@ -438,7 +435,7 @@ class InGameState(ScreenState):
             ).convert_alpha()
         except (ValueError, pygame.error):
             return
-        self._remote_avatar_surfaces[player_id] = avatar
+        self.context.remote_avatar_surfaces[player_id] = avatar
         for old_key in list(self._avatar_assemblies.keys()):
             if old_key[0] == player_id:
                 self._avatar_assemblies.pop(old_key, None)
@@ -733,7 +730,7 @@ class InGameState(ScreenState):
         for player_id, position in self._remote_positions.items():
             if int(player_id) == my_id:
                 continue
-            avatar = self._remote_avatar_surfaces.get(player_id)
+            avatar = self.context.remote_avatar_surfaces.get(player_id)
             remote = self._remote_players.get(player_id)
             if avatar is None or remote is None:
                 continue

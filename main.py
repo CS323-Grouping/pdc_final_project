@@ -2,13 +2,7 @@ import argparse
 import logging
 import sys
 
-import pygame
-
-from app.display import DisplayManager
-from app.logging_setup import configure_logging, create_instance_log_dir
-from app.profile_store import load_profile_session
-from app.state_machine import AppContext, StateMachine
-from network import network_handler as nw
+from app.version import cli_version_string, log_startup_line
 from network import protocol
 
 LOGGER = logging.getLogger(__name__)
@@ -16,6 +10,11 @@ LOGGER = logging.getLogger(__name__)
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Tower-jumping multiplayer (LAN lobby)")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=cli_version_string(),
+    )
     parser.add_argument(
         "--log-level",
         default="INFO",
@@ -74,8 +73,35 @@ def _parse_server_option(value: str) -> tuple[str, int] | None:
     return host, port
 
 
+def _run_embedded_server_if_requested() -> bool:
+    if len(sys.argv) > 1 and sys.argv[1] == "--run-embedded-server":
+        sys.argv = [sys.argv[0]] + sys.argv[2:]
+        from network.server import main as server_main
+
+        server_main()
+        return True
+    return False
+
+
 def main():
     args = parse_args()
+
+    import os
+
+    # SDL reads env at init; improves centering and multi-monitor behavior on Windows.
+    os.environ.setdefault("SDL_VIDEO_CENTERED", "1")
+
+    from app.paths import get_resource_root, get_writable_root
+
+    get_resource_root()  # Frozen builds: fail before pygame if only the .exe was copied
+
+    import pygame
+
+    from app.display import DisplayManager
+    from app.logging_setup import configure_logging, create_instance_log_dir
+    from app.profile_store import load_profile_session
+    from app.state_machine import AppContext, StateMachine
+    from network import network_handler as nw
 
     pygame.init()
     pygame.key.set_repeat(350, 35)
@@ -99,9 +125,15 @@ def main():
         ctx.player_name = args.name.strip() or ctx.player_name
         ctx.save_profile()
 
-    ctx.log_dir = create_instance_log_dir(ctx.project_root, ctx.player_name)
+    ctx.log_dir = create_instance_log_dir(get_writable_root(), ctx.player_name)
     configure_logging(args.log_level, ctx.log_dir / "client.log")
-    LOGGER.info("Client log initialized for player=%s dir=%s", ctx.player_name, ctx.log_dir)
+    LOGGER.info(
+        "%s (protocol wire v%s); log dir=%s player=%s",
+        log_startup_line(),
+        protocol.PROTO_VERSION,
+        ctx.log_dir,
+        ctx.player_name,
+    )
 
     if not protocol.is_valid_player_name(ctx.player_name):
         LOGGER.error(
@@ -149,4 +181,6 @@ def main():
 
 
 if __name__ == "__main__":
+    if _run_embedded_server_if_requested():
+        sys.exit(0)
     main()
