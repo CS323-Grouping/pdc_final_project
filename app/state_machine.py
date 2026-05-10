@@ -13,6 +13,7 @@ from typing import Dict, Optional, Type
 import pygame
 
 from app.display import DisplayConfig, DisplayManager
+from app.paths import get_resource_root
 from app.profile_store import ProfileSession
 from network import network_handler as nw
 from network import protocol
@@ -116,6 +117,7 @@ class AppContext:
     presence_broadcaster: Optional[PresenceBroadcaster] = None
     log_dir: Optional[Path] = None
     dock_global_messages_bottom: bool = False
+    remote_avatar_surfaces: Optional[dict] = None
 
     def __post_init__(self):
         if not self.player_name:
@@ -132,6 +134,8 @@ class AppContext:
             self.roster = []
         if self.results_standings is None:
             self.results_standings = []
+        if self.remote_avatar_surfaces is None:
+            self.remote_avatar_surfaces = {}
         if self.avatar_surface is None or self.avatar_window_surface is None:
             self.use_default_head(save=False)
 

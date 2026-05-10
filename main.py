@@ -2,13 +2,7 @@ import argparse
 import logging
 import sys
 
-import pygame
-
-from app.display import DisplayManager
-from app.logging_setup import configure_logging, create_instance_log_dir
-from app.profile_store import load_profile_session
-from app.state_machine import AppContext, StateMachine
-from network import network_handler as nw
+from app.version import cli_version_string, log_startup_line
 from network import protocol
 
 LOGGER = logging.getLogger(__name__)
