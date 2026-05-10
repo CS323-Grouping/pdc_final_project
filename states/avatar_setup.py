@@ -6,7 +6,7 @@ from network import protocol
 from player_scripts.avatar_sprite import AVATAR_RECT, VALID_AVATAR_EXTENSIONS, crop_square
 from player_scripts.model_assets import load_body_variation_frame, load_default_head_texture
 from states.common import ScreenState
-from ui import components as ui
+from ui.widgets import Button
 from ui.theme import DEFAULT_THEME
 from world.constants import PLAYER_FRAME_HEIGHT, PLAYER_FRAME_WIDTH
 
@@ -40,10 +40,10 @@ class AvatarSetupState(ScreenState):
 
     def __init__(self, machine, context, **kwargs):
         super().__init__(machine, context, **kwargs)
-        self.save_crop_button = ui.Button(pygame.Rect(0, 0, 130, 38), "Save Crop")
-        self.cancel_crop_button = ui.Button(pygame.Rect(0, 0, 110, 38), "Cancel")
-        self.zoom_in_button = ui.Button(pygame.Rect(0, 0, 42, 38), "+")
-        self.zoom_out_button = ui.Button(pygame.Rect(0, 0, 42, 38), "-")
+        self.save_crop_button = Button(pygame.Rect(0, 0, 130, 38), "Save Crop")
+        self.cancel_crop_button = Button(pygame.Rect(0, 0, 110, 38), "Cancel")
+        self.zoom_in_button = Button(pygame.Rect(0, 0, 42, 38), "+")
+        self.zoom_out_button = Button(pygame.Rect(0, 0, 42, 38), "-")
 
         self._assets: dict[str, pygame.Surface] = {}
         self._window_fonts: dict[tuple[int, bool], pygame.font.Font] = {}

@@ -3,24 +3,23 @@ import logging
 from pathlib import Path
 import queue
 import secrets
-import socket
 import string
 import subprocess
-import sys
-import time
 from typing import Dict, Optional, Type
 
 import pygame
 
 from app.display import DisplayConfig, DisplayManager
+from app.message_hud import MessageHud
 from app.paths import get_resource_root
 from app.profile_store import ProfileSession
+from app.server_process import LocalServerLauncher
 from network import network_handler as nw
 from network import protocol
+from network.avatar_receiver import AvatarReceiver
 from network.discovery import PresenceBroadcaster
 from player_scripts.avatar_sprite import prepare_avatar
 from player_scripts.model_assets import animation_path, load_default_head_texture
-from ui import components as ui
 from ui.theme import DEFAULT_THEME
 from world.constants import BORDER_WIDTH
 
@@ -35,7 +34,6 @@ from states.results import ResultsState
 LOGGER = logging.getLogger(__name__)
 MAX_FRAME_DT = 1.0 / 30.0
 RANDOM_PLAYER_NAME_CHARS = string.ascii_uppercase + string.digits
-GAME_PORT_SEARCH_LIMIT = 50
 
 
 def random_player_name(length: int = protocol.PLAYER_NAME_MAX_LEN) -> str:
@@ -81,10 +79,6 @@ class AppContext:
     running: bool = True
     player_name: str = ""
     room_name: str = "Room123"
-    banner_message: str = ""
-    banner_timer: float = 0.0
-    status_message: str = ""
-    status_timer: float = 0.0
     avatar_surface: Optional[pygame.Surface] = None
     avatar_window_surface: Optional[pygame.Surface] = None
     avatar_source_name: str = "Default avatar"
@@ -95,7 +89,6 @@ class AppContext:
     network: Optional[nw.Network] = None
     reconnect_ticket: Optional[ReconnectTicket] = None
     is_host: bool = False
-    server_process: Optional[subprocess.Popen] = None
     server_host: str = "127.0.0.1"
     server_port: int = 5555
     discovery_port: int = 5556
@@ -116,8 +109,10 @@ class AppContext:
     presence_status: int = protocol.PRESENCE_STATUS_ONLINE
     presence_broadcaster: Optional[PresenceBroadcaster] = None
     log_dir: Optional[Path] = None
-    dock_global_messages_bottom: bool = False
-    remote_avatar_surfaces: Optional[dict] = None
+    remote_avatar_surfaces: Optional[dict[int, pygame.Surface]] = None
+    avatar_receiver: Optional[AvatarReceiver] = None
+    server: Optional[LocalServerLauncher] = None
+    messages: Optional[MessageHud] = None
 
     def __post_init__(self):
         if not self.player_name:
@@ -136,16 +131,50 @@ class AppContext:
             self.results_standings = []
         if self.remote_avatar_surfaces is None:
             self.remote_avatar_surfaces = {}
+        if self.avatar_receiver is None:
+            self.avatar_receiver = AvatarReceiver(self.remote_avatar_surfaces)
+        if self.server is None:
+            self.server = LocalServerLauncher(
+                project_root=self.project_root,
+                log_level=self.log_level,
+                log_dir_provider=lambda: self.log_dir,
+                server_host=self.server_host,
+                server_port=self.server_port,
+                discovery_port=self.discovery_port,
+            )
+        if self.messages is None:
+            self.messages = MessageHud(
+                small_font=self.small_font,
+                tiny_font=self.tiny_font,
+                window_border_inset_provider=self.window_border_inset_px,
+                theme=DEFAULT_THEME,
+            )
         if self.avatar_surface is None or self.avatar_window_surface is None:
             self.use_default_head(save=False)
 
+    # --- MessageHud delegation (kept on AppContext for backward-compat) -------
     def set_banner(self, message: str, duration: float = 4.0):
-        self.banner_message = message
-        self.banner_timer = duration
+        self.messages.set_banner(message, duration)
 
     def set_status(self, message: str, duration: float = 3.0):
-        self.status_message = message
-        self.status_timer = duration
+        self.messages.set_status(message, duration)
+
+    @property
+    def banner_message(self) -> str:
+        return self.messages.banner_message if self.messages is not None else ""
+
+    @property
+    def status_message(self) -> str:
+        return self.messages.status_message if self.messages is not None else ""
+
+    @property
+    def dock_global_messages_bottom(self) -> bool:
+        return self.messages.dock_global_messages_bottom if self.messages is not None else False
+
+    @dock_global_messages_bottom.setter
+    def dock_global_messages_bottom(self, value: bool) -> None:
+        if self.messages is not None:
+            self.messages.dock_global_messages_bottom = value
 
     def _set_avatar_source(self, source: pygame.Surface, source_name: str, use_custom_head: bool):
         self.avatar_window_surface = source
@@ -217,51 +246,15 @@ class AppContext:
         return BORDER_WIDTH * int(self.display_manager.config.selected_scale)
 
     def tick_timers(self, dt: float):
-        if self.banner_timer > 0:
-            self.banner_timer = max(0.0, self.banner_timer - dt)
-            if self.banner_timer == 0:
-                self.banner_message = ""
-        if self.status_timer > 0:
-            self.status_timer = max(0.0, self.status_timer - dt)
-            if self.status_timer == 0:
-                self.status_message = ""
+        self.messages.tick(dt)
         if self.countdown_remaining is not None:
             self.countdown_remaining = max(0.0, self.countdown_remaining - dt)
 
     def reserved_bottom_message_strip_px(self) -> int:
-        """Window pixels to leave clear at the bottom when `dock_global_messages_bottom` is on."""
-        if not self.dock_global_messages_bottom:
-            return 0
-        margin = 8
-        if self.banner_message and self.status_message:
-            return margin + 22 + 2 + 30
-        if self.banner_message:
-            return margin + 30
-        if self.status_message:
-            return margin + 28
-        return 0
+        return self.messages.reserved_bottom_strip_px()
 
     def draw_global_messages(self, surface: Optional[pygame.Surface] = None):
-        surface = surface or self.screen
-        inset = self.window_border_inset_px()
-        if self.dock_global_messages_bottom:
-            if self.banner_message or self.status_message:
-                ui.draw_global_messages_bottom_dock(
-                    surface,
-                    self.small_font,
-                    self.tiny_font,
-                    self.banner_message,
-                    self.status_message,
-                    inset,
-                    DEFAULT_THEME,
-                )
-            return
-        if self.banner_message:
-            ui.draw_banner_bar(surface, self.small_font, self.banner_message, horizontal_inset=inset)
-        if self.status_message:
-            y = 34 if self.banner_message else 8
-            status_surface = self.tiny_font.render(self.status_message, True, (255, 230, 120))
-            surface.blit(status_surface, (inset + 10, y))
+        self.messages.draw(surface or self.screen)
 
     def update_mouse_pos(self, use_internal: bool = False):
         pos = pygame.mouse.get_pos()
@@ -284,115 +277,23 @@ class AppContext:
     def to_render_event(self, event, use_internal: bool = False):
         if not use_internal or self.display_manager is None:
             return event
-        if hasattr(event, "pos"):
-            attrs = dict(event.__dict__)
-            attrs["pos"] = self.display_manager.window_to_internal(event.pos)
-            return pygame.event.Event(event.type, attrs)
-        return event
+        return self.display_manager.to_render_event(event)
 
-    def _udp_port_available(self, port: int) -> bool:
-        try:
-            probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            probe.bind(("0.0.0.0", port))
-        except OSError:
-            return False
-        finally:
-            try:
-                probe.close()
-            except UnboundLocalError:
-                pass
-        return True
-
-    def _choose_server_port(self) -> int:
-        preferred = max(1, min(65535, int(self.server_port)))
-        for offset in range(GAME_PORT_SEARCH_LIMIT):
-            port = preferred + offset
-            if port > 65535:
-                break
-            if port == self.discovery_port:
-                continue
-            if self._udp_port_available(port):
-                return port
-
-        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            probe.bind(("0.0.0.0", 0))
-            return int(probe.getsockname()[1])
-        finally:
-            probe.close()
-
+    # --- LocalServerLauncher delegation (kept on AppContext for backward-compat) -------
     def start_local_server(self, room_name: str) -> bool:
-        self.stop_server()
-        self.server_port = self._choose_server_port()
-        if getattr(sys, "frozen", False):
-            command = [
-                sys.executable,
-                "--run-embedded-server",
-                "--host",
-                "0.0.0.0",
-                "--port",
-                str(self.server_port),
-                "--discovery-port",
-                str(self.discovery_port),
-                "--room",
-                room_name,
-                "--log-level",
-                self.log_level,
-            ]
-        else:
-            command = [
-                sys.executable,
-                str(self.project_root / "network" / "server.py"),
-                "--host",
-                "0.0.0.0",
-                "--port",
-                str(self.server_port),
-                "--discovery-port",
-                str(self.discovery_port),
-                "--room",
-                room_name,
-                "--log-level",
-                self.log_level,
-            ]
-        if self.log_dir is not None:
-            command.extend(["--log-dir", str(self.log_dir)])
-        LOGGER.info("Starting local server room=%s command=%s", room_name, command)
-        self.server_process = subprocess.Popen(command, cwd=str(self.project_root))
-        time.sleep(0.4)
-        if self.server_process.poll() is not None:
-            LOGGER.error("Local server exited during startup room=%s", room_name)
-            self.server_process = None
-            return False
-        LOGGER.info("Local server started room=%s port=%s", room_name, self.server_port)
-        return True
+        ok = self.server.start(room_name)
+        self.server_port = self.server.server_port
+        return ok
 
     def stop_server(self):
-        if self.server_process is None:
-            return
-        if self.server_process.poll() is None:
-            LOGGER.info("Stopping local server")
-            self.server_process.terminate()
-            try:
-                self.server_process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                LOGGER.warning("Local server did not stop in time; killing")
-                self.server_process.kill()
-        self.server_process = None
+        self.server.stop()
 
     def wait_for_server_exit(self, timeout: float = 0.75) -> bool:
-        if self.server_process is None:
-            return True
-        if self.server_process.poll() is not None:
-            self.server_process = None
-            return True
-        try:
-            self.server_process.wait(timeout=timeout)
-            self.server_process = None
-            LOGGER.info("Local server exited after close-room request")
-            return True
-        except subprocess.TimeoutExpired:
-            LOGGER.warning("Local server did not exit after close-room request")
-            return False
+        return self.server.wait_for_exit(timeout)
+
+    @property
+    def server_process(self) -> Optional[subprocess.Popen]:
+        return self.server.process if self.server is not None else None
 
     def attach_network(self, network_obj: nw.Network, is_host: bool, room_name: str, start_pos):
         self.detach_network(send_disconnect=False)

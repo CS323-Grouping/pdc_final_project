@@ -1,4 +1,3 @@
-from dataclasses import dataclass
 import math
 import time
 import zlib
@@ -34,17 +33,6 @@ KICK_MODE_BUTTON_SIZE = (24, 24)
 BUTTON_GAP = 8
 
 
-@dataclass
-class AvatarAssembly:
-    total_chunks: int
-    payload_size: int = 0
-    chunks: dict[int, bytes] = None
-
-    def __post_init__(self):
-        if self.chunks is None:
-            self.chunks = {}
-
-
 class RoomLobbyUi:
     def __init__(self, context):
         self.context = context
@@ -52,8 +40,6 @@ class RoomLobbyUi:
         self._window_fonts: dict[tuple[int, bool], pygame.font.Font] = {}
         self._idle_body_frame: pygame.Surface | None = None
         self._body_frame_cache: dict[tuple[str, str], pygame.Surface] = {}
-        self._remote_models: dict[int, tuple[str, str]] = {}
-        self._avatar_assemblies: dict[tuple[int, int], AvatarAssembly] = {}
         self._avatar_payload: bytes | None = None
         self._avatar_id = 0
         self._avatar_send_timer = 0.0
@@ -63,9 +49,7 @@ class RoomLobbyUi:
         self._assets = self._load_assets()
         self._load_player_preview_frame()
         self._body_frame_cache.clear()
-        self.context.remote_avatar_surfaces.clear()
-        self._remote_models.clear()
-        self._avatar_assemblies.clear()
+        self.context.avatar_receiver.clear()
         self._avatar_payload = self._make_avatar_payload()
         self._avatar_id = zlib.adler32(self._avatar_payload) & 0xFFFF if self._avatar_payload else 0
         self._avatar_send_timer = 0.0
@@ -183,79 +167,13 @@ class RoomLobbyUi:
         self._avatar_send_timer = 1.0
 
     def handle_avatar_event(self, event, my_id: int) -> bool:
-        if isinstance(event, nw.AvatarHeaderEvent):
-            self._handle_avatar_header(event, my_id)
-            return True
-        if isinstance(event, nw.AvatarChunkEvent):
-            self._handle_avatar_chunk(event, my_id)
-            return True
-        return False
-
-    def _handle_avatar_header(self, event: nw.AvatarHeaderEvent, my_id: int):
-        if event.player_id == my_id:
-            return
-        self._remote_models[event.player_id] = (event.model_type, event.model_color)
-        key = (event.player_id, event.avatar_id)
-        assembly = self._avatar_assemblies.get(key)
-        if assembly is None:
-            assembly = AvatarAssembly(total_chunks=event.total_chunks)
-            self._avatar_assemblies[key] = assembly
-        assembly.total_chunks = event.total_chunks
-        assembly.payload_size = event.payload_size
-        self._try_complete_avatar(event.player_id, event.avatar_id)
-
-    def _handle_avatar_chunk(self, event: nw.AvatarChunkEvent, my_id: int):
-        if event.player_id == my_id:
-            return
-        key = (event.player_id, event.avatar_id)
-        assembly = self._avatar_assemblies.get(key)
-        if assembly is None:
-            assembly = AvatarAssembly(total_chunks=event.total_chunks)
-            self._avatar_assemblies[key] = assembly
-        assembly.total_chunks = event.total_chunks
-        assembly.chunks[event.chunk_index] = event.payload
-        self._try_complete_avatar(event.player_id, event.avatar_id)
-
-    def _try_complete_avatar(self, player_id: int, avatar_id: int):
-        key = (player_id, avatar_id)
-        assembly = self._avatar_assemblies.get(key)
-        if assembly is None:
-            return
-        if assembly.payload_size != protocol.NETWORK_AVATAR_BYTES:
-            return
-        if len(assembly.chunks) < assembly.total_chunks:
-            return
-        try:
-            raw = b"".join(assembly.chunks[index] for index in range(assembly.total_chunks))
-        except KeyError:
-            return
-        raw = raw[: assembly.payload_size]
-        if len(raw) != protocol.NETWORK_AVATAR_BYTES:
-            return
-        try:
-            avatar = pygame.image.frombytes(
-                raw,
-                (protocol.NETWORK_AVATAR_SIZE, protocol.NETWORK_AVATAR_SIZE),
-                "RGBA",
-            ).convert_alpha()
-        except (ValueError, pygame.error):
-            return
-        self.context.remote_avatar_surfaces[player_id] = avatar
-        for old_key in list(self._avatar_assemblies.keys()):
-            if old_key[0] == player_id:
-                self._avatar_assemblies.pop(old_key, None)
+        return self.context.avatar_receiver.handle_event(event, my_id)
 
     def clear_remote_avatar(self, player_id: int):
-        self.context.remote_avatar_surfaces.pop(player_id, None)
-        self._remote_models.pop(player_id, None)
-        for key in list(self._avatar_assemblies.keys()):
-            if key[0] == player_id:
-                self._avatar_assemblies.pop(key, None)
+        self.context.avatar_receiver.clear_player(player_id)
 
     def retain_remote_avatars(self, active_player_ids: set[int]):
-        for player_id in list(self.context.remote_avatar_surfaces.keys()):
-            if player_id not in active_player_ids:
-                self.clear_remote_avatar(player_id)
+        self.context.avatar_receiver.retain(active_player_ids)
 
     def _draw_asset(self, surface: pygame.Surface, key: str, rect: pygame.Rect):
         asset = self._assets.get(key)
@@ -732,9 +650,9 @@ class RoomLobbyUi:
     def _body_frame_for_player(self, player_id: int, local_player_id: int | None) -> pygame.Surface | None:
         if local_player_id is not None and player_id == local_player_id:
             return self._idle_body_frame
-        model_type, model_color = self._remote_models.get(
-            player_id,
-            (protocol.DEFAULT_MODEL_TYPE, protocol.DEFAULT_MODEL_COLOR),
+        model_type, model_color = self.context.avatar_receiver.get_model(player_id) or (
+            protocol.DEFAULT_MODEL_TYPE,
+            protocol.DEFAULT_MODEL_COLOR,
         )
         key = (model_type, model_color)
         if key not in self._body_frame_cache:

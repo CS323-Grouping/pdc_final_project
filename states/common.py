@@ -160,6 +160,13 @@ class ScreenState:
         return None
 
 
+def host_player_id(roster: list) -> int | None:
+    """Lowest player_id in the roster owns the host slot."""
+    if not roster:
+        return None
+    return min(entry[0] for entry in roster)
+
+
 def filter_player_name_input(value: str) -> str:
     return protocol.sanitize_player_name_input(value)
 

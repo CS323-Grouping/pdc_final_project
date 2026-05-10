@@ -13,8 +13,9 @@ from player_scripts.animation import AnimationState, load_spritesheet_frames
 from player_scripts.avatar_sprite import AVATAR_RECT, compose_player_frames, make_default_avatar
 from player_scripts import player as pl
 from states.common import ScreenState
-from ui import components as ui
+from ui.hud import draw_ingame_status_hud
 from ui.theme import DEFAULT_THEME
+from ui.widgets import Button, draw_button
 from world.assets import load_world_assets
 from world.constants import (
     BORDER_WIDTH,
@@ -42,17 +43,6 @@ class RemotePlayer:
     body_frames_by_state: dict[str, list[pygame.Surface]]
 
 
-@dataclass
-class AvatarAssembly:
-    total_chunks: int
-    payload_size: int = 0
-    chunks: dict[int, bytes] = None
-
-    def __post_init__(self):
-        if self.chunks is None:
-            self.chunks = {}
-
-
 class InGameState(ScreenState):
     render_to_internal = True
     suppress_internal_global_messages = True
@@ -75,8 +65,6 @@ class InGameState(ScreenState):
         self.remote_frames_by_state: dict[str, list[pygame.Surface]] | None = None
         self.remote_body_frames_by_state: dict[str, list[pygame.Surface]] | None = None
         self._remote_model_frames_cache: dict[tuple[str, str], dict[str, list[pygame.Surface]]] = {}
-        self._remote_models: dict[int, tuple[str, str]] = {}
-        self._avatar_assemblies: dict[tuple[int, int], AvatarAssembly] = {}
         self._avatar_payload: bytes | None = None
         self._avatar_id = 0
         self._avatar_send_timer = 0.0
@@ -100,10 +88,8 @@ class InGameState(ScreenState):
         self._elimination_feed = []
         self._remote_positions = {}
         self._remote_players = {}
-        self.context.remote_avatar_surfaces.clear()
-        self._remote_models = {}
+        self.context.avatar_receiver.clear()
         self._remote_model_frames_cache = {}
-        self._avatar_assemblies = {}
         self._name_by_id = {pid: name for pid, _r, name in self.context.roster}
         self.world_assets = load_world_assets(self.context.project_root)
         self.level_renderer = LevelRenderer(self.world_assets)
@@ -243,7 +229,10 @@ class InGameState(ScreenState):
         return frames
 
     def _remote_model_for_player(self, player_id: int) -> tuple[str, str]:
-        return self._remote_models.get(player_id, (protocol.DEFAULT_MODEL_TYPE, protocol.DEFAULT_MODEL_COLOR))
+        return self.context.avatar_receiver.get_model(player_id) or (
+            protocol.DEFAULT_MODEL_TYPE,
+            protocol.DEFAULT_MODEL_COLOR,
+        )
 
     def _rebuild_remote_player_model(self, player_id: int):
         remote = self._remote_players.get(player_id)
@@ -307,14 +296,13 @@ class InGameState(ScreenState):
                 remote = self._get_remote_player(event.player_id, position)
                 if remote is not None:
                     remote.animation.set_state(protocol.animation_state_name(event.animation_state_id))
-            elif isinstance(event, nw.AvatarHeaderEvent):
-                old_model = self._remote_models.get(event.player_id)
-                self._remote_models[event.player_id] = (event.model_type, event.model_color)
-                if old_model != self._remote_models[event.player_id]:
+            elif isinstance(event, (nw.AvatarHeaderEvent, nw.AvatarChunkEvent)):
+                my_id = self.context.network.id if self.context.network else -1
+                receiver = self.context.avatar_receiver
+                old_model = receiver.get_model(event.player_id)
+                receiver.handle_event(event, my_id)
+                if isinstance(event, nw.AvatarHeaderEvent) and receiver.get_model(event.player_id) != old_model:
                     self._rebuild_remote_player_model(event.player_id)
-                self._handle_avatar_header(event)
-            elif isinstance(event, nw.AvatarChunkEvent):
-                self._handle_avatar_chunk(event)
             elif isinstance(event, nw.MatchPauseEvent):
                 self._paused_players[event.player_id] = event.seconds_remaining
                 name = self._name_by_id.get(event.player_id, f"Player {event.player_id}")
@@ -358,7 +346,7 @@ class InGameState(ScreenState):
                 else:
                     self._remote_players.pop(event.player_id, None)
                     self._remote_positions.pop(event.player_id, None)
-                    self._remote_models.pop(event.player_id, None)
+                    # Keep avatar in receiver — results screen reads it from the same dict.
                     if self._spectate_player_id == event.player_id:
                         self._set_spectator_target(self._default_spectator_target(), snap=True)
                 self._paused_players.pop(event.player_id, None)
@@ -378,67 +366,12 @@ class InGameState(ScreenState):
                     if player_id not in active_ids:
                         self._remote_positions.pop(player_id, None)
                         self._remote_players.pop(player_id, None)
-                        self._remote_models.pop(player_id, None)
+                        # Keep avatar in receiver — results screen reads it from the same dict.
                         if self._spectate_player_id == player_id:
                             self._set_spectator_target(self._default_spectator_target(), snap=True)
                 for pid, _ready, name in event.entries:
                     self._name_by_id[pid] = name
         return False
-
-    def _handle_avatar_header(self, event: nw.AvatarHeaderEvent):
-        my_id = self.context.network.id if self.context.network else -1
-        if event.player_id == my_id:
-            return
-        key = (event.player_id, event.avatar_id)
-        assembly = self._avatar_assemblies.get(key)
-        if assembly is None:
-            assembly = AvatarAssembly(total_chunks=event.total_chunks)
-            self._avatar_assemblies[key] = assembly
-        assembly.total_chunks = event.total_chunks
-        assembly.payload_size = event.payload_size
-        self._try_complete_avatar(event.player_id, event.avatar_id)
-
-    def _handle_avatar_chunk(self, event: nw.AvatarChunkEvent):
-        my_id = self.context.network.id if self.context.network else -1
-        if event.player_id == my_id:
-            return
-        key = (event.player_id, event.avatar_id)
-        assembly = self._avatar_assemblies.get(key)
-        if assembly is None:
-            assembly = AvatarAssembly(total_chunks=event.total_chunks)
-            self._avatar_assemblies[key] = assembly
-        assembly.total_chunks = event.total_chunks
-        assembly.chunks[event.chunk_index] = event.payload
-        self._try_complete_avatar(event.player_id, event.avatar_id)
-
-    def _try_complete_avatar(self, player_id: int, avatar_id: int):
-        key = (player_id, avatar_id)
-        assembly = self._avatar_assemblies.get(key)
-        if assembly is None:
-            return
-        if assembly.payload_size != protocol.NETWORK_AVATAR_BYTES:
-            return
-        if len(assembly.chunks) < assembly.total_chunks:
-            return
-        try:
-            raw = b"".join(assembly.chunks[index] for index in range(assembly.total_chunks))
-        except KeyError:
-            return
-        raw = raw[: assembly.payload_size]
-        if len(raw) != protocol.NETWORK_AVATAR_BYTES:
-            return
-        try:
-            avatar = pygame.image.frombytes(
-                raw,
-                (protocol.NETWORK_AVATAR_SIZE, protocol.NETWORK_AVATAR_SIZE),
-                "RGBA",
-            ).convert_alpha()
-        except (ValueError, pygame.error):
-            return
-        self.context.remote_avatar_surfaces[player_id] = avatar
-        for old_key in list(self._avatar_assemblies.keys()):
-            if old_key[0] == player_id:
-                self._avatar_assemblies.pop(old_key, None)
 
     def update(self, dt: float):
         net = self.context.network
@@ -714,7 +647,7 @@ class InGameState(ScreenState):
         if self.context.match_start_unix_sec is not None:
             match_elapsed = max(0.0, time.time() - float(self.context.match_start_unix_sec))
         pr_local = self.hero.platforms_reached_count()
-        ui.draw_ingame_status_hud(
+        draw_ingame_status_hud(
             surface,
             self._ingame_window_hud_font(),
             self._elimination_feed,
@@ -841,18 +774,18 @@ class InGameState(ScreenState):
 
         enabled = len(alive_ids) > 1
         mouse_pos = self.context.mouse_pos
-        ui.draw_button(
+        draw_button(
             surface,
             self.context.small_font,
-            ui.Button(prev_window, "<", enabled),
+            Button(prev_window, "<", enabled),
             theme,
             hovered=enabled and prev_rect.collidepoint(mouse_pos),
             variant="neutral",
         )
-        ui.draw_button(
+        draw_button(
             surface,
             self.context.small_font,
-            ui.Button(next_window, ">", enabled),
+            Button(next_window, ">", enabled),
             theme,
             hovered=enabled and next_rect.collidepoint(mouse_pos),
             variant="neutral",

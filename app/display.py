@@ -151,6 +151,14 @@ class DisplayManager:
         x, y = pos
         return x // self.config.selected_scale, y // self.config.selected_scale
 
+    def to_render_event(self, event):
+        """Translate a window-coordinate pygame event into internal-resolution coords."""
+        if not hasattr(event, "pos"):
+            return event
+        attrs = dict(event.__dict__)
+        attrs["pos"] = self.window_to_internal(event.pos)
+        return pygame.event.Event(event.type, attrs)
+
     def apply_config(self, config: DisplayConfig) -> pygame.Surface:
         previous_config = self.config
         previous_screen = self.screen
