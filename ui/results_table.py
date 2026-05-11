@@ -141,6 +141,10 @@ def draw_results_table(
         _draw_side_torches(ib, INTERNAL_WIDTH, INTERNAL_HEIGHT)
         pygame.transform.scale(ib, (w, h), surface)
 
+    scrim = pygame.Surface((w, h), pygame.SRCALPHA)
+    scrim.fill((0, 0, 0, 128))
+    surface.blit(scrim, (0, 0))
+
     title_s = title_f.render("MATCH RESULTS", True, _TITLE_BLUE)
     title_h = title_s.get_height()
     title_gap = max(8, min(14, h // 14))

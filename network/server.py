@@ -1,5 +1,8 @@
 import argparse
+import ctypes
 import logging
+import os
+import sys
 from datetime import datetime
 from pathlib import Path
 import secrets
@@ -85,6 +88,7 @@ try:
         pack_conok,
         pack_elim,
         pack_gend,
+        pack_goal,
         pack_gstart,
         pack_heartbeat_ack,
         pack_kicked,
@@ -197,6 +201,7 @@ except ModuleNotFoundError:
         pack_conok,
         pack_elim,
         pack_gend,
+        pack_goal,
         pack_gstart,
         pack_heartbeat_ack,
         pack_kicked,
@@ -233,6 +238,31 @@ except ModuleNotFoundError:
     from room_state import RoomState  # type: ignore
 
 LOGGER = logging.getLogger(__name__)
+
+WAIT_OBJECT_0 = 0x00000000
+WAIT_TIMEOUT = 0x00000102
+SYNCHRONIZE = 0x00100000
+
+
+def _process_is_alive(pid: int) -> bool:
+    if pid <= 0:
+        return True
+    if sys.platform == "win32":
+        handle = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, int(pid))
+        if not handle:
+            return False
+        try:
+            status = ctypes.windll.kernel32.WaitForSingleObject(handle, 0)
+            return status == WAIT_TIMEOUT
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 CLOSE_ROOM_TARGET = -1
 
 
@@ -760,6 +790,7 @@ class LobbyServer:
 
         placement = len(self._finish_times)
         self.room_state.mark_eliminated(player_id, placement)
+        self.broadcast(pack_goal(player_id))
         self.broadcast(pack_elim(player_id, placement))
         LOGGER.info("Player %s reached the goal in %.2fs (place %d)", player_id, elapsed, placement)
         self._check_game_end()
@@ -793,7 +824,10 @@ class LobbyServer:
         if self.room_state.state not in (STATE_IN_GAME, STATE_PAUSED):
             return
         prev = self._player_platform_max.get(player_id, 0)
-        self._player_platform_max[player_id] = max(prev, int(platforms_reached))
+        new_count = max(prev, int(platforms_reached))
+        self._player_platform_max[player_id] = new_count
+        if new_count != prev:
+            self.broadcast(pack_platform_progress(player_id, new_count))
 
     def eliminate_player(self, player_id: int):
         if not self.room_state.is_alive(player_id):
@@ -1186,6 +1220,7 @@ def parse_args():
     parser.add_argument("--room", default="CS323Room", help="Room name advertised in LAN beacons")
     parser.add_argument("--discovery-port", type=int, default=DISCOVERY_PORT, help="UDP port used for room beacons")
     parser.add_argument("--beacon-interval", type=float, default=BEACON_INTERVAL, help="Seconds between beacon broadcasts")
+    parser.add_argument("--owner-pid", type=int, default=0, help="Optional host app process id; server exits when it disappears")
     parser.add_argument("--countdown-seconds", type=float, default=COUNTDOWN_SECONDS, help="Countdown duration before game start")
     parser.add_argument(
         "--reconnect-grace-seconds",
@@ -1296,8 +1331,14 @@ def main():
         raise SystemExit(1)
 
     LOGGER.info("Server started on %s:%s (room=%s)", args.host, args.port, args.room)
+    if args.owner_pid > 0:
+        LOGGER.info("Server owner watchdog enabled owner_pid=%s", args.owner_pid)
     try:
         while server.running:
+            if args.owner_pid > 0 and not _process_is_alive(args.owner_pid):
+                LOGGER.warning("Owner process %s is gone; shutting down local room server", args.owner_pid)
+                server.running = False
+                break
             try:
                 data, addr = server.sock.recvfrom(RECV_BUF)
                 server.handle_packet(data, addr)

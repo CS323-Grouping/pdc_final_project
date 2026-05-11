@@ -1006,6 +1006,27 @@ class BrowseLobbyState(ScreenState):
         label = font.render(text, True, color)
         surface.blit(label, (rect.x, y))
 
+    def _draw_text_right(
+        self,
+        surface: pygame.Surface,
+        logical_size: int,
+        text: str,
+        logical_rect: pygame.Rect,
+        color: tuple[int, int, int],
+        bold: bool = True,
+        shadow: bool = False,
+    ):
+        rect = self._scale_rect(logical_rect)
+        scale = self._window_scale()
+        font = self._window_font(logical_size, bold=bold)
+        text = self._fit_text(text, font, max(4, rect.w - (4 * scale)))
+        y = rect.y + (rect.h - font.get_height()) // 2
+        if shadow:
+            shade = font.render(text, True, (8, 14, 25))
+            surface.blit(shade, (rect.right - shade.get_width() + scale, y + scale))
+        label = font.render(text, True, color)
+        surface.blit(label, (rect.right - label.get_width(), y))
+
     def _draw_text_caret(
         self,
         surface: pygame.Surface,
@@ -1177,15 +1198,27 @@ class BrowseLobbyState(ScreenState):
         else:
             name_text = "ROOM NAME"
             name_color = theme.text_muted
+        name_text_rect = layout["text"].copy()
+        name_text_rect.w = max(20, name_text_rect.w - 34)
         self._draw_input_text_left(
             surface,
             7,
             name_text,
-            layout["text"],
+            name_text_rect,
             name_color,
             shadow=False,
             caret_active=self._create_room_field_active,
             caret_index=self._create_room_caret,
+        )
+        count_color = theme.text_muted if len(self._create_room_name) < protocol.ROOM_NAME_MAX_LEN else theme.text_warn
+        count_rect = pygame.Rect(layout["field"].right - 34, layout["field"].y + 5, 30, 8)
+        self._draw_text_right(
+            surface,
+            5,
+            f"{len(self._create_room_name)}/{protocol.ROOM_NAME_MAX_LEN}",
+            count_rect,
+            count_color,
+            shadow=False,
         )
         create_color = theme.text if create_enabled else theme.text_muted
         self._draw_text_center(surface, 7, "CREATE", layout["create"], create_color)

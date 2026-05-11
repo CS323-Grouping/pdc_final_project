@@ -468,7 +468,7 @@ class Player:
         if self.double_jump_timer > 0:
             timers['Double Jump'] = self.double_jump_timer
         if self.launch_timer > 0:
-            timers['Launch'] = self.launch_timer
+            timers['Launch Boost'] = self.launch_timer
         if self.reverse_control_timer > 0:
             timers['Reverse Control'] = self.reverse_control_timer
         if self.slippery_timer > 0:

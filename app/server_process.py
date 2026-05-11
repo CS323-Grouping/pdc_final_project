@@ -8,6 +8,7 @@ through thin delegating methods on AppContext for backward compatibility.
 from __future__ import annotations
 
 import logging
+import os
 import socket
 import subprocess
 import sys
@@ -58,6 +59,7 @@ class LocalServerLauncher:
             "--discovery-port", str(self.discovery_port),
             "--room", room_name,
             "--log-level", self._log_level,
+            "--owner-pid", str(os.getpid()),
         ]
         log_dir = self._log_dir_provider()
         if log_dir is not None:

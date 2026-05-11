@@ -13,7 +13,7 @@ from player_scripts.animation import AnimationState, load_spritesheet_frames
 from player_scripts.avatar_sprite import AVATAR_RECT, compose_player_frames, make_default_avatar
 from player_scripts import player as pl
 from states.common import ScreenState
-from ui.hud import draw_ingame_status_hud
+from ui.ingame_layout import InGameLayoutRenderer, InGameNotification, RankingRow
 from ui.theme import DEFAULT_THEME
 from ui.widgets import Button, draw_button
 from world.assets import load_world_assets
@@ -34,6 +34,8 @@ from world.shapes.powerup import PowerUp, create_orb_powerups_from_platform_spec
 from player_scripts import camera
 
 LOGGER = logging.getLogger(__name__)
+
+AVATAR_FALLBACK_DELAY_SEC = 1.0
 
 
 @dataclass
@@ -67,8 +69,8 @@ class InGameState(ScreenState):
         self._remote_model_frames_cache: dict[tuple[str, str], dict[str, list[pygame.Surface]]] = {}
         self._avatar_payload: bytes | None = None
         self._avatar_id = 0
-        self._avatar_send_timer = 0.0
-        self._avatar_send_count = 0
+        self._avatar_fallback_elapsed = 0.0
+        self._avatar_fallback_sent = False
         self._paused_players: dict[int, float] = {}
         self._pause_heartbeat_elapsed = 0.0
         self._observing = False
@@ -81,6 +83,13 @@ class InGameState(ScreenState):
         self._window_hud_font: pygame.font.Font | None = None
         self._platform_send_elapsed = 0.0
         self._last_platforms_sent = -1
+        self._platforms_reached_by_id: dict[int, int] = {}
+        self._finished_player_ids: set[int] = set()
+        self._notification_queue: list[InGameNotification] = []
+        self._active_notification: InGameNotification | None = None
+        self._notification_elapsed = 0.0
+        self._ui_elapsed = 0.0
+        self._ingame_layout: InGameLayoutRenderer | None = None
 
     def enter(self):
         self.camera = camera.Camera(INTERNAL_WIDTH, INTERNAL_HEIGHT)
@@ -88,7 +97,6 @@ class InGameState(ScreenState):
         self._elimination_feed = []
         self._remote_positions = {}
         self._remote_players = {}
-        self.context.avatar_receiver.clear()
         self._remote_model_frames_cache = {}
         self._name_by_id = {pid: name for pid, _r, name in self.context.roster}
         self.world_assets = load_world_assets(self.context.project_root)
@@ -131,19 +139,26 @@ class InGameState(ScreenState):
         self._last_pos = None
         self._last_animation_state = None
         self._net_send_elapsed = 0.0
-        self._avatar_payload = self._make_avatar_payload()
-        self._avatar_id = zlib.adler32(self._avatar_payload) & 0xFFFF if self._avatar_payload else 0
-        self._avatar_send_timer = 0.0
-        self._avatar_send_count = 0
+        self._avatar_payload = None
+        self._avatar_id = 0
+        self._avatar_fallback_elapsed = 0.0
+        self._avatar_fallback_sent = False
         self._paused_players = {}
         self._pause_heartbeat_elapsed = 0.0
         self._observing = False
         self._spectate_player_id = None
         self._spectate_snap_pending = False
         self._placements_by_id = {}
+        self._platforms_reached_by_id = {}
+        self._finished_player_ids = set()
+        self._notification_queue = []
+        self._active_notification = None
+        self._notification_elapsed = 0.0
+        self._ui_elapsed = 0.0
         self.goal = Goal(level.goal_center_x, level.goal_y, width=level.goal_width)
         self._goal_reached = False
         self._window_hud_font = None
+        self._ingame_layout = InGameLayoutRenderer(self.context.project_root)
         self._platform_send_elapsed = 0.0
         self._last_platforms_sent = -1
         self._seed_remote_players_from_roster(base_start)
@@ -320,15 +335,25 @@ class InGameState(ScreenState):
                 self.context.set_status("Match resumed.", duration=2.0)
             elif isinstance(event, nw.OrbCollectEvent):
                 self._sync_orb_pickup(event.orb_index, event.cooldown_sec)
+            elif isinstance(event, nw.GoalEvent):
+                self._finished_player_ids.add(event.player_id)
+            elif isinstance(event, nw.PlatformProgressEvent):
+                self._platforms_reached_by_id[event.player_id] = max(
+                    self._platforms_reached_by_id.get(event.player_id, 0),
+                    int(event.platforms_reached),
+                )
             elif isinstance(event, nw.EliminationEvent):
                 name = self._name_by_id.get(event.player_id, f"id {event.player_id}")
                 LOGGER.info("Elimination received player_id=%s name=%s placement=%s", event.player_id, name, event.placement)
                 my_id = self.context.network.id if self.context.network else -1
-                finished_goal = event.player_id == my_id and self._goal_reached
+                finished_goal = event.player_id in self._finished_player_ids or (event.player_id == my_id and self._goal_reached)
                 if finished_goal:
                     feed_line = f"{name} finished — place {event.placement}"
+                    self._finished_player_ids.add(event.player_id)
+                    self._enqueue_ingame_notification("finished", name, event.placement)
                 else:
                     feed_line = f"{name} eliminated — place {event.placement}"
+                    self._enqueue_ingame_notification("eliminated", name, event.placement)
                 self._elimination_feed.append(feed_line)
                 self._placements_by_id[event.player_id] = event.placement
                 if event.player_id == my_id:
@@ -366,6 +391,8 @@ class InGameState(ScreenState):
                     if player_id not in active_ids:
                         self._remote_positions.pop(player_id, None)
                         self._remote_players.pop(player_id, None)
+                        self._platforms_reached_by_id.pop(player_id, None)
+                        self._finished_player_ids.discard(player_id)
                         # Keep avatar in receiver — results screen reads it from the same dict.
                         if self._spectate_player_id == player_id:
                             self._set_spectator_target(self._default_spectator_target(), snap=True)
@@ -377,13 +404,15 @@ class InGameState(ScreenState):
         net = self.context.network
         if net is None or self.hero is None:
             return
+        self._ui_elapsed += dt
+        self._tick_ingame_notifications(dt)
 
         if self._drain_network():
             return
         if self.machine.current_state is not self or self.context.network is not net or not net.is_open:
             return
 
-        self._send_avatar_if_needed(dt, net)
+        self._send_avatar_fallback_if_needed(dt, net)
 
         for powerup in self.powerups:
             powerup.update(dt)
@@ -399,6 +428,9 @@ class InGameState(ScreenState):
         self.hero.update(dt, INTERNAL_WIDTH, INTERNAL_HEIGHT, self.platforms)
 
         pr = self.hero.platforms_reached_count()
+        my_id = self.context.network.id if self.context.network else -1
+        if my_id >= 0:
+            self._platforms_reached_by_id[my_id] = max(self._platforms_reached_by_id.get(my_id, 0), pr)
         if pr != self._last_platforms_sent:
             self._platform_send_elapsed += dt
             if self._platform_send_elapsed >= 0.12:
@@ -420,7 +452,7 @@ class InGameState(ScreenState):
                     'jump': 'Jump Buff',
                     'shield': 'Shield Buff',
                     'double_jump': 'Double Jump Buff',
-                    'launch': 'Launch Buff',
+                    'launch': 'Launch Boost',
                     'reverse_control': 'Reverse Control',
                     'slippery': 'Slippery',
                     'slow_falling': 'Slow Falling',
@@ -555,6 +587,130 @@ class InGameState(ScreenState):
         else:
             self.context.set_status("Finished!", duration=2.5)
 
+    def _enqueue_ingame_notification(self, kind: str, name: str, placement: int) -> None:
+        if kind not in ("finished", "eliminated"):
+            return
+        self._notification_queue.append(
+            InGameNotification(kind=kind, name=name, placement=int(placement))
+        )
+
+    def _tick_ingame_notifications(self, dt: float) -> None:
+        if self._active_notification is None and self._notification_queue:
+            self._active_notification = self._notification_queue.pop(0)
+            self._notification_elapsed = 0.0
+        if self._active_notification is None:
+            return
+        self._notification_elapsed += dt
+        if self._notification_elapsed >= 2.5:
+            self._active_notification = None
+            self._notification_elapsed = 0.0
+
+    def _avatar_for_player(self, player_id: int | None) -> pygame.Surface | None:
+        if player_id is None:
+            return None
+        my_id = self.context.network.id if self.context.network else -1
+        if player_id == my_id:
+            return self.context.avatar_window_surface
+        return self.context.remote_avatar_surfaces.get(player_id)
+
+    def _estimated_platforms_for_position(self, position: tuple[float, float] | None) -> int:
+        if position is None:
+            return 0
+        y = float(position[1])
+        return sum(1 for platform in self.platforms if platform.rect.centery >= y)
+
+    def _platform_count_for_player(self, player_id: int, position: tuple[float, float] | None) -> int:
+        my_id = self.context.network.id if self.context.network else -1
+        if player_id == my_id and self.hero is not None:
+            position = (self.hero.pos.x, self.hero.pos.y)
+        current = self._estimated_platforms_for_position(position)
+        if current > 0:
+            return current
+        return int(self._platforms_reached_by_id.get(player_id, 0))
+
+    def _format_platform_distance(self, local_platforms: int, other_platforms: int) -> str:
+        diff = int(local_platforms) - int(other_platforms)
+        if diff > 0:
+            return f"+{diff} Platforms"
+        if diff < 0:
+            return f"{diff} Platforms"
+        return "0 Platforms"
+
+    def _ranking_rows(self) -> list[RankingRow]:
+        my_id = self.context.network.id if self.context.network else -1
+        ids = {pid for pid, _ready, _name in self.context.roster}
+        ids.update(self._name_by_id.keys())
+        ids.update(self._placements_by_id.keys())
+        if my_id >= 0:
+            ids.add(my_id)
+
+        local_position = (self.hero.pos.x, self.hero.pos.y) if self.hero is not None else None
+        local_platforms = self._platform_count_for_player(my_id, local_position) if my_id >= 0 else 0
+
+        placed_slots: list[RankingRow | None] = [None] * 5
+        live_candidates: list[tuple[int, float, int, str, int, pygame.Surface | None]] = []
+
+        for player_id in sorted(ids):
+            name = self._name_by_id.get(player_id, self.context.player_name if player_id == my_id else f"P{player_id}")
+            position = self._player_position(player_id)
+            platforms = self._platform_count_for_player(player_id, position)
+            placement = self._placements_by_id.get(player_id)
+            avatar = self._avatar_for_player(player_id)
+            if placement is not None:
+                status = "finished" if player_id in self._finished_player_ids else "eliminated"
+                distance_text = "FINISHED" if status == "finished" else ""
+                slot = int(placement) - 1
+                if 0 <= slot < len(placed_slots):
+                    placed_slots[slot] = RankingRow(
+                        player_id=player_id,
+                        rank=slot + 1,
+                        name=name,
+                        status=status,
+                        platforms_reached=platforms,
+                        distance_text=distance_text,
+                        avatar=avatar,
+                    )
+                continue
+            if position is not None:
+                y = float(position[1])
+                live_candidates.append((platforms, y, player_id, name, platforms, avatar))
+
+        live_candidates.sort(key=lambda row: (-row[0], row[1], row[3].lower()))
+        rows: list[RankingRow] = []
+        live_index = 0
+        for slot in range(5):
+            placed = placed_slots[slot]
+            if placed is not None:
+                rows.append(placed)
+                continue
+            if live_index < len(live_candidates):
+                _sort_platforms, _y, player_id, name, platforms, avatar = live_candidates[live_index]
+                live_index += 1
+                rows.append(
+                    RankingRow(
+                        player_id=player_id,
+                        rank=slot + 1,
+                        name=name,
+                        status="live",
+                        platforms_reached=platforms,
+                        distance_text="YOU" if player_id == my_id else self._format_platform_distance(local_platforms, platforms),
+                        avatar=avatar,
+                    )
+                )
+                continue
+            rows.append(
+                RankingRow(
+                    player_id=None,
+                    rank=slot + 1,
+                    name="Open Slot",
+                    status="open",
+                    platforms_reached=0,
+                    distance_text="",
+                    avatar=None,
+                )
+            )
+        return rows
+
     def _ingame_window_hud_font(self) -> pygame.font.Font:
         if self._window_hud_font is None:
             t = DEFAULT_THEME
@@ -571,15 +727,35 @@ class InGameState(ScreenState):
             net.update_player_state(self.hero.pos.x, self.hero.pos.y, self.hero.animation.state)
             self._pause_heartbeat_elapsed = 0.0
 
-    def _send_avatar_if_needed(self, dt: float, net: nw.Network):
-        if self._avatar_payload is None or self._avatar_send_count >= 5:
+    def _ensure_avatar_payload(self) -> bool:
+        if self._avatar_payload is not None:
+            return True
+        self._avatar_payload = self._make_avatar_payload()
+        self._avatar_id = zlib.adler32(self._avatar_payload) & 0xFFFF if self._avatar_payload else 0
+        return self._avatar_payload is not None
+
+    def _missing_remote_avatar_ids(self, local_player_id: int) -> list[int]:
+        return [
+            player_id
+            for player_id, _ready, _name in self.context.roster
+            if player_id != local_player_id and player_id not in self.context.remote_avatar_surfaces
+        ]
+
+    def _send_avatar_fallback_if_needed(self, dt: float, net: nw.Network):
+        if self._avatar_fallback_sent:
             return
-        self._avatar_send_timer -= dt
-        if self._avatar_send_timer > 0:
+        self._avatar_fallback_elapsed += dt
+        if self._avatar_fallback_elapsed < AVATAR_FALLBACK_DELAY_SEC:
             return
+        missing_ids = self._missing_remote_avatar_ids(net.id)
+        if not missing_ids:
+            self._avatar_fallback_sent = True
+            return
+        if not self._ensure_avatar_payload():
+            return
+        LOGGER.info("Fallback avatar send; missing remote avatars=%s", missing_ids)
         net.send_avatar(self._avatar_id, self._avatar_payload, self.context.model_type, self.context.model_color)
-        self._avatar_send_count += 1
-        self._avatar_send_timer = 1.0
+        self._avatar_fallback_sent = True
 
     def draw(self, surface):
         super().draw(surface)
@@ -605,7 +781,7 @@ class InGameState(ScreenState):
 
         for powerup in self.powerups:
             if powerup.active:
-                powerup.draw(surface, camera)
+                powerup.draw(surface, camera, self.world_assets.orb_frames if self.world_assets is not None else None)
 
         my_id = self.context.network.id if self.context.network else -1
 
@@ -642,24 +818,16 @@ class InGameState(ScreenState):
             return
 
         self.context.draw_global_messages(surface)
-        border_px = self.context.window_border_inset_px()
+        scale = display.config.selected_scale
         match_elapsed = None
         if self.context.match_start_unix_sec is not None:
             match_elapsed = max(0.0, time.time() - float(self.context.match_start_unix_sec))
-        pr_local = self.hero.platforms_reached_count()
-        draw_ingame_status_hud(
-            surface,
-            self._ingame_window_hud_font(),
-            self._elimination_feed,
-            self.hero.active_power_up_timers(),
-            DEFAULT_THEME,
-            edge_inset=border_px + 8,
-            bottom_margin=10,
-            match_elapsed_sec=match_elapsed,
-            platforms_reached=pr_local,
-        )
-
         my_id = self.context.network.id if self.context.network else -1
+        pr_local = self._platform_count_for_player(
+            my_id,
+            (self.hero.pos.x, self.hero.pos.y),
+        ) if my_id >= 0 else self.hero.platforms_reached_count()
+
         for player_id, position in self._remote_positions.items():
             if int(player_id) == my_id:
                 continue
@@ -678,7 +846,18 @@ class InGameState(ScreenState):
             if not self._observing:
                 self._draw_avatar_overlay(surface, avatar, visual_rect, self.hero.body_image)
 
-        self._draw_border_panels(surface)
+        if self._ingame_layout is not None:
+            self._ingame_layout.draw(
+                surface,
+                scale,
+                self._ranking_rows(),
+                match_elapsed,
+                self.context.room_name,
+                pr_local,
+                self.hero.active_power_up_timers(),
+                self._active_notification,
+                self._ui_elapsed,
+            )
 
         if self._observing:
             self._draw_spectator_controls(surface)

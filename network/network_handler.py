@@ -40,6 +40,7 @@ from network.protocol import (
     PROTO_VERSION,
     READY,
     ORB_COLLECT,
+    PLATFORM_PROGRESS,
     RECV_BUF,
     RECONNECT_NO,
     RECONNECT_OK,
@@ -76,12 +77,14 @@ from network.protocol import (
     safe_unpack_elim,
     safe_unpack_gend,
     safe_unpack_gstart,
+    safe_unpack_goal,
     safe_unpack_heartbeat_ack,
     safe_unpack_kicked,
     safe_unpack_list,
     safe_unpack_match_pause,
     safe_unpack_match_resume,
     safe_unpack_orb_collect,
+    safe_unpack_platform_progress,
     safe_unpack_player_state,
     safe_unpack_reconnect_no,
     safe_unpack_reconnect_ok,
@@ -105,7 +108,7 @@ def _packet_tag_name(payload: bytes) -> str:
 
 
 def _event_log_level(event: "NetworkEvent") -> int:
-    if isinstance(event, (PositionEvent, PlayerStateEvent, AvatarChunkEvent, OrbCollectEvent)):
+    if isinstance(event, (PositionEvent, PlayerStateEvent, AvatarChunkEvent, OrbCollectEvent, PlatformProgressEvent)):
         return logging.DEBUG
     if isinstance(event, ErrorEvent):
         return logging.WARNING
@@ -168,6 +171,10 @@ def _event_summary(event: "NetworkEvent") -> str:
             f"OrbCollectEvent player_id={event.player_id} orb_index={event.orb_index} "
             f"cooldown_sec={event.cooldown_sec}"
         )
+    if isinstance(event, GoalEvent):
+        return f"GoalEvent player_id={event.player_id}"
+    if isinstance(event, PlatformProgressEvent):
+        return f"PlatformProgressEvent player_id={event.player_id} platforms_reached={event.platforms_reached}"
     if isinstance(event, ConnectDeniedEvent):
         return f"ConnectDeniedEvent reason={event.reason_code} extra={event.extra}"
     if isinstance(event, ConnectionLostEvent):
@@ -218,6 +225,17 @@ class GameStartEvent:
 class EliminationEvent:
     player_id: int
     placement: int
+
+
+@dataclass(frozen=True)
+class GoalEvent:
+    player_id: int
+
+
+@dataclass(frozen=True)
+class PlatformProgressEvent:
+    player_id: int
+    platforms_reached: int
 
 
 @dataclass(frozen=True)
@@ -329,6 +347,8 @@ NetworkEvent = Union[
     CountdownCancelEvent,
     GameStartEvent,
     EliminationEvent,
+    GoalEvent,
+    PlatformProgressEvent,
     GameEndEvent,
     KickedEvent,
     PositionEvent,
@@ -897,6 +917,18 @@ class Network:
                 return ErrorEvent("Malformed ORBC packet")
             _tag, picker_id, orb_index, cooldown_sec = unpacked
             return OrbCollectEvent(player_id=picker_id, orb_index=orb_index, cooldown_sec=cooldown_sec)
+        if tag == GOAL:
+            unpacked = safe_unpack_goal(data)
+            if unpacked is None:
+                return ErrorEvent("Malformed GOAL packet")
+            _tag, player_id = unpacked
+            return GoalEvent(player_id=player_id)
+        if tag == PLATFORM_PROGRESS:
+            unpacked = safe_unpack_platform_progress(data)
+            if unpacked is None:
+                return ErrorEvent("Malformed PLAT packet")
+            _tag, player_id, platforms_reached = unpacked
+            return PlatformProgressEvent(player_id=player_id, platforms_reached=platforms_reached)
         if tag == CONNO:
             unpacked = safe_unpack_conno(data)
             if unpacked is None:

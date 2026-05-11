@@ -60,6 +60,7 @@ class MainMenuState(ScreenState):
         self._pending_scale = context.display_manager.config.selected_scale if context.display_manager else 4
         self._pending_fullscreen = context.display_manager.config.fullscreen if context.display_manager else False
         self._resolution_rects: list[tuple[pygame.Rect, int]] = []
+        self._settings_dropdown_open = False
         self._presence_entries: list[PresenceEntry] = []
         self._hovered: str | None = None
         self._browser: LobbyBrowser | None = None
@@ -216,18 +217,18 @@ class MainMenuState(ScreenState):
         surface.blit(label, label.get_rect(center=rect.center))
 
     def _settings_layout(self):
-        box = pygame.Rect(30, 28, 260, 124)
+        box = pygame.Rect(80, 12, 160, 156)
+        dropdown = pygame.Rect(box.x + 15, box.y + 32, box.w - 30, 18)
         self._resolution_rects = []
-        x = box.x + 12
-        y = box.y + 44
-        for scale in DisplayConfig.SUPPORTED_SCALES:
-            rect = pygame.Rect(x, y, 42, 16)
-            self._resolution_rects.append((rect, scale))
-            x += 47
-        fullscreen = pygame.Rect(box.x + 12, box.y + 72, 92, 16)
-        close = pygame.Rect(box.right - 104, box.bottom - 24, 44, 16)
-        apply = pygame.Rect(box.right - 56, box.bottom - 24, 44, 16)
-        return box, fullscreen, close, apply
+        if self._settings_dropdown_open:
+            option_y = dropdown.bottom
+            for index, scale in enumerate(reversed(DisplayConfig.SUPPORTED_SCALES)):
+                rect = pygame.Rect(dropdown.x, option_y + index * 11, dropdown.w, 11)
+                self._resolution_rects.append((rect, scale))
+        fullscreen = pygame.Rect(box.x + 15, box.y + 111, box.w - 30, 18)
+        apply = pygame.Rect(box.x + 18, box.bottom - 26, 56, 18)
+        close = pygame.Rect(box.right - 74, box.bottom - 26, 56, 18)
+        return box, dropdown, fullscreen, close, apply
 
     def _name_edit_layout(self) -> dict[str, pygame.Rect]:
         frame_asset = self._assets.get("name_edit_frame")
@@ -326,27 +327,36 @@ class MainMenuState(ScreenState):
                 return
 
         if self._settings_open:
-            box, fullscreen, close, apply = self._settings_layout()
+            box, dropdown, fullscreen, close, apply = self._settings_layout()
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 if not box.collidepoint(event.pos):
                     self._settings_open = False
+                    self._settings_dropdown_open = False
                     return
                 for rect, scale in self._resolution_rects:
                     if rect.collidepoint(event.pos):
                         self._pending_scale = scale
+                        self._settings_dropdown_open = False
                         return
+                if dropdown.collidepoint(event.pos):
+                    self._settings_dropdown_open = not self._settings_dropdown_open
+                    return
                 if fullscreen.collidepoint(event.pos):
+                    self._settings_dropdown_open = False
                     self._pending_fullscreen = not self._pending_fullscreen
                     return
                 if close.collidepoint(event.pos):
                     self._settings_open = False
+                    self._settings_dropdown_open = False
                     return
                 if apply.collidepoint(event.pos):
                     if self.context.apply_display_settings(self._pending_scale, self._pending_fullscreen):
                         self._settings_open = False
+                        self._settings_dropdown_open = False
                     return
             if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                 self._settings_open = False
+                self._settings_dropdown_open = False
             return
 
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
@@ -366,6 +376,7 @@ class MainMenuState(ScreenState):
                 if self.context.display_manager is not None:
                     self._pending_scale = self.context.display_manager.config.selected_scale
                     self._pending_fullscreen = self.context.display_manager.config.fullscreen
+                self._settings_dropdown_open = False
                 self._settings_open = True
                 return
 
@@ -398,8 +409,6 @@ class MainMenuState(ScreenState):
         self._draw_center_buttons(surface)
         self._draw_online_panel(surface)
 
-        if self._settings_open:
-            self._draw_settings(surface)
         if self._name_edit_open:
             self._draw_name_edit_dialog(surface)
 
@@ -476,28 +485,115 @@ class MainMenuState(ScreenState):
         return (110, 220, 140)
 
     def _draw_settings(self, surface):
-        theme = DEFAULT_THEME
-        box, fullscreen, close, apply = self._settings_layout()
+        box, dropdown, fullscreen, close, apply = self._settings_layout()
         scrim = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
         scrim.fill((8, 10, 18, 205))
         surface.blit(scrim, (0, 0))
-        pygame.draw.rect(surface, theme.bg_panel, box, border_radius=4)
-        pygame.draw.rect(surface, theme.border_focus, box, width=1, border_radius=4)
+        panel = pygame.Surface(box.size, pygame.SRCALPHA)
+        panel.fill((4, 22, 38, 245))
+        surface.blit(panel, box.topleft)
+        pygame.draw.rect(surface, (13, 39, 63), box, width=3, border_radius=4)
+        pygame.draw.rect(surface, (93, 150, 197), box, width=1, border_radius=4)
 
-        for rect, scale in self._resolution_rects:
-            selected = scale == self._pending_scale
-            fill = theme.accent if selected else theme.bg_input
-            pygame.draw.rect(surface, fill, rect, border_radius=2)
-            pygame.draw.rect(surface, theme.border, rect, width=1, border_radius=2)
+        display_group = pygame.Rect(box.x + 18, box.y + 24, box.w - 36, 86)
+        pygame.draw.rect(surface, (3, 17, 31), display_group, border_radius=3)
+        pygame.draw.rect(surface, (18, 54, 83), display_group, width=2, border_radius=3)
 
-        pygame.draw.rect(surface, theme.bg_input, fullscreen, border_radius=2)
-        pygame.draw.rect(surface, theme.border, fullscreen, width=1, border_radius=2)
+        pygame.draw.rect(surface, (2, 16, 29), dropdown, border_radius=2)
+        pygame.draw.rect(surface, (24, 67, 101), dropdown, width=2, border_radius=2)
+        arrow_box = pygame.Rect(dropdown.right - 28, dropdown.y, 28, dropdown.h)
+        pygame.draw.rect(surface, (6, 28, 47), arrow_box)
+        pygame.draw.line(surface, (24, 67, 101), arrow_box.topleft, arrow_box.bottomleft, 1)
+        tri = [
+            (arrow_box.centerx - 5, arrow_box.centery - 2),
+            (arrow_box.centerx + 5, arrow_box.centery - 2),
+            (arrow_box.centerx, arrow_box.centery + 4),
+        ]
+        pygame.draw.polygon(surface, (230, 238, 248), tri)
 
-        for rect, label, variant in ((close, "CLOSE", "neutral"), (apply, "APPLY", "primary")):
-            _ = label
-            fill = theme.accent if variant == "primary" else theme.bg_input
-            pygame.draw.rect(surface, fill, rect, border_radius=2)
-            pygame.draw.rect(surface, theme.border, rect, width=1, border_radius=2)
+        if self._settings_dropdown_open:
+            for rect, scale in self._resolution_rects:
+                selected = scale == self._pending_scale
+                fill = (6, 80, 170) if selected else (2, 17, 31)
+                pygame.draw.rect(surface, fill, rect)
+                pygame.draw.line(surface, (21, 70, 113), rect.topleft, rect.topright, 1)
+            if self._resolution_rects:
+                menu_rect = self._resolution_rects[0][0].unionall([rect for rect, _scale in self._resolution_rects])
+                pygame.draw.rect(surface, (24, 67, 101), menu_rect, width=2, border_radius=2)
+
+        pygame.draw.rect(surface, (3, 17, 31), fullscreen, border_radius=3)
+        pygame.draw.rect(surface, (18, 54, 83), fullscreen, width=2, border_radius=3)
+        toggle = pygame.Rect(fullscreen.right - 54, fullscreen.y + 4, 46, fullscreen.h - 8)
+        pygame.draw.rect(surface, (7, 88, 185) if self._pending_fullscreen else (64, 68, 74), toggle, border_radius=3)
+        pygame.draw.rect(surface, (86, 151, 255), toggle, width=1, border_radius=3)
+        knob_x = toggle.right - 14 if self._pending_fullscreen else toggle.x + 2
+        pygame.draw.rect(surface, (232, 236, 238), pygame.Rect(knob_x, toggle.y + 2, 12, toggle.h - 4), border_radius=3)
+
+        for rect, variant in ((apply, "primary"), (close, "neutral")):
+            fill = (10, 87, 190) if variant == "primary" else (80, 80, 80)
+            pygame.draw.rect(surface, fill, rect, border_radius=3)
+            pygame.draw.rect(surface, (108, 164, 255) if variant == "primary" else (150, 150, 150), rect, width=2, border_radius=3)
+
+    def _draw_window_settings_panel(self, surface: pygame.Surface):
+        box, dropdown, fullscreen, close, apply = self._settings_layout()
+        scale = self._window_scale()
+        box_w = self._scale_rect(box)
+        dropdown_w = self._scale_rect(dropdown)
+        fullscreen_w = self._scale_rect(fullscreen)
+        close_w = self._scale_rect(close)
+        apply_w = self._scale_rect(apply)
+
+        scrim = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+        scrim.fill((8, 10, 18, 205))
+        surface.blit(scrim, (0, 0))
+
+        panel = pygame.Surface(box_w.size, pygame.SRCALPHA)
+        panel.fill((4, 22, 38, 245))
+        surface.blit(panel, box_w.topleft)
+        pygame.draw.rect(surface, (13, 39, 63), box_w, width=max(2, 3 * scale), border_radius=4 * scale)
+        pygame.draw.rect(surface, (93, 150, 197), box_w, width=max(1, scale), border_radius=4 * scale)
+
+        display_group = self._scale_rect(pygame.Rect(box.x + 10, box.y + 24, box.w - 20, 84))
+        pygame.draw.rect(surface, (3, 17, 31), display_group, border_radius=3 * scale)
+        pygame.draw.rect(surface, (18, 54, 83), display_group, width=max(1, 2 * scale), border_radius=3 * scale)
+
+        pygame.draw.rect(surface, (2, 16, 29), dropdown_w, border_radius=2 * scale)
+        pygame.draw.rect(surface, (24, 67, 101), dropdown_w, width=max(1, 2 * scale), border_radius=2 * scale)
+        arrow_box = pygame.Rect(dropdown_w.right - 28 * scale, dropdown_w.y, 28 * scale, dropdown_w.h)
+        pygame.draw.rect(surface, (6, 28, 47), arrow_box)
+        pygame.draw.line(surface, (24, 67, 101), arrow_box.topleft, arrow_box.bottomleft, max(1, scale))
+        tri = [
+            (arrow_box.centerx - 5 * scale, arrow_box.centery - 2 * scale),
+            (arrow_box.centerx + 5 * scale, arrow_box.centery - 2 * scale),
+            (arrow_box.centerx, arrow_box.centery + 4 * scale),
+        ]
+        pygame.draw.polygon(surface, (230, 238, 248), tri)
+
+        if self._settings_dropdown_open:
+            option_rects = []
+            for rect, option_scale in self._resolution_rects:
+                rect_w = self._scale_rect(rect)
+                option_rects.append(rect_w)
+                selected = option_scale == self._pending_scale
+                fill = (6, 80, 170) if selected else (2, 17, 31)
+                pygame.draw.rect(surface, fill, rect_w)
+                pygame.draw.line(surface, (21, 70, 113), rect_w.topleft, rect_w.topright, max(1, scale))
+            if option_rects:
+                menu_rect = option_rects[0].unionall(option_rects)
+                pygame.draw.rect(surface, (24, 67, 101), menu_rect, width=max(1, 2 * scale), border_radius=2 * scale)
+
+        pygame.draw.rect(surface, (3, 17, 31), fullscreen_w, border_radius=3 * scale)
+        pygame.draw.rect(surface, (18, 54, 83), fullscreen_w, width=max(1, 2 * scale), border_radius=3 * scale)
+        toggle = pygame.Rect(fullscreen_w.right - 46 * scale, fullscreen_w.y + 4 * scale, 40 * scale, fullscreen_w.h - 8 * scale)
+        pygame.draw.rect(surface, (7, 88, 185) if self._pending_fullscreen else (64, 68, 74), toggle, border_radius=3 * scale)
+        pygame.draw.rect(surface, (86, 151, 255), toggle, width=max(1, scale), border_radius=3 * scale)
+        knob_x = toggle.right - 12 * scale if self._pending_fullscreen else toggle.x + 2 * scale
+        pygame.draw.rect(surface, (232, 236, 238), pygame.Rect(knob_x, toggle.y + 2 * scale, 10 * scale, toggle.h - 4 * scale), border_radius=3 * scale)
+
+        for rect, variant in ((apply_w, "primary"), (close_w, "neutral")):
+            fill = (10, 87, 190) if variant == "primary" else (80, 80, 80)
+            pygame.draw.rect(surface, fill, rect, border_radius=3 * scale)
+            pygame.draw.rect(surface, (108, 164, 255) if variant == "primary" else (150, 150, 150), rect, width=max(1, 2 * scale), border_radius=3 * scale)
 
     def _draw_dialog_asset(self, surface: pygame.Surface, key: str, rect: pygame.Rect):
         asset = self._assets.get(key)
@@ -529,6 +625,7 @@ class MainMenuState(ScreenState):
 
     def draw_window_overlay(self, surface: pygame.Surface):
         if self._settings_open:
+            self._draw_window_settings_panel(surface)
             self._draw_window_settings_text(surface)
             self._draw_window_global_messages(surface)
             return
@@ -585,21 +682,19 @@ class MainMenuState(ScreenState):
             self._draw_window_text_center(surface, 7, status, pygame.Rect(rect.x + 3, rect.y + 13, rect.w - 6, 8), color, shadow=False)
 
     def _draw_window_settings_text(self, surface: pygame.Surface):
-        theme = DEFAULT_THEME
-        box, fullscreen, close, apply = self._settings_layout()
-        self._draw_window_text_center(surface, 8, "DISPLAY SETTINGS", pygame.Rect(box.x + 10, box.y + 10, box.w - 20, 12), theme.text, shadow=False)
-        current = self.context.display_manager.config if self.context.display_manager else None
-        current_text = "Current: "
-        if current is not None:
-            current_text += f"{RESOLUTION_LABELS[current.selected_scale]} {'Full' if current.fullscreen else 'Window'}"
-        else:
-            current_text += "Window"
-        self._draw_window_text_center(surface, 7, current_text, pygame.Rect(box.x + 10, box.y + 25, box.w - 20, 10), theme.text_muted, shadow=False)
+        box, dropdown, fullscreen, close, apply = self._settings_layout()
+        text = (207, 229, 250)
+        muted = (154, 185, 214)
+        self._draw_window_text_center(surface, 12, "SETTINGS", pygame.Rect(box.x + 10, box.y + 9, box.w - 20, 14), text, shadow=False)
+        self._draw_window_text_left(surface, 7, "DISPLAY SETTINGS", pygame.Rect(box.x + 28, box.y + 25, box.w - 56, 10), text, shadow=False)
+        self._draw_window_text_left(surface, 7, RESOLUTION_LABELS[self._pending_scale], pygame.Rect(dropdown.x + 8, dropdown.y + 2, dropdown.w - 38, dropdown.h - 4), text, shadow=False)
         for rect, scale in self._resolution_rects:
-            self._draw_window_text_center(surface, 7, str(scale) + "x", rect, theme.text, shadow=False)
-        self._draw_window_text_center(surface, 7, f"Fullscreen {'ON' if self._pending_fullscreen else 'OFF'}", fullscreen, theme.text, shadow=False)
-        self._draw_window_text_center(surface, 7, "CLOSE", close, theme.text, shadow=False)
-        self._draw_window_text_center(surface, 7, "APPLY", apply, theme.text, shadow=False)
+            color = text if scale == self._pending_scale else muted
+            self._draw_window_text_left(surface, 6, RESOLUTION_LABELS[scale], pygame.Rect(rect.x + 8, rect.y, rect.w - 12, rect.h), color, shadow=False)
+        self._draw_window_text_left(surface, 7, "FULLSCREEN", pygame.Rect(fullscreen.x + 12, fullscreen.y + 5, 100, 12), text, shadow=False)
+        self._draw_window_text_center(surface, 7, "ON" if self._pending_fullscreen else "OFF", pygame.Rect(fullscreen.right - 54, fullscreen.y + 4, 28, fullscreen.h - 8), text, shadow=False)
+        self._draw_window_text_center(surface, 9, "APPLY", apply, (248, 250, 255), shadow=True)
+        self._draw_window_text_center(surface, 9, "CLOSE", close, (220, 226, 236), shadow=True)
 
     def _draw_window_text_left(
         self,

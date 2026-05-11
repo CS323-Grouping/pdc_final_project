@@ -13,7 +13,7 @@ from ui.widgets import truncate_text_to_px
 
 # Classify power-up labels for tint (until final UI art lands).
 _EFFECT_BUFF_LABELS = frozenset(
-    {"Speed Buff", "Jump Buff", "Shield Aura", "Double Jump", "Launch"},
+    {"Speed Buff", "Jump Buff", "Shield Aura", "Double Jump", "Launch Boost"},
 )
 _EFFECT_DEBUFF_LABELS = frozenset(
     {"Reverse Control", "Slippery", "Slow Falling", "Heavy", "Weak Jump"},
