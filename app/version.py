@@ -72,7 +72,7 @@ def windows_file_version_quad() -> tuple[int, int, int, int]:
     Four nonnegative ints for Windows FILEVERSION / PRODUCTVERSION (16 bits each).
 
     Maps (major, minor, patch, build). If BUILD_NUMBER ever exceeds 65535,
-    clamp or remap in TowerJumpLAN.spec when generating a VSVersionInfo file.
+    clamp or remap in SkywardRaceLAN.spec when generating a VSVersionInfo file.
     """
 
     return (VERSION_MAJOR, VERSION_MINOR, VERSION_PATCH, min(BUILD_NUMBER, 65535))
