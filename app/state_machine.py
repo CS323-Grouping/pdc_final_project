@@ -1,10 +1,13 @@
 from dataclasses import dataclass
+import json
 import logging
 from pathlib import Path
 import queue
 import secrets
 import string
 import subprocess
+import tempfile
+import time
 from typing import Dict, Optional, Type
 
 import pygame
@@ -34,6 +37,8 @@ from states.results import ResultsState
 LOGGER = logging.getLogger(__name__)
 MAX_FRAME_DT = 1.0 / 30.0
 RANDOM_PLAYER_NAME_CHARS = string.ascii_uppercase + string.digits
+RECONNECT_TICKET_FILENAME = "reconnect_ticket.json"
+RECONNECT_TICKET_LOCAL_TTL_SECONDS = max(45.0, protocol.RECONNECT_GRACE_SECONDS + 15.0)
 
 
 def random_player_name(length: int = protocol.PLAYER_NAME_MAX_LEN) -> str:
@@ -50,6 +55,10 @@ class ReconnectTicket:
     session_token: int
     player_name: str
     is_host: bool
+    match_id: int = 0
+    countdown_id: int = 0
+    created_at_unix: int = 0
+    expires_at_unix: int = 0
 
 
 PRESENCE_BY_STATE = {
@@ -103,6 +112,9 @@ class AppContext:
     last_countdown_id: int = 0
     current_match_id: int = 0
     last_results_match_id: int = 0
+    last_server_state: int = protocol.STATE_LOBBY
+    last_heartbeat_ack_monotonic: float = 0.0
+    local_player_alive: bool = True
     match_start_unix_sec: int | None = None
     mouse_pos: tuple[int, int] = (0, 0)
     presence_instance_id: int = 0
@@ -224,6 +236,7 @@ class AppContext:
                 self.use_default_head(save=False)
         else:
             self.use_default_head(save=False)
+        self._load_persisted_reconnect_ticket()
 
     def set_model_color(self, model_color: str, save: bool = True):
         self.model_color = protocol.normalize_model_color(model_color)
@@ -295,6 +308,136 @@ class AppContext:
     def server_process(self) -> Optional[subprocess.Popen]:
         return self.server.process if self.server is not None else None
 
+    def _reconnect_ticket_path(self) -> Optional[Path]:
+        if self.profile_session is None:
+            return None
+        return self.profile_session.profile_dir / RECONNECT_TICKET_FILENAME
+
+    def _persist_reconnect_ticket(self, reason: str) -> None:
+        ticket = self.reconnect_ticket
+        path = self._reconnect_ticket_path()
+        if ticket is None or path is None:
+            return
+        payload = {
+            "addr": ticket.addr,
+            "port": int(ticket.port),
+            "room_name": ticket.room_name,
+            "player_id": int(ticket.player_id),
+            "session_token": int(ticket.session_token) & protocol.UINT32_MAX,
+            "player_name": ticket.player_name,
+            "is_host": bool(ticket.is_host),
+            "match_id": int(ticket.match_id) & protocol.UINT32_MAX,
+            "countdown_id": int(ticket.countdown_id) & protocol.UINT32_MAX,
+            "created_at_unix": int(ticket.created_at_unix),
+            "expires_at_unix": int(ticket.expires_at_unix),
+        }
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as tmp:
+                json.dump(payload, tmp, indent=2)
+                tmp.write("\n")
+                tmp_path = Path(tmp.name)
+            tmp_path.replace(path)
+        except OSError as error:
+            LOGGER.warning("Failed persisting reconnect ticket path=%s reason=%s error=%s", path, reason, error)
+            return
+        LOGGER.info(
+            "Reconnect ticket persisted reason=%s room=%s addr=%s:%s player_id=%s expires_at=%s",
+            reason,
+            ticket.room_name,
+            ticket.addr,
+            ticket.port,
+            ticket.player_id,
+            ticket.expires_at_unix,
+        )
+
+    def clear_reconnect_ticket(self, reason: str, clear_persisted: bool = True) -> None:
+        had_ticket = self.reconnect_ticket is not None
+        self.reconnect_ticket = None
+        path = self._reconnect_ticket_path()
+        if clear_persisted and path is not None and path.exists():
+            try:
+                path.unlink(missing_ok=True)
+                LOGGER.info("Reconnect ticket cleared reason=%s persisted=true", reason)
+            except OSError as error:
+                LOGGER.warning("Failed clearing reconnect ticket path=%s reason=%s error=%s", path, reason, error)
+        elif had_ticket:
+            LOGGER.info("Reconnect ticket cleared reason=%s persisted=false", reason)
+
+    def _load_persisted_reconnect_ticket(self) -> None:
+        path = self._reconnect_ticket_path()
+        if path is None or not path.exists():
+            return
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            LOGGER.warning("Failed reading reconnect ticket %s: %s", path, error)
+            path.unlink(missing_ok=True)
+            return
+        if not isinstance(raw, dict):
+            path.unlink(missing_ok=True)
+            return
+        try:
+            addr = str(raw["addr"]).strip()
+            port = int(raw["port"])
+            room_name = str(raw.get("room_name", "")).strip()
+            player_id = int(raw["player_id"])
+            session_token = int(raw["session_token"]) & protocol.UINT32_MAX
+            player_name = str(raw["player_name"]).strip()
+            is_host = bool(raw.get("is_host", False))
+            match_id = int(raw.get("match_id", 0)) & protocol.UINT32_MAX
+            countdown_id = int(raw.get("countdown_id", 0)) & protocol.UINT32_MAX
+            created_at_unix = int(raw.get("created_at_unix", 0))
+            expires_at_unix = int(raw.get("expires_at_unix", 0))
+        except (KeyError, TypeError, ValueError) as error:
+            LOGGER.warning("Invalid reconnect ticket payload %s: %s", path, error)
+            path.unlink(missing_ok=True)
+            return
+
+        now = int(time.time())
+        if not addr or port <= 0 or port > 65535 or player_id < 0 or session_token == 0:
+            path.unlink(missing_ok=True)
+            return
+        if not protocol.is_valid_player_name(player_name):
+            path.unlink(missing_ok=True)
+            return
+        if expires_at_unix != 0 and now > expires_at_unix:
+            LOGGER.info("Reconnect ticket expired locally; removing persisted ticket room=%s", room_name or "<unknown>")
+            path.unlink(missing_ok=True)
+            return
+        self.reconnect_ticket = ReconnectTicket(
+            addr=addr,
+            port=port,
+            room_name=room_name,
+            player_id=player_id,
+            session_token=session_token,
+            player_name=player_name,
+            is_host=is_host,
+            match_id=match_id,
+            countdown_id=countdown_id,
+            created_at_unix=created_at_unix,
+            expires_at_unix=expires_at_unix,
+        )
+        LOGGER.info(
+            "Reconnect ticket loaded room=%s addr=%s:%s player_id=%s expires_in=%ss",
+            room_name,
+            addr,
+            port,
+            player_id,
+            max(0, expires_at_unix - now) if expires_at_unix else -1,
+        )
+
+    def _should_preserve_reconnect_on_shutdown(self) -> bool:
+        if self.network is None or self.is_host:
+            return False
+        state = getattr(self.network, "client_state", protocol.CLIENT_STATE_LOBBY)
+        if state not in (protocol.CLIENT_STATE_IN_GAME, protocol.CLIENT_STATE_SPECTATING):
+            return False
+        if not self.local_player_alive:
+            return False
+        match_id = max(self.current_match_id, getattr(self.network, "current_match_id", 0))
+        return match_id > 0 and match_id > self.last_results_match_id
+
     def attach_network(self, network_obj: nw.Network, is_host: bool, room_name: str, start_pos):
         self.detach_network(send_disconnect=False)
         self.network = network_obj
@@ -309,8 +452,11 @@ class AppContext:
         self.last_countdown_id = 0
         self.current_match_id = 0
         self.last_results_match_id = 0
+        self.last_server_state = protocol.STATE_LOBBY
+        self.last_heartbeat_ack_monotonic = 0.0
+        self.local_player_alive = True
         self.results_standings = []
-        self.remember_reconnect_ticket()
+        self.remember_reconnect_ticket(persist=not is_host, reason="attach_network")
         self.network.start_receiver()
         LOGGER.info(
             "Attached network player_id=%s host=%s room=%s addr=%s start_pos=%s",
@@ -321,7 +467,7 @@ class AppContext:
             self.start_pos,
         )
 
-    def remember_reconnect_ticket(self):
+    def remember_reconnect_ticket(self, persist: bool = False, reason: str = "update") -> None:
         if self.network is None:
             return
         if self.network.id < 0 or self.network.session_token == 0:
@@ -329,6 +475,8 @@ class AppContext:
         addr, port = self.network.addr
         if not addr or port <= 0:
             return
+        now = int(time.time())
+        match_id = max(self.current_match_id, getattr(self.network, "current_match_id", 0))
         self.reconnect_ticket = ReconnectTicket(
             addr=addr,
             port=port,
@@ -337,12 +485,29 @@ class AppContext:
             session_token=self.network.session_token,
             player_name=self.player_name,
             is_host=self.is_host,
+            match_id=match_id,
+            countdown_id=max(self.active_countdown_id, getattr(self.network, "current_countdown_id", 0)),
+            created_at_unix=now,
+            expires_at_unix=now + int(RECONNECT_TICKET_LOCAL_TTL_SECONDS),
         )
+        LOGGER.info(
+            "Reconnect ticket updated reason=%s room=%s addr=%s:%s player_id=%s match_id=%s",
+            reason,
+            self.room_name,
+            addr,
+            port,
+            self.network.id,
+            match_id,
+        )
+        if persist:
+            self._persist_reconnect_ticket(reason)
 
     def reset_lobby_after_game(self):
         self.countdown_remaining = None
         self.roster = [(player_id, False, name) for player_id, _ready, name in self.roster]
         self.match_start_unix_sec = None
+        self.local_player_alive = True
+        self.clear_reconnect_ticket("match_completed")
 
     def detach_network(self, send_disconnect: bool = True, preserve_reconnect: bool = False):
         if self.network is None:
@@ -350,7 +515,7 @@ class AppContext:
             self.roster = []
             self.countdown_remaining = None
             if not preserve_reconnect:
-                self.reconnect_ticket = None
+                self.clear_reconnect_ticket("detach_without_network")
             return
         try:
             if send_disconnect:
@@ -364,7 +529,7 @@ class AppContext:
             self.roster = []
             self.countdown_remaining = None
             if not preserve_reconnect:
-                self.reconnect_ticket = None
+                self.clear_reconnect_ticket("detach_network")
 
     def drain_network_events(self):
         if self.network is None:
@@ -383,9 +548,13 @@ class AppContext:
         self.stop_presence()
         if self.is_host and self.network is not None:
             LOGGER.info("Host shutdown: sending close room")
+            self.clear_reconnect_ticket("host_shutdown")
             self.network.close_room()
             self.wait_for_server_exit(timeout=0.75)
             self.detach_network(send_disconnect=False)
+        elif self.network is not None and self._should_preserve_reconnect_on_shutdown():
+            self.remember_reconnect_ticket(persist=True, reason="shutdown_active_match")
+            self.detach_network(send_disconnect=True, preserve_reconnect=True)
         else:
             self.detach_network(send_disconnect=True)
         self.stop_server()

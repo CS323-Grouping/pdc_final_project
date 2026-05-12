@@ -74,6 +74,9 @@ class InGameState(ScreenState):
         self._paused_players: dict[int, float] = {}
         self._pause_heartbeat_elapsed = 0.0
         self._observing = False
+        self._finish_pending = False
+        self._death_pending = False
+        self._active_match_id = 0
         self._spectate_player_id: int | None = None
         self._spectate_snap_pending = False
         self._placements_by_id: dict[int, int] = {}
@@ -90,6 +93,7 @@ class InGameState(ScreenState):
         self._notification_elapsed = 0.0
         self._ui_elapsed = 0.0
         self._ingame_layout: InGameLayoutRenderer | None = None
+        self._status_notice_cooldown = 0.0
 
     def enter(self):
         self.camera = camera.Camera(INTERNAL_WIDTH, INTERNAL_HEIGHT)
@@ -146,6 +150,9 @@ class InGameState(ScreenState):
         self._paused_players = {}
         self._pause_heartbeat_elapsed = 0.0
         self._observing = False
+        self._finish_pending = False
+        self._death_pending = False
+        self._active_match_id = max(self.context.current_match_id, self.context.network.current_match_id if self.context.network else 0)
         self._spectate_player_id = None
         self._spectate_snap_pending = False
         self._placements_by_id = {}
@@ -155,6 +162,7 @@ class InGameState(ScreenState):
         self._active_notification = None
         self._notification_elapsed = 0.0
         self._ui_elapsed = 0.0
+        self._status_notice_cooldown = 0.0
         self.goal = Goal(level.goal_center_x, level.goal_y, width=level.goal_width)
         self._goal_reached = False
         self._window_hud_font = None
@@ -163,6 +171,12 @@ class InGameState(ScreenState):
         self._last_platforms_sent = -1
         self._seed_remote_players_from_roster(base_start)
         self._send_initial_player_state()
+        if not self.context.local_player_alive:
+            self._observing = True
+            self._dead_sent = True
+            if self.context.network is not None:
+                self.context.network.set_client_state(protocol.CLIENT_STATE_SPECTATING)
+            self._set_spectator_target(self._default_spectator_target(), snap=True)
 
     def handle_event(self, event):
         super().handle_event(event)
@@ -337,6 +351,8 @@ class InGameState(ScreenState):
                 self._sync_orb_pickup(event.orb_index, event.cooldown_sec)
             elif isinstance(event, nw.GoalEvent):
                 self._finished_player_ids.add(event.player_id)
+                if event.player_id == (self.context.network.id if self.context.network else -1):
+                    self._finish_pending = False
             elif isinstance(event, nw.PlatformProgressEvent):
                 self._platforms_reached_by_id[event.player_id] = max(
                     self._platforms_reached_by_id.get(event.player_id, 0),
@@ -357,6 +373,9 @@ class InGameState(ScreenState):
                 self._elimination_feed.append(feed_line)
                 self._placements_by_id[event.player_id] = event.placement
                 if event.player_id == my_id:
+                    self._finish_pending = False
+                    self._death_pending = False
+                    self.context.local_player_alive = False
                     self._observing = True
                     self._dead_sent = True
                     if self.context.network is not None:
@@ -375,9 +394,35 @@ class InGameState(ScreenState):
                     if self._spectate_player_id == event.player_id:
                         self._set_spectator_target(self._default_spectator_target(), snap=True)
                 self._paused_players.pop(event.player_id, None)
+            elif isinstance(event, nw.ReconnectSnapshotEvent):
+                self.context.room_name = event.room_name
+                self.context.selected_level = protocol.normalize_level_id(event.selected_level)
+                self.context.level_seed = int(event.level_seed) & protocol.UINT32_MAX
+                wall = int(event.match_start_unix_sec) & protocol.UINT32_MAX
+                self.context.match_start_unix_sec = wall if wall != 0 else int(time.time())
+                self.context.current_match_id = max(self.context.current_match_id, event.match_id)
+                self._active_match_id = max(self._active_match_id, event.match_id)
+                self.context.active_countdown_id = max(self.context.active_countdown_id, event.countdown_id)
+                self.context.start_pos = (event.x, event.y)
+                self.context.local_player_alive = bool(event.alive)
+                if self.hero is not None:
+                    self.hero.pos.x = event.x
+                    self.hero.pos.y = event.y
+                    self.hero.rect.center = (int(round(event.x)), int(round(event.y)))
+                if event.room_state == protocol.STATE_LOBBY:
+                    self.switch("host_lobby" if self.context.is_host else "joined_lobby")
+                    return True
+                if not event.alive:
+                    self._observing = True
+                    self._dead_sent = True
+                    if self.context.network is not None:
+                        self.context.network.set_client_state(protocol.CLIENT_STATE_SPECTATING)
+                    self._set_spectator_target(self._default_spectator_target(), snap=True)
             elif isinstance(event, nw.GameEndEvent):
                 if not self.accept_game_end_event(event):
                     continue
+                self._finish_pending = False
+                self._death_pending = False
                 LOGGER.info("Game end received reason=%s standings=%s", event.reason_code, event.standings)
                 self.context.reset_lobby_after_game()
                 self.context.results_standings = list(event.standings)
@@ -398,6 +443,16 @@ class InGameState(ScreenState):
                             self._set_spectator_target(self._default_spectator_target(), snap=True)
                 for pid, _ready, name in event.entries:
                     self._name_by_id[pid] = name
+                    my_id = self.context.network.id if self.context.network else -1
+                    if pid == my_id or pid in self._placements_by_id:
+                        continue
+                    if pid not in self._remote_players:
+                        position = self._remote_positions.get(
+                            pid,
+                            self._spawn_position_for_player(pid, self.context.start_pos),
+                        )
+                        self._remote_positions[pid] = position
+                        self._get_remote_player(pid, position)
         return False
 
     def update(self, dt: float):
@@ -405,11 +460,14 @@ class InGameState(ScreenState):
         if net is None or self.hero is None:
             return
         self._ui_elapsed += dt
+        self._status_notice_cooldown = max(0.0, self._status_notice_cooldown - dt)
         self._tick_ingame_notifications(dt)
 
         if self._drain_network():
             return
         if self.machine.current_state is not self or self.context.network is not net or not net.is_open:
+            return
+        if self._reconcile_heartbeat_authority(net):
             return
 
         self._send_avatar_fallback_if_needed(dt, net)
@@ -423,6 +481,15 @@ class InGameState(ScreenState):
 
         if self._observing:
             self._tick_observer(dt)
+            return
+
+        if self._finish_pending or self._death_pending:
+            for remote in self._remote_players.values():
+                remote.animation.update(dt)
+            if self.goal is not None:
+                self.goal.update(dt)
+            if self.hero and self.camera:
+                self.camera.update(self.hero)
             return
 
         self.hero.update(dt, INTERNAL_WIDTH, INTERNAL_HEIGHT, self.platforms)
@@ -473,20 +540,25 @@ class InGameState(ScreenState):
 
         if not self._dead_sent and self.camera.has_fallen_below(self.hero):
             self._dead_sent = True
-            LOGGER.info("Local player fell below camera; sending DEAD")
+            self._death_pending = True
+            self.context.local_player_alive = False
+            LOGGER.info("Local player fell below camera; sending DEAD (pending server confirmation)")
             net.send_dead()
+            self.context.set_status("Death pending server confirmation...", duration=2.0)
 
         if (
             not self._goal_reached
             and not self._dead_sent
+            and not self._finish_pending
             and self.goal is not None
             and self.hero.rect.colliderect(self.goal.rect)
         ):
             self._goal_reached = True
-            self._observing = True
-            self._set_spectator_target(self._default_spectator_target(), snap=True)
-            LOGGER.info("Local player reached goal; sending GOAL and observing")
+            self._finish_pending = True
+            self.context.local_player_alive = False
+            LOGGER.info("Local player reached goal; sending GOAL (pending server confirmation)")
             net.send_goal()
+            self.context.set_status("Finish pending server confirmation...", duration=2.0)
 
         current_state = self.hero.animation.state
         self._net_send_elapsed += dt
@@ -500,6 +572,40 @@ class InGameState(ScreenState):
             self._last_pos = self.hero.pos.copy()
             self._last_animation_state = current_state
             self._net_send_elapsed = 0.0
+
+    def _notify_status_once(self, message: str, duration: float = 2.0, cooldown: float = 1.5) -> None:
+        if self._status_notice_cooldown > 0.0:
+            return
+        self._status_notice_cooldown = cooldown
+        self.context.set_status(message, duration=duration)
+
+    def _reconcile_heartbeat_authority(self, net: nw.Network) -> bool:
+        now = time.monotonic()
+        last_ack = float(getattr(self.context, "last_heartbeat_ack_monotonic", 0.0) or 0.0)
+        if last_ack <= 0.0:
+            return False
+        if last_ack > 0.0 and (now - last_ack) >= max(3.0, protocol.HEARTBEAT_INTERVAL_SECONDS * 3.5):
+            self._notify_status_once("Reconnecting to server...", duration=2.0)
+            return True
+
+        server_state = int(getattr(self.context, "last_server_state", protocol.STATE_IN_GAME))
+        if server_state == protocol.STATE_PAUSED and not self._paused_players:
+            self._notify_status_once("Server paused the match. Waiting for reconnect...", duration=2.2)
+            return True
+
+        if server_state == protocol.STATE_LOBBY:
+            if self.context.results_standings:
+                self.switch("results")
+            else:
+                self._notify_status_once("Match ended on server. Returning to lobby...", duration=2.5, cooldown=2.5)
+                self.switch("host_lobby" if self.context.is_host else "joined_lobby")
+            return True
+
+        server_match_id = max(self.context.current_match_id, net.current_match_id)
+        if self._active_match_id != 0 and server_match_id > self._active_match_id:
+            self._notify_status_once("Server advanced to a newer match. Waiting for resync...", duration=2.5)
+            return True
+        return False
 
     def _tick_observer(self, dt: float):
         for remote in self._remote_players.values():
@@ -559,6 +665,13 @@ class InGameState(ScreenState):
         alive_ids = self._alive_spectator_ids()
         if not alive_ids:
             self._set_spectator_target(None, snap=True)
+            server_state = int(getattr(self.context, "last_server_state", protocol.STATE_IN_GAME))
+            if server_state == protocol.STATE_PAUSED:
+                self._notify_status_once("Waiting for reconnecting players...", duration=2.0)
+            elif server_state == protocol.STATE_IN_GAME:
+                self._notify_status_once("Waiting for server result...", duration=2.0)
+            else:
+                self._notify_status_once("Waiting for authoritative match state...", duration=2.0)
         elif self._spectate_player_id not in alive_ids:
             self._set_spectator_target(self._default_spectator_target(), snap=True)
         if self._spectate_player_id is not None:

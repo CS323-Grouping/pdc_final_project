@@ -167,18 +167,29 @@ class BrowseLobbyState(ScreenState):
     def _can_reconnect(self, room) -> bool:
         if room.state not in (protocol.STATE_IN_GAME, protocol.STATE_PAUSED):
             return False
+        if self._matching_reconnect_ticket(room) is not None:
+            return True
+        return bool(getattr(self.context, "player_name", "").strip())
+
+    def _matching_reconnect_ticket(self, room):
         ticket = self.context.reconnect_ticket
         if ticket is None:
-            return False
+            return None
+        expires_at = int(getattr(ticket, "expires_at_unix", 0) or 0)
+        if expires_at and int(time.time()) > expires_at:
+            clear = getattr(self.context, "clear_reconnect_ticket", None)
+            if callable(clear):
+                clear("ticket_expired_in_browser")
+            return None
         if ticket.addr != room.addr or ticket.port != room.game_port:
-            return False
+            return None
         if ticket.room_name and ticket.room_name != room.room_name:
-            return False
-        return True
+            return None
+        return ticket
 
     def _status_label(self, room, reconnectable: bool = False) -> str:
         if reconnectable:
-            return "RECONNECT"
+            return "RECONNECT" if self._matching_reconnect_ticket(room) is not None else "TRY RECONNECT"
         if room.state == protocol.STATE_PAUSED:
             return "PAUSED"
         if room.state == protocol.STATE_COUNTDOWN:
@@ -210,9 +221,13 @@ class BrowseLobbyState(ScreenState):
         return True
 
     def _reconnect_room(self, room):
-        ticket = self.context.reconnect_ticket
+        ticket = self._matching_reconnect_ticket(room)
         net = nw.Network()
         if ticket is None:
+            if not self.context.player_name.strip():
+                self.context.set_status("Reconnect requires your player name.", duration=3.0)
+                net.close()
+                return
             result = net.reconnect_to_room(room.addr, room.game_port, -1, 0, self.context.player_name)
             is_host = False
         else:
@@ -223,9 +238,27 @@ class BrowseLobbyState(ScreenState):
                 ticket.session_token,
                 ticket.player_name,
             )
-            is_host = ticket.is_host
+            is_host = bool(getattr(ticket, "is_host", False))
         if not result.ok:
-            self.context.set_status("Reconnect failed. Use the same name before the slot expires.", duration=4.0)
+            reason = result.reason_code
+            if reason == protocol.RECONNECT_DENY_EXPIRED:
+                self.context.set_status("Reconnect expired. The reserved slot timed out.", duration=4.0)
+            elif reason == protocol.RECONNECT_DENY_BAD_TOKEN:
+                self.context.set_status("Reconnect denied. Session token no longer matches.", duration=4.0)
+            elif reason == protocol.RECONNECT_DENY_AMBIGUOUS_NAME:
+                self.context.set_status("Reconnect denied. Multiple matching names are disconnected.", duration=4.0)
+            elif reason == protocol.RECONNECT_DENY_NO_SLOT:
+                self.context.set_status("Reconnect failed. No matching reconnect slot found.", duration=4.0)
+            else:
+                self.context.set_status("Reconnect failed. Use the same name before the slot expires.", duration=4.0)
+            if reason in (
+                protocol.RECONNECT_DENY_EXPIRED,
+                protocol.RECONNECT_DENY_NO_SLOT,
+                protocol.RECONNECT_DENY_BAD_TOKEN,
+            ):
+                clear = getattr(self.context, "clear_reconnect_ticket", None)
+                if callable(clear):
+                    clear("reconnect_denied")
             net.close()
             return
 
@@ -235,6 +268,20 @@ class BrowseLobbyState(ScreenState):
             room_name=result.room_name,
             start_pos=result.start_pos,
         )
+        snapshot = result.reconnect_snapshot
+        if snapshot is not None:
+            self.context.room_name = snapshot.room_name or self.context.room_name
+            self.context.selected_level = protocol.normalize_level_id(snapshot.selected_level)
+            self.context.level_seed = int(snapshot.level_seed) & protocol.UINT32_MAX
+            wall = int(snapshot.match_start_unix_sec) & protocol.UINT32_MAX
+            self.context.match_start_unix_sec = wall if wall != 0 else int(time.time())
+            self.context.active_countdown_id = snapshot.countdown_id
+            self.context.current_match_id = snapshot.match_id
+            self.context.local_player_alive = bool(snapshot.alive)
+            self.context.start_pos = (snapshot.x, snapshot.y)
+        if snapshot is not None and snapshot.room_state == protocol.STATE_LOBBY:
+            self.switch("host_lobby" if is_host else "joined_lobby")
+            return
         self.switch("in_game")
 
     def _direct_join_room_by_addr(self, addr: str, port: int):

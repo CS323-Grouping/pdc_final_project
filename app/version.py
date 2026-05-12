@@ -23,11 +23,11 @@ Do not edit version numbers elsewhere; import from this module if you need them.
 # =============================================================================
 
 VERSION_MAJOR = 0
-VERSION_MINOR = 2
-VERSION_PATCH = 1
+VERSION_MINOR = 3
+VERSION_PATCH = 0
 
 # Increment for each new build you distribute (EXE / zip). Independent of semver.
-BUILD_NUMBER = 2
+BUILD_NUMBER = 3
 
 # Empty string for releases. Otherwise e.g. "dev", "rc1" (shown after semver).
 VERSION_SUFFIX = ""

@@ -42,6 +42,7 @@ try:
         GEND_REASON_FORFEIT,
         GEND_REASON_NORMAL,
         GSTART,
+        GAMEPLAY_STALL_SECONDS,
         HEARTBEAT,
         KICK,
         KICKED_REASON_KICKED,
@@ -55,6 +56,7 @@ try:
         ORB_COLLECT,
         PLATFORM_PROGRESS,
         PLAYER_TIMEOUT_SECONDS,
+        SESSION_TIMEOUT_SECONDS,
         PLAYER_STATE,
         POSITION,
         PROTO_VERSION,
@@ -62,6 +64,7 @@ try:
         RECV_BUF,
         RECONNECT,
         RECONNECT_DENY_BAD_TOKEN,
+        RECONNECT_DENY_AMBIGUOUS_NAME,
         RECONNECT_DENY_EXPIRED,
         RECONNECT_DENY_NOT_IN_GAME,
         RECONNECT_DENY_NO_SLOT,
@@ -101,6 +104,7 @@ try:
         pack_player_state,
         pack_reconnect_no,
         pack_reconnect_ok,
+        pack_reconnect_snapshot,
         pack_level_select,
         pack_room_name_update,
         pack_session,
@@ -155,6 +159,7 @@ except ModuleNotFoundError:
         GEND_REASON_FORFEIT,
         GEND_REASON_NORMAL,
         GSTART,
+        GAMEPLAY_STALL_SECONDS,
         HEARTBEAT,
         KICK,
         KICKED_REASON_KICKED,
@@ -168,6 +173,7 @@ except ModuleNotFoundError:
         ORB_COLLECT,
         PLATFORM_PROGRESS,
         PLAYER_TIMEOUT_SECONDS,
+        SESSION_TIMEOUT_SECONDS,
         PLAYER_STATE,
         POSITION,
         PROTO_VERSION,
@@ -175,6 +181,7 @@ except ModuleNotFoundError:
         RECV_BUF,
         RECONNECT,
         RECONNECT_DENY_BAD_TOKEN,
+        RECONNECT_DENY_AMBIGUOUS_NAME,
         RECONNECT_DENY_EXPIRED,
         RECONNECT_DENY_NOT_IN_GAME,
         RECONNECT_DENY_NO_SLOT,
@@ -214,6 +221,7 @@ except ModuleNotFoundError:
         pack_player_state,
         pack_reconnect_no,
         pack_reconnect_ok,
+        pack_reconnect_snapshot,
         pack_level_select,
         pack_room_name_update,
         pack_session,
@@ -274,13 +282,21 @@ class LobbyServer:
         countdown_seconds: float,
         reconnect_grace_seconds: float = RECONNECT_GRACE_SECONDS,
         player_timeout_seconds: float = PLAYER_TIMEOUT_SECONDS,
+        session_timeout_seconds: Optional[float] = None,
+        gameplay_stall_seconds: float = GAMEPLAY_STALL_SECONDS,
         lobby_player_timeout_seconds: float = LOBBY_PLAYER_TIMEOUT_SECONDS,
     ):
         self.sock = sock
         self.room_state = room_state
         self.countdown_seconds = countdown_seconds
         self.reconnect_grace_seconds = reconnect_grace_seconds
-        self.player_timeout_seconds = player_timeout_seconds
+        self.session_timeout_seconds = max(
+            0.1,
+            float(player_timeout_seconds if session_timeout_seconds is None else session_timeout_seconds),
+        )
+        # Backward-compatible alias used by older tests/callers.
+        self.player_timeout_seconds = self.session_timeout_seconds
+        self.gameplay_stall_seconds = max(0.1, float(gameplay_stall_seconds))
         self.lobby_player_timeout_seconds = lobby_player_timeout_seconds
         self.cooldowns = KickCooldownTable()
         self.end_policy = GameEndPolicy()
@@ -301,8 +317,10 @@ class LobbyServer:
         self._player_platform_max: dict[int, int] = {}
         self._match_player_count: int = 0
         self._match_level_seed: int = 0
+        self._match_start_unix_sec: int = 0
         self._avatar_headers: dict[int, tuple[int, int, int, str, str]] = {}
         self._avatar_chunks: dict[tuple[int, int], dict[int, bytes]] = {}
+        self._stalled_players_logged: set[int] = set()
 
     def broadcast(self, payload: bytes, exclude_addr=None):
         for other_addr in self.room_state.peers(exclude_addr=exclude_addr):
@@ -354,11 +372,19 @@ class LobbyServer:
     def block_lobby_pruning(self, seconds: float = 2.0):
         self._lobby_prune_blocked_until = max(self._lobby_prune_blocked_until, time.monotonic() + max(0.0, seconds))
 
-    def broadcast_roster(self):
-        if self.room_state.state == STATE_IN_GAME:
+    def broadcast_roster(self, include_in_game: bool = False):
+        if self.room_state.state == STATE_IN_GAME and not include_in_game:
             return
         payload = pack_list(self.room_state.connected_roster_entries())
         self.broadcast(payload)
+
+    def broadcast_match_resync(self, reason: str):
+        LOGGER.info("Broadcast match resync reason=%s", reason)
+        self.broadcast_roster(include_in_game=True)
+        self.broadcast_match_snapshot()
+        for peer_addr in self.room_state.peers():
+            peer_id = self.room_state.get_player_id_by_addr(peer_addr)
+            self.replay_cached_avatars(peer_addr, exclude_player_id=peer_id)
 
     def _drop_avatar_cache(self, player_id: int):
         self._avatar_headers.pop(player_id, None)
@@ -520,6 +546,57 @@ class LobbyServer:
         for player_id, (x, y) in self.room_state.connected_positions().items():
             self.broadcast(pack_player_state(x, y, player_id, "idle_front"))
 
+    def _is_stale_match_packet(self, packet_type: str, packet_match_id: int, player_id: int) -> bool:
+        if packet_match_id == 0:
+            return False
+        if packet_match_id == self._match_id:
+            return False
+        LOGGER.warning(
+            "Rejected stale packet type=%s packet_match_id=%s server_match_id=%s player_id=%s",
+            packet_type,
+            packet_match_id,
+            self._match_id,
+            player_id,
+        )
+        return True
+
+    def _send_reconnect_context(
+        self,
+        addr,
+        player_id: int,
+        session_token: int,
+        position: tuple[float, float],
+    ) -> None:
+        self.sock.sendto(pack_session(player_id, session_token), addr)
+        self.sock.sendto(
+            pack_reconnect_ok(player_id, float(position[0]), float(position[1]), self.room_state.room_name),
+            addr,
+        )
+        placement = self.room_state.player_placement(player_id)
+        self.sock.sendto(
+            pack_reconnect_snapshot(
+                player_id=player_id,
+                x=float(position[0]),
+                y=float(position[1]),
+                room_state=self.room_state.state,
+                selected_level=self.room_state.get_selected_level(),
+                countdown_id=self._countdown_id,
+                match_id=self._match_id,
+                level_seed=self._match_level_seed,
+                match_start_unix_sec=self._match_start_unix_sec,
+                alive=self.room_state.is_alive(player_id),
+                placement=255 if placement is None else int(placement),
+                room_name=self.room_state.room_name,
+            ),
+            addr,
+        )
+        self.sock.sendto(
+            pack_level_select(self.room_state.host_id or player_id, self.room_state.get_selected_level()),
+            addr,
+        )
+        self.sock.sendto(pack_list(self.room_state.connected_roster_entries()), addr)
+        self.replay_cached_avatars(addr, exclude_player_id=player_id)
+
     def reject_connection(self, addr, reason_code: int, extra: int = 0):
         payload = pack_conno(reason_code, extra)
         self.sock.sendto(payload, addr)
@@ -578,6 +655,16 @@ class LobbyServer:
             return
 
         _tag, proto_version, player_id, session_token, player_name = unpacked
+        method = "name" if player_id < 0 or session_token == 0 else "token"
+        LOGGER.info(
+            "Reconnect request method=%s player_id=%s name=%s addr=%s state=%s match_id=%s",
+            method,
+            player_id,
+            player_name,
+            addr,
+            self.room_state.state,
+            self._match_id,
+        )
         if proto_version != PROTO_VERSION:
             self.sock.sendto(pack_reconnect_no(RECONNECT_DENY_NOT_IN_GAME), addr)
             return
@@ -588,48 +675,56 @@ class LobbyServer:
             self.sock.sendto(pack_reconnect_no(RECONNECT_DENY_NOT_IN_GAME), addr)
             return
         if player_id < 0 or session_token == 0:
-            reconnected = self.room_state.reconnect_player_by_name(addr, player_name)
-            if reconnected is None:
+            matches = self.room_state.reconnect_name_matches(player_name)
+            if not matches:
+                LOGGER.info("Reconnect denied method=name reason=no_slot name=%s addr=%s", player_name, addr)
                 self.sock.sendto(pack_reconnect_no(RECONNECT_DENY_NO_SLOT), addr)
                 return
-
-            reconnected_id, position, restored_token = reconnected
-            LOGGER.info("Reconnected player %s (%s) by name as id %s", player_name, addr, reconnected_id)
-            self.sock.sendto(pack_session(reconnected_id, restored_token), addr)
-            self.sock.sendto(
-                pack_reconnect_ok(reconnected_id, position[0], position[1], self.room_state.room_name),
-                addr,
-            )
-            self.sock.sendto(
-                pack_level_select(self.room_state.host_id or reconnected_id, self.room_state.get_selected_level()),
-                addr,
-            )
-            self.replay_cached_avatars(addr, exclude_player_id=reconnected_id)
+            if len(matches) > 1:
+                LOGGER.info("Reconnect denied method=name reason=ambiguous_name name=%s matches=%s", player_name, matches)
+                self.sock.sendto(pack_reconnect_no(RECONNECT_DENY_AMBIGUOUS_NAME), addr)
+                return
+            reconnected_id = matches[0]
+            restored_token = self.room_state.session_token(reconnected_id)
+            if restored_token is None:
+                LOGGER.info("Reconnect denied method=name reason=no_slot name=%s addr=%s", player_name, addr)
+                self.sock.sendto(pack_reconnect_no(RECONNECT_DENY_NO_SLOT), addr)
+                return
+            position = self.room_state.reconnect_player(addr, reconnected_id, restored_token)
+            if position is None:
+                LOGGER.info("Reconnect denied method=name reason=expired name=%s addr=%s", player_name, addr)
+                self.sock.sendto(pack_reconnect_no(RECONNECT_DENY_EXPIRED), addr)
+                return
+            LOGGER.info("Reconnect accepted method=name player_id=%s addr=%s", reconnected_id, addr)
+            self._send_reconnect_context(addr, reconnected_id, restored_token, position)
+            self.broadcast_match_resync("name_reconnect")
             self.resume_if_ready()
             if self.room_state.state == STATE_PAUSED:
                 self.broadcast_pause()
             return
         if not self.room_state.player_exists(player_id):
+            LOGGER.info("Reconnect denied method=token reason=no_slot player_id=%s addr=%s", player_id, addr)
             self.sock.sendto(pack_reconnect_no(RECONNECT_DENY_NO_SLOT), addr)
             return
         expected = self.room_state.session_token(player_id)
         if expected != session_token:
+            LOGGER.info("Reconnect denied method=token reason=bad_token player_id=%s addr=%s", player_id, addr)
             self.sock.sendto(pack_reconnect_no(RECONNECT_DENY_BAD_TOKEN), addr)
             return
         if self.room_state.disconnect_remaining(player_id) <= 0:
+            LOGGER.info("Reconnect denied method=token reason=expired player_id=%s addr=%s", player_id, addr)
             self.sock.sendto(pack_reconnect_no(RECONNECT_DENY_EXPIRED), addr)
             return
 
         position = self.room_state.reconnect_player(addr, player_id, session_token)
         if position is None:
+            LOGGER.info("Reconnect denied method=token reason=expired player_id=%s addr=%s", player_id, addr)
             self.sock.sendto(pack_reconnect_no(RECONNECT_DENY_EXPIRED), addr)
             return
 
-        LOGGER.info("Reconnected player %s (%s) as id %s", player_name, addr, player_id)
-        self.sock.sendto(pack_session(player_id, session_token), addr)
-        self.sock.sendto(pack_reconnect_ok(player_id, position[0], position[1], self.room_state.room_name), addr)
-        self.sock.sendto(pack_level_select(self.room_state.host_id or player_id, self.room_state.get_selected_level()), addr)
-        self.replay_cached_avatars(addr, exclude_player_id=player_id)
+        LOGGER.info("Reconnect accepted method=token player_id=%s addr=%s", player_id, addr)
+        self._send_reconnect_context(addr, player_id, session_token, position)
+        self.broadcast_match_resync("token_reconnect")
         self.resume_if_ready()
         if self.room_state.state == STATE_PAUSED:
             self.broadcast_pause()
@@ -655,7 +750,15 @@ class LobbyServer:
         _tag, player_id, session_token, _client_state, _countdown_id, _match_id = unpacked
         addr_player_id = self.room_state.get_player_id_by_addr(addr)
         if addr_player_id != player_id:
-            return
+            position = self.room_state.reconnect_player(addr, player_id, session_token)
+            if position is None:
+                return
+            LOGGER.info("Heartbeat resumed disconnected session player_id=%s addr=%s", player_id, addr)
+            self._send_reconnect_context(addr, player_id, session_token, position)
+            self.broadcast_match_resync("heartbeat_resume")
+            self.resume_if_ready()
+            if self.room_state.state == STATE_PAUSED:
+                self.broadcast_pause()
         expected_token = self.room_state.session_token(player_id)
         if expected_token is not None and expected_token != session_token:
             LOGGER.debug("Ignoring heartbeat with bad token player_id=%s addr=%s", player_id, addr)
@@ -752,6 +855,8 @@ class LobbyServer:
         self._player_platform_max.clear()
         self._match_player_count = 0
         self._match_level_seed = 0
+        self._match_start_unix_sec = 0
+        self._stalled_players_logged.clear()
         self.end_policy.clear_elimination_cooldown()
         self.broadcast_roster()
 
@@ -772,13 +877,15 @@ class LobbyServer:
         unpacked = safe_unpack_goal(data)
         if unpacked is None:
             return
-        _tag, player_id = unpacked
+        _tag, player_id, packet_match_id = unpacked
         addr_player_id = self.room_state.get_player_id_by_addr(addr)
         if addr_player_id != player_id:
             return
-        self.room_state.touch_gameplay_player(player_id)
         if self.room_state.state != STATE_IN_GAME:
             return
+        if self._is_stale_match_packet("GOAL", packet_match_id, player_id):
+            return
+        self.room_state.touch_gameplay_player(player_id)
         if not self.room_state.is_alive(player_id):
             return
         if player_id in self._finish_times:
@@ -790,7 +897,7 @@ class LobbyServer:
 
         placement = len(self._finish_times)
         self.room_state.mark_eliminated(player_id, placement)
-        self.broadcast(pack_goal(player_id))
+        self.broadcast(pack_goal(player_id, self._match_id))
         self.broadcast(pack_elim(player_id, placement))
         LOGGER.info("Player %s reached the goal in %.2fs (place %d)", player_id, elapsed, placement)
         self._check_game_end()
@@ -816,18 +923,20 @@ class LobbyServer:
         unpacked = safe_unpack_platform_progress(data)
         if unpacked is None:
             return
-        _tag, player_id, platforms_reached = unpacked
+        _tag, player_id, packet_match_id, platforms_reached = unpacked
         addr_player_id = self.room_state.get_player_id_by_addr(addr)
         if addr_player_id is None or addr_player_id != player_id:
             return
-        self.room_state.touch_gameplay_player(player_id)
         if self.room_state.state not in (STATE_IN_GAME, STATE_PAUSED):
             return
+        if self._is_stale_match_packet("PLATFORM_PROGRESS", packet_match_id, player_id):
+            return
+        self.room_state.touch_gameplay_player(player_id)
         prev = self._player_platform_max.get(player_id, 0)
         new_count = max(prev, int(platforms_reached))
         self._player_platform_max[player_id] = new_count
         if new_count != prev:
-            self.broadcast(pack_platform_progress(player_id, new_count))
+            self.broadcast(pack_platform_progress(player_id, new_count, self._match_id))
 
     def eliminate_player(self, player_id: int):
         if not self.room_state.is_alive(player_id):
@@ -846,13 +955,15 @@ class LobbyServer:
         unpacked = safe_unpack_dead(data)
         if unpacked is None:
             return
-        _tag, player_id, _cause = unpacked
+        _tag, player_id, packet_match_id, _cause = unpacked
         addr_player_id = self.room_state.get_player_id_by_addr(addr)
         if addr_player_id != player_id:
             return
-        self.room_state.touch_gameplay_player(player_id)
         if self.room_state.state != STATE_IN_GAME:
             return
+        if self._is_stale_match_packet("DEAD", packet_match_id, player_id):
+            return
+        self.room_state.touch_gameplay_player(player_id)
         LOGGER.info("Received DEAD player_id=%s addr=%s", player_id, addr)
         self.eliminate_player(player_id)
 
@@ -1152,9 +1263,10 @@ class LobbyServer:
         self._player_elapsed_at_result.clear()
         self._player_platform_max.clear()
         self._match_player_count = self.room_state.connected_count()
+        self._stalled_players_logged.clear()
         self.end_policy.clear_elimination_cooldown()
         self._game_start_time = time.monotonic()
-        match_start_unix_sec = int(time.time())
+        self._match_start_unix_sec = int(time.time())
         LOGGER.info(
             "Game started players=%s level=%s seed=%s",
             self.room_state.connected_roster_entries(),
@@ -1167,20 +1279,36 @@ class LobbyServer:
                 self._match_id,
                 selected_level=selected_level,
                 level_seed=self._match_level_seed,
-                match_start_unix_sec=match_start_unix_sec,
+                match_start_unix_sec=self._match_start_unix_sec,
             )
         )
         self.broadcast_match_snapshot()
 
     def tick_in_game(self):
         if self.room_state.state != STATE_IN_GAME:
+            self._stalled_players_logged.clear()
             return
         now = time.monotonic()
-        timed_out = self.room_state.timed_out_connected_alive_ids(now, self.player_timeout_seconds)
-        if timed_out:
-            LOGGER.warning("Timed out connected alive players=%s", timed_out)
-            self.pause_for_disconnect(timed_out[0], now)
-            return
+        timed_out = self.room_state.timed_out_connected_ids(now, self.session_timeout_seconds)
+        for player_id in timed_out:
+            if self.room_state.is_alive(player_id):
+                LOGGER.warning("Session timeout player_id=%s; pausing for reconnect", player_id)
+                self.pause_for_disconnect(player_id, now)
+                return
+            self.room_state.mark_disconnected(player_id, now, self.reconnect_grace_seconds)
+            LOGGER.info("Session timeout removed non-alive connection player_id=%s", player_id)
+
+        stalled_now = set(
+            self.room_state.gameplay_stalled_connected_alive_ids(now, self.gameplay_stall_seconds)
+        )
+        for player_id in sorted(stalled_now - self._stalled_players_logged):
+            LOGGER.warning(
+                "Player gameplay stalled player_id=%s threshold=%.2fs",
+                player_id,
+                self.gameplay_stall_seconds,
+            )
+        self._stalled_players_logged = stalled_now
+
         alive_positions = self.room_state.alive_positions()
         for player_id in self.end_policy.left_behind_candidates(alive_positions):
             self.eliminate_player(player_id)
@@ -1189,10 +1317,14 @@ class LobbyServer:
         if self.room_state.state != STATE_PAUSED:
             return
         now = time.monotonic()
-        for player_id in self.room_state.timed_out_connected_alive_ids(now, self.player_timeout_seconds):
-            self.pause_for_disconnect(player_id, now)
-            if self.room_state.state != STATE_PAUSED:
-                return
+        for player_id in self.room_state.timed_out_connected_ids(now, self.session_timeout_seconds):
+            if self.room_state.is_alive(player_id):
+                self.pause_for_disconnect(player_id, now)
+                if self.room_state.state != STATE_PAUSED:
+                    return
+            else:
+                self.room_state.mark_disconnected(player_id, now, self.reconnect_grace_seconds)
+                LOGGER.info("Session timeout removed non-alive paused connection player_id=%s", player_id)
 
         if self._last_pause_broadcast == 0.0 or (now - self._last_pause_broadcast) >= 1.0:
             self.broadcast_pause()
@@ -1232,7 +1364,19 @@ def parse_args():
         "--player-timeout-seconds",
         type=float,
         default=PLAYER_TIMEOUT_SECONDS,
-        help="Seconds without in-game packets before pausing for reconnect",
+        help="Deprecated alias for session timeout; use --session-timeout-seconds",
+    )
+    parser.add_argument(
+        "--session-timeout-seconds",
+        type=float,
+        default=SESSION_TIMEOUT_SECONDS,
+        help="Seconds without heartbeat/control packets before treating a player as disconnected",
+    )
+    parser.add_argument(
+        "--gameplay-stall-seconds",
+        type=float,
+        default=GAMEPLAY_STALL_SECONDS,
+        help="Seconds without gameplay packets before logging a gameplay-stalled warning",
     )
     parser.add_argument(
         "--lobby-player-timeout-seconds",
@@ -1316,6 +1460,8 @@ def create_server(args) -> Optional[LobbyServer]:
         countdown_seconds=args.countdown_seconds,
         reconnect_grace_seconds=args.reconnect_grace_seconds,
         player_timeout_seconds=args.player_timeout_seconds,
+        session_timeout_seconds=args.session_timeout_seconds,
+        gameplay_stall_seconds=args.gameplay_stall_seconds,
         lobby_player_timeout_seconds=args.lobby_player_timeout_seconds,
     )
     server._beacon_broadcaster = beacon_broadcaster  # Internal lifecycle handle.

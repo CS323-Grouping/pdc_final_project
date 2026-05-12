@@ -44,6 +44,7 @@ from network.protocol import (
     RECV_BUF,
     RECONNECT_NO,
     RECONNECT_OK,
+    RECONNECT_SNAPSHOT,
     ROOM_NAME_UPDATE,
     SESSION,
     START,
@@ -88,6 +89,7 @@ from network.protocol import (
     safe_unpack_player_state,
     safe_unpack_reconnect_no,
     safe_unpack_reconnect_ok,
+    safe_unpack_reconnect_snapshot,
     safe_unpack_level_select,
     safe_unpack_room_name_update,
     safe_unpack_session,
@@ -172,9 +174,21 @@ def _event_summary(event: "NetworkEvent") -> str:
             f"cooldown_sec={event.cooldown_sec}"
         )
     if isinstance(event, GoalEvent):
-        return f"GoalEvent player_id={event.player_id}"
+        return f"GoalEvent player_id={event.player_id} match_id={event.match_id}"
     if isinstance(event, PlatformProgressEvent):
-        return f"PlatformProgressEvent player_id={event.player_id} platforms_reached={event.platforms_reached}"
+        return (
+            "PlatformProgressEvent "
+            f"player_id={event.player_id} "
+            f"platforms_reached={event.platforms_reached} "
+            f"match_id={event.match_id}"
+        )
+    if isinstance(event, ReconnectSnapshotEvent):
+        return (
+            "ReconnectSnapshotEvent "
+            f"player_id={event.player_id} room_state={event.room_state} "
+            f"level={event.selected_level} countdown_id={event.countdown_id} "
+            f"match_id={event.match_id} alive={event.alive} placement={event.placement}"
+        )
     if isinstance(event, ConnectDeniedEvent):
         return f"ConnectDeniedEvent reason={event.reason_code} extra={event.extra}"
     if isinstance(event, ConnectionLostEvent):
@@ -193,6 +207,7 @@ class ConnectResult:
     extra: int = 0
     start_pos: Optional[Tuple[float, float]] = None
     session_token: int = 0
+    reconnect_snapshot: Optional["ReconnectSnapshotEvent"] = None
 
 
 @dataclass(frozen=True)
@@ -230,12 +245,30 @@ class EliminationEvent:
 @dataclass(frozen=True)
 class GoalEvent:
     player_id: int
+    match_id: int = 0
 
 
 @dataclass(frozen=True)
 class PlatformProgressEvent:
     player_id: int
     platforms_reached: int
+    match_id: int = 0
+
+
+@dataclass(frozen=True)
+class ReconnectSnapshotEvent:
+    player_id: int
+    x: float
+    y: float
+    room_state: int
+    selected_level: int
+    countdown_id: int
+    match_id: int
+    level_seed: int
+    match_start_unix_sec: int
+    alive: bool
+    placement: int | None
+    room_name: str
 
 
 @dataclass(frozen=True)
@@ -349,6 +382,7 @@ NetworkEvent = Union[
     EliminationEvent,
     GoalEvent,
     PlatformProgressEvent,
+    ReconnectSnapshotEvent,
     GameEndEvent,
     KickedEvent,
     PositionEvent,
@@ -395,6 +429,21 @@ class Network:
     @property
     def is_open(self) -> bool:
         return not self._closed
+
+    @property
+    def client_state(self) -> int:
+        with self._heartbeat_lock:
+            return int(self._client_state)
+
+    @property
+    def current_countdown_id(self) -> int:
+        with self._heartbeat_lock:
+            return int(self._countdown_id)
+
+    @property
+    def current_match_id(self) -> int:
+        with self._heartbeat_lock:
+            return int(self._match_id)
 
     def _mark_connection_lost(self, message: str) -> ConnectionLostEvent:
         LOGGER.warning("Connection lost: %s", message)
@@ -468,6 +517,12 @@ class Network:
                 with self._heartbeat_lock:
                     self._match_id = max(self._match_id, event.match_id)
             elif isinstance(event, HeartbeatAckEvent):
+                with self._heartbeat_lock:
+                    self._countdown_id = max(self._countdown_id, event.countdown_id)
+                    self._match_id = max(self._match_id, event.match_id)
+            elif isinstance(event, ReconnectSnapshotEvent):
+                self.room_name = event.room_name
+                self.selected_level = event.selected_level
                 with self._heartbeat_lock:
                     self._countdown_id = max(self._countdown_id, event.countdown_id)
                     self._match_id = max(self._match_id, event.match_id)
@@ -640,6 +695,8 @@ class Network:
         if not self._sendto(payload, report_error=False):
             return ConnectResult(ok=False, reason_code=CONNO_REASON_VERSION)
 
+        accepted: ConnectResult | None = None
+        snapshot: ReconnectSnapshotEvent | None = None
         try:
             while True:
                 data, source_addr = self.client.recvfrom(RECV_BUF)
@@ -664,7 +721,6 @@ class Network:
                     self.room_name = room_name
                     if self.session_token == 0:
                         self.session_token = session_token
-                    self.client.settimeout(0.1)
                     LOGGER.info(
                         "Reconnect accepted room=%s player_id=%s token=%s start_pos=(%.1f, %.1f)",
                         room_name,
@@ -673,13 +729,24 @@ class Network:
                         x,
                         y,
                     )
-                    return ConnectResult(
+                    accepted = ConnectResult(
                         ok=True,
                         player_id=reconnected_id,
                         room_name=room_name,
                         start_pos=(x, y),
                         session_token=self.session_token,
                     )
+                    if snapshot is not None:
+                        self.client.settimeout(0.1)
+                        return ConnectResult(
+                            ok=True,
+                            player_id=accepted.player_id,
+                            room_name=snapshot.room_name or accepted.room_name,
+                            start_pos=(snapshot.x, snapshot.y),
+                            session_token=self.session_token,
+                            reconnect_snapshot=snapshot,
+                        )
+                    continue
 
                 if tag == RECONNECT_NO:
                     unpacked = safe_unpack_reconnect_no(data)
@@ -690,9 +757,29 @@ class Network:
 
                 parsed = self._parse_event(data)
                 if parsed is not None:
+                    if isinstance(parsed, ReconnectSnapshotEvent):
+                        snapshot = parsed
+                        self.room_name = parsed.room_name
+                        self.selected_level = parsed.selected_level
+                        with self._heartbeat_lock:
+                            self._countdown_id = max(self._countdown_id, parsed.countdown_id)
+                            self._match_id = max(self._match_id, parsed.match_id)
+                        if accepted is not None:
+                            self.client.settimeout(0.1)
+                            return ConnectResult(
+                                ok=True,
+                                player_id=accepted.player_id,
+                                room_name=parsed.room_name or accepted.room_name,
+                                start_pos=(parsed.x, parsed.y),
+                                session_token=self.session_token,
+                                reconnect_snapshot=parsed,
+                            )
                     self.events.put(parsed)
         except socket.timeout:
             self.client.settimeout(0.1)
+            if accepted is not None:
+                LOGGER.info("Reconnect accepted without RSNP snapshot; proceeding with RCOK fields only")
+                return accepted
             LOGGER.warning("Reconnect timed out addr=%s", self.addr)
             return ConnectResult(ok=False, reason_code=CONNO_REASON_VERSION)
 
@@ -762,14 +849,18 @@ class Network:
     def send_dead(self):
         if self.id < 0:
             return
-        LOGGER.info("send DEAD player_id=%s", self.id)
-        self._sendto(pack_dead(self.id, 0))
+        with self._heartbeat_lock:
+            match_id = self._match_id
+        LOGGER.info("send DEAD player_id=%s match_id=%s", self.id, match_id)
+        self._sendto(pack_dead(self.id, 0, match_id=match_id))
 
     def send_goal(self):
         if self.id < 0:
             return
-        LOGGER.info("send GOAL player_id=%s", self.id)
-        self._sendto(pack_goal(self.id))
+        with self._heartbeat_lock:
+            match_id = self._match_id
+        LOGGER.info("send GOAL player_id=%s match_id=%s", self.id, match_id)
+        self._sendto(pack_goal(self.id, match_id=match_id))
 
     def close_room(self):
         self.send_kick(-1)
@@ -792,7 +883,9 @@ class Network:
     def send_platform_progress(self, platforms_reached: int):
         if self.id < 0:
             return
-        self._sendto(pack_platform_progress(self.id, int(platforms_reached)))
+        with self._heartbeat_lock:
+            match_id = self._match_id
+        self._sendto(pack_platform_progress(self.id, int(platforms_reached), match_id=match_id))
 
     def send_avatar(
         self,
@@ -921,14 +1014,56 @@ class Network:
             unpacked = safe_unpack_goal(data)
             if unpacked is None:
                 return ErrorEvent("Malformed GOAL packet")
-            _tag, player_id = unpacked
-            return GoalEvent(player_id=player_id)
+            _tag, player_id, match_id = unpacked
+            return GoalEvent(player_id=player_id, match_id=match_id)
         if tag == PLATFORM_PROGRESS:
             unpacked = safe_unpack_platform_progress(data)
             if unpacked is None:
                 return ErrorEvent("Malformed PLAT packet")
-            _tag, player_id, platforms_reached = unpacked
-            return PlatformProgressEvent(player_id=player_id, platforms_reached=platforms_reached)
+            _tag, player_id, match_id, platforms_reached = unpacked
+            return PlatformProgressEvent(
+                player_id=player_id,
+                platforms_reached=platforms_reached,
+                match_id=match_id,
+            )
+        if tag == RECONNECT_SNAPSHOT:
+            unpacked = safe_unpack_reconnect_snapshot(data)
+            if unpacked is None:
+                return ErrorEvent("Malformed RSNP packet")
+            (
+                _tag,
+                player_id,
+                x,
+                y,
+                room_state,
+                selected_level,
+                countdown_id,
+                match_id,
+                level_seed,
+                match_start_unix_sec,
+                alive,
+                placement,
+                room_name,
+            ) = unpacked
+            self.room_name = room_name
+            self.selected_level = selected_level
+            with self._heartbeat_lock:
+                self._countdown_id = max(self._countdown_id, countdown_id)
+                self._match_id = max(self._match_id, match_id)
+            return ReconnectSnapshotEvent(
+                player_id=player_id,
+                x=x,
+                y=y,
+                room_state=room_state,
+                selected_level=selected_level,
+                countdown_id=countdown_id,
+                match_id=match_id,
+                level_seed=level_seed,
+                match_start_unix_sec=int(match_start_unix_sec) & UINT32_MAX,
+                alive=alive,
+                placement=None if placement == 255 else placement,
+                room_name=room_name,
+            )
         if tag == CONNO:
             unpacked = safe_unpack_conno(data)
             if unpacked is None:

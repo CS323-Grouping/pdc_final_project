@@ -95,7 +95,7 @@ class JoinedLobbyState(LobbyStateBase):
         if self.context.network is None:
             return
         if self._server_silence_elapsed >= 4.0:
-            self.context.set_banner("Host closed the room or stopped responding.", duration=5.0)
+            self.context.set_banner("Host disconnected. Game closed.", duration=5.0)
             self.context.detach_network(send_disconnect=False, preserve_reconnect=True)
             self.switch("browse_lobby")
             return

@@ -47,5 +47,5 @@ def load_world_assets(project_root: Path) -> WorldAssets:
         platform_normal=pygame.image.load(
             str(assets_root / "platforms" / "platformNormal_Level_1.png")
         ).convert_alpha(),
-        orb_frames=_load_orb_frames(ingame_root / "Orb" / "RandomOrb_Model-Sheet.png"),
+        orb_frames=_load_orb_frames(ingame_root / "Orb" / "RandomOrb_ModelGold-Sheet.png"),
     )
