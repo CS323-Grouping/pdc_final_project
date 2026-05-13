@@ -63,6 +63,7 @@ _ORB_EFFECT_READABLE = {
 _ORB_DEBUFF_EFFECTS = frozenset({"reverse_control", "slippery", "slow_falling", "heavy", "weak_jump"})
 
 AVATAR_FALLBACK_DELAY_SEC = 1.0
+TERMINAL_ACTION_RESEND_INTERVAL_SEC = 0.35
 
 _SPECTATOR_BAR_Y = INTERNAL_HEIGHT - 32
 _SPECTATOR_BTN_W, _SPECTATOR_BTN_H = 22, 15
@@ -109,6 +110,8 @@ class InGameState(ScreenState):
         self._observing = False
         self._finish_pending = False
         self._death_pending = False
+        self._finish_resend_elapsed = 0.0
+        self._death_resend_elapsed = 0.0
         self._active_match_id = 0
         self._spectate_player_id: int | None = None
         self._spectate_snap_pending = False
@@ -187,6 +190,8 @@ class InGameState(ScreenState):
         self._observing = False
         self._finish_pending = False
         self._death_pending = False
+        self._finish_resend_elapsed = 0.0
+        self._death_resend_elapsed = 0.0
         self._active_match_id = max(self.context.current_match_id, self.context.network.current_match_id if self.context.network else 0)
         self._spectate_player_id = None
         self._spectate_snap_pending = False
@@ -278,12 +283,22 @@ class InGameState(ScreenState):
         self._last_animation_state = self.hero.animation.state
 
     def _make_avatar_payload(self) -> bytes | None:
+        if not self.context.use_custom_head:
+            return b""
         avatar = self.context.current_avatar_source()
         network_avatar = pygame.transform.smoothscale(
             avatar,
             (protocol.NETWORK_AVATAR_SIZE, protocol.NETWORK_AVATAR_SIZE),
         ).convert_alpha()
-        return pygame.image.tobytes(network_avatar, "RGBA")
+        raw = pygame.image.tobytes(network_avatar, "RGBA")
+        compressed = zlib.compress(raw, level=6)
+        return compressed if len(compressed) < len(raw) else raw
+
+    def _make_avatar_id(self, payload: bytes | None) -> int:
+        if payload:
+            return zlib.adler32(payload) & 0xFFFF
+        model_key = f"{self.context.model_type}/{self.context.model_color}".encode("utf-8")
+        return zlib.adler32(model_key) & 0xFFFF
 
     def _body_frames_for_model(self, model_type: str, model_color: str) -> dict[str, list[pygame.Surface]]:
         key = (
@@ -406,6 +421,7 @@ class InGameState(ScreenState):
                 self._finished_player_ids.add(event.player_id)
                 if event.player_id == (self.context.network.id if self.context.network else -1):
                     self._finish_pending = False
+                    self._finish_resend_elapsed = 0.0
             elif isinstance(event, nw.PlatformProgressEvent):
                 self._platforms_reached_by_id[event.player_id] = max(
                     self._platforms_reached_by_id.get(event.player_id, 0),
@@ -429,6 +445,8 @@ class InGameState(ScreenState):
                 if event.player_id == my_id:
                     self._finish_pending = False
                     self._death_pending = False
+                    self._finish_resend_elapsed = 0.0
+                    self._death_resend_elapsed = 0.0
                     self.context.local_player_alive = False
                     self._observing = True
                     self._dead_sent = True
@@ -470,6 +488,8 @@ class InGameState(ScreenState):
                 if not event.alive:
                     self._observing = True
                     self._dead_sent = True
+                    self._death_pending = False
+                    self._death_resend_elapsed = 0.0
                     if self.context.network is not None:
                         self.context.network.set_client_state(protocol.CLIENT_STATE_SPECTATING)
                     self._set_spectator_target(self._default_spectator_target(), snap=True)
@@ -478,6 +498,8 @@ class InGameState(ScreenState):
                     continue
                 self._finish_pending = False
                 self._death_pending = False
+                self._finish_resend_elapsed = 0.0
+                self._death_resend_elapsed = 0.0
                 LOGGER.info("Game end received reason=%s standings=%s", event.reason_code, event.standings)
                 self.context.reset_lobby_after_game()
                 self.context.results_standings = list(event.standings)
@@ -542,6 +564,7 @@ class InGameState(ScreenState):
             return
 
         if self._finish_pending or self._death_pending:
+            self._tick_pending_terminal_action(dt, net)
             for remote in self._remote_players.values():
                 remote.animation.update(dt)
             if self.goal is not None:
@@ -589,6 +612,7 @@ class InGameState(ScreenState):
         if not self._dead_sent and self.camera.has_fallen_below(self.hero):
             self._dead_sent = True
             self._death_pending = True
+            self._death_resend_elapsed = 0.0
             self.context.local_player_alive = False
             LOGGER.info("Local player fell below camera; sending DEAD (pending server confirmation)")
             net.send_dead()
@@ -603,6 +627,7 @@ class InGameState(ScreenState):
         ):
             self._goal_reached = True
             self._finish_pending = True
+            self._finish_resend_elapsed = 0.0
             self.context.local_player_alive = False
             LOGGER.info("Local player reached goal; sending GOAL (pending server confirmation)")
             net.send_goal()
@@ -620,6 +645,20 @@ class InGameState(ScreenState):
             self._last_pos = self.hero.pos.copy()
             self._last_animation_state = current_state
             self._net_send_elapsed = 0.0
+
+    def _tick_pending_terminal_action(self, dt: float, net: nw.Network) -> None:
+        if self._death_pending:
+            self._death_resend_elapsed += dt
+            if self._death_resend_elapsed >= TERMINAL_ACTION_RESEND_INTERVAL_SEC:
+                self._death_resend_elapsed = 0.0
+                LOGGER.info("Resending pending DEAD player_id=%s match_id=%s", net.id, net.current_match_id)
+                net.send_dead()
+        if self._finish_pending:
+            self._finish_resend_elapsed += dt
+            if self._finish_resend_elapsed >= TERMINAL_ACTION_RESEND_INTERVAL_SEC:
+                self._finish_resend_elapsed = 0.0
+                LOGGER.info("Resending pending GOAL player_id=%s match_id=%s", net.id, net.current_match_id)
+                net.send_goal()
 
     def _tick_remote_orb_hud_timers(self, dt: float) -> None:
         for timers in list(self._remote_orb_hud_timers.values()):
@@ -808,7 +847,7 @@ class InGameState(ScreenState):
         my_id = self.context.network.id if self.context.network else -1
         if player_id == my_id:
             return self.context.avatar_window_surface
-        return self.context.remote_avatar_surfaces.get(player_id)
+        return self.context.remote_avatar_surfaces.get(player_id) or make_default_avatar(self.context.project_root)
 
     def _estimated_platforms_for_position(self, position: tuple[float, float] | None) -> int:
         if position is None:
@@ -927,14 +966,18 @@ class InGameState(ScreenState):
         if self._avatar_payload is not None:
             return True
         self._avatar_payload = self._make_avatar_payload()
-        self._avatar_id = zlib.adler32(self._avatar_payload) & 0xFFFF if self._avatar_payload else 0
+        self._avatar_id = self._make_avatar_id(self._avatar_payload)
         return self._avatar_payload is not None
 
     def _missing_remote_avatar_ids(self, local_player_id: int) -> list[int]:
         return [
             player_id
             for player_id, _ready, _name in self.context.roster
-            if player_id != local_player_id and player_id not in self.context.remote_avatar_surfaces
+            if (
+                player_id != local_player_id
+                and player_id not in self.context.remote_avatar_surfaces
+                and self.context.avatar_receiver.get_model(player_id) is None
+            )
         ]
 
     def _send_avatar_fallback_if_needed(self, dt: float, net: nw.Network):
@@ -1027,7 +1070,7 @@ class InGameState(ScreenState):
         for player_id, position in self._remote_positions.items():
             if int(player_id) == my_id:
                 continue
-            avatar = self.context.remote_avatar_surfaces.get(player_id)
+            avatar = self._avatar_for_player(player_id)
             remote = self._remote_players.get(player_id)
             if avatar is None or remote is None:
                 continue

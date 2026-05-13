@@ -45,6 +45,8 @@ def test_network_metrics_track_sent_and_received_throughput():
     assert snapshot.inbound_max_kib_per_sec >= snapshot.inbound_min_kib_per_sec
     assert snapshot.outbound_packets_per_sec == 1
     assert snapshot.inbound_packets_per_sec == 1
+    assert snapshot.outbound_packet_tags_per_sec == {"abcd": 1}
+    assert snapshot.inbound_packet_tags_per_sec == {"HBAK": 1}
 
 
 def test_network_metrics_compute_heartbeat_ping_ms():

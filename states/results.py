@@ -1,6 +1,7 @@
 import pygame
 
 from states.common import ScreenState
+from player_scripts.avatar_sprite import make_default_avatar
 from ui.results_table import draw_results_table
 from ui.theme import DEFAULT_THEME
 from world.assets import load_world_assets
@@ -95,6 +96,7 @@ class ResultsState(ScreenState):
             world_assets=self._world_assets,
             footer_reserve_extra=bottom_reserve,
             remote_avatars=self.context.remote_avatar_surfaces,
+            default_avatar=make_default_avatar(self.context.project_root),
         )
 
         hint_text = f"Press any key to continue  ·  {max(0, int(self._auto_hide + 0.99))}s"

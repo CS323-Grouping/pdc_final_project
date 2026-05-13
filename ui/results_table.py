@@ -120,6 +120,7 @@ def draw_results_table(
     world_assets: Optional[WorldAssets] = None,
     footer_reserve_extra: int = 0,
     remote_avatars: Optional[dict] = None,
+    default_avatar: Optional[pygame.Surface] = None,
 ) -> Tuple[int, int]:
     """
     Standings rows: ``(player_id, placement, name)`` or extended ``(…, elapsed_centisec, platforms)``.
@@ -292,6 +293,8 @@ def draw_results_table(
             avatar_source = plat_local
         elif remote_avatars is not None:
             avatar_source = remote_avatars.get(player_id)
+        if avatar_source is None and default_avatar is not None:
+            avatar_source = default_avatar
         if avatar_source is not None:
             scaled = pygame.transform.smoothscale(avatar_source, (av_size, av_size))
             surface.blit(scaled, (av_x, av_y))

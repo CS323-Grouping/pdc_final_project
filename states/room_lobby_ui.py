@@ -32,6 +32,8 @@ BUTTON_Y = ROOM_LOBBY_RECTS["screen"].bottom + 8
 LOBBY_BUTTON_SIZE = (78, 24)
 KICK_MODE_BUTTON_SIZE = (24, 24)
 BUTTON_GAP = 8
+AVATAR_METADATA_SEND_LIMIT = 3
+AVATAR_PAYLOAD_SEND_LIMIT = 1
 
 
 class RoomLobbyUi:
@@ -50,9 +52,8 @@ class RoomLobbyUi:
         self._assets = self._load_assets()
         self._load_player_preview_frame()
         self._body_frame_cache.clear()
-        self.context.avatar_receiver.clear()
         self._avatar_payload = self._make_avatar_payload()
-        self._avatar_id = zlib.adler32(self._avatar_payload) & 0xFFFF if self._avatar_payload else 0
+        self._avatar_id = self._make_avatar_id(self._avatar_payload)
         self._avatar_send_timer = 0.0
         self._avatar_send_count = 0
 
@@ -141,12 +142,27 @@ class RoomLobbyUi:
         self._idle_body_frame = frames["idle_front"][0]
 
     def _make_avatar_payload(self) -> bytes | None:
+        if not self.context.use_custom_head:
+            return b""
         avatar = self.context.current_avatar_source()
         network_avatar = pygame.transform.smoothscale(
             avatar,
             (protocol.NETWORK_AVATAR_SIZE, protocol.NETWORK_AVATAR_SIZE),
         ).convert_alpha()
-        return pygame.image.tobytes(network_avatar, "RGBA")
+        raw = pygame.image.tobytes(network_avatar, "RGBA")
+        compressed = zlib.compress(raw, level=6)
+        return compressed if len(compressed) < len(raw) else raw
+
+    def _make_avatar_id(self, payload: bytes | None) -> int:
+        if payload:
+            return zlib.adler32(payload) & 0xFFFF
+        model_key = f"{self.context.model_type}/{self.context.model_color}".encode("utf-8")
+        return zlib.adler32(model_key) & 0xFFFF
+
+    def _avatar_send_limit(self) -> int:
+        if self._avatar_payload:
+            return AVATAR_PAYLOAD_SEND_LIMIT
+        return AVATAR_METADATA_SEND_LIMIT
 
     def update(self, dt: float, net: nw.Network | None):
         self._send_avatar_if_needed(dt, net)
@@ -158,14 +174,14 @@ class RoomLobbyUi:
         self._avatar_send_count = 0
 
     def _send_avatar_if_needed(self, dt: float, net: nw.Network | None):
-        if net is None or self._avatar_payload is None or self._avatar_send_count >= 5:
+        if net is None or self._avatar_payload is None or self._avatar_send_count >= self._avatar_send_limit():
             return
         self._avatar_send_timer -= dt
         if self._avatar_send_timer > 0:
             return
         net.send_avatar(self._avatar_id, self._avatar_payload, self.context.model_type, self.context.model_color)
         self._avatar_send_count += 1
-        self._avatar_send_timer = 1.0
+        self._avatar_send_timer = 0.5 if not self._avatar_payload else 1.0
 
     def handle_avatar_event(self, event, my_id: int) -> bool:
         return self.context.avatar_receiver.handle_event(event, my_id)

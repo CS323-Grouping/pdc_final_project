@@ -84,3 +84,33 @@ def test_roster_event_creates_new_in_game_remote_player():
 
     assert state.context.roster == [(0, False, "Host"), (1, False, "Dev3"), (2, False, "Dev2")]
     assert created == [(0, (100.0, 100.0)), (1, (101.0, 100.0))]
+
+
+def test_pending_death_resends_until_confirmed():
+    sent = []
+    state = InGameState.__new__(InGameState)
+    state._death_pending = True
+    state._finish_pending = False
+    state._death_resend_elapsed = 0.0
+    state._finish_resend_elapsed = 0.0
+    net = SimpleNamespace(id=2, current_match_id=7, send_dead=lambda: sent.append("dead"))
+
+    InGameState._tick_pending_terminal_action(state, 0.1, net)
+    InGameState._tick_pending_terminal_action(state, 0.25, net)
+
+    assert sent == ["dead"]
+
+
+def test_pending_goal_resends_until_confirmed():
+    sent = []
+    state = InGameState.__new__(InGameState)
+    state._death_pending = False
+    state._finish_pending = True
+    state._death_resend_elapsed = 0.0
+    state._finish_resend_elapsed = 0.0
+    net = SimpleNamespace(id=1, current_match_id=9, send_goal=lambda: sent.append("goal"))
+
+    InGameState._tick_pending_terminal_action(state, 0.2, net)
+    InGameState._tick_pending_terminal_action(state, 0.15, net)
+
+    assert sent == ["goal"]

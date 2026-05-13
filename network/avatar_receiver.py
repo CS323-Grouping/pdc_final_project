@@ -7,6 +7,7 @@ previously lived in ``in_game``, ``room_lobby_ui``, and (transiently) ``results`
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import zlib
 from typing import Iterable, Optional
 
 import pygame
@@ -71,7 +72,7 @@ class AvatarReceiver:
         assembly = self._assemblies.get(key)
         if assembly is None:
             return
-        if assembly.payload_size != protocol.NETWORK_AVATAR_BYTES:
+        if assembly.payload_size < 0:
             return
         if len(assembly.chunks) < assembly.total_chunks:
             return
@@ -80,8 +81,15 @@ class AvatarReceiver:
         except KeyError:
             return
         raw = raw[: assembly.payload_size]
-        if len(raw) != protocol.NETWORK_AVATAR_BYTES:
+        if assembly.payload_size == 0 and assembly.total_chunks == 0:
             return
+        if len(raw) != protocol.NETWORK_AVATAR_BYTES:
+            try:
+                raw = zlib.decompress(raw)
+            except zlib.error:
+                return
+            if len(raw) != protocol.NETWORK_AVATAR_BYTES:
+                return
         try:
             avatar = pygame.image.frombytes(
                 raw,

@@ -395,6 +395,41 @@ def test_lobby_replays_cached_avatar_to_late_joiner():
     )
 
 
+def test_lobby_replays_model_only_avatar_metadata_to_late_joiner():
+    room_state = RoomState(room_name="TestRoom", game_port=5555)
+    alpha_addr = ("127.0.0.1", 12001)
+    bravo_addr = ("127.0.0.1", 12002)
+    alpha_id, _ = room_state.add_or_get_player(alpha_addr, "Alpha")
+    _bravo_id, _ = room_state.add_or_get_player(bravo_addr, "Bravo")
+    sock = FakeSocket()
+    server = LobbyServer(sock, room_state, countdown_seconds=0.0)
+    avatar_id = 88
+
+    server.handle_avatar_header(
+        protocol.pack_avatar_header(alpha_id, avatar_id, 0, 0, "Default", "Purple"),
+        alpha_addr,
+    )
+    late_addr = ("127.0.0.1", 12003)
+    sock.sent.clear()
+
+    server.handle_conn(protocol.pack_conn("Charlie"), late_addr)
+
+    late_packets = [packet for packet, addr in sock.sent if addr == late_addr]
+    assert any(
+        protocol.safe_unpack_avatar_header(packet) == (
+            protocol.AVATAR_HEADER,
+            alpha_id,
+            avatar_id,
+            0,
+            0,
+            protocol.DEFAULT_MODEL_TYPE,
+            "Purple",
+        )
+        for packet in late_packets
+    )
+    assert not any(protocol.tag_of(packet) == protocol.AVATAR_CHUNK for packet in late_packets)
+
+
 def test_eliminated_player_state_is_not_rebroadcast():
     server, room_state, sock, (player_id, addr), (_other_id, other_addr), (_third_id, _third_addr) = _server_with_started_room()
     room_state.update_position(player_id, 20.0, 20.0)

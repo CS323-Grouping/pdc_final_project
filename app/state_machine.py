@@ -55,6 +55,13 @@ def _fmt_metric(value: float | None, digits: int = 1) -> str:
     return f"{value:.{digits}f}"
 
 
+def _fmt_packet_tags(tags: dict[str, int]) -> str:
+    if not tags:
+        return "none"
+    ranked = sorted(tags.items(), key=lambda item: (-item[1], item[0]))
+    return ",".join(f"{tag}:{count}" for tag, count in ranked[:6])
+
+
 @dataclass
 class ReconnectTicket:
     addr: str
@@ -342,7 +349,8 @@ class AppContext:
             "hb_sent=%s hb_ack=%s hb_lost=%s hb_loss_pct:%.2f "
             "net_in_kibps=current:%.2f avg:%.2f min:%.2f max:%.2f "
             "net_out_kibps=current:%.2f avg:%.2f min:%.2f max:%.2f "
-            "packets_per_sec=in:%.0f out:%.0f",
+            "packets_per_sec=in:%.0f out:%.0f "
+            "packet_tags=in:%s out:%s",
             self.performance_fps or 0.0,
             _fmt_metric(snapshot.ping_ms, 1),
             _fmt_metric(snapshot.ping_avg_ms, 1),
@@ -368,6 +376,8 @@ class AppContext:
             snapshot.outbound_max_kib_per_sec,
             snapshot.inbound_packets_per_sec,
             snapshot.outbound_packets_per_sec,
+            _fmt_packet_tags(snapshot.inbound_packet_tags_per_sec),
+            _fmt_packet_tags(snapshot.outbound_packet_tags_per_sec),
         )
 
     def window_border_inset_px(self) -> int:
@@ -567,6 +577,7 @@ class AppContext:
         self.selected_level = protocol.normalize_level_id(getattr(network_obj, "selected_level", protocol.DEFAULT_LEVEL_ID))
         self.level_seed = 0
         self.roster = []
+        self.avatar_receiver.clear()
         self.countdown_remaining = None
         self.active_countdown_id = 0
         self.last_countdown_id = 0

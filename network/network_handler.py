@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from collections import deque
+from collections import Counter, deque
 import logging
 import queue
 import socket
@@ -413,6 +413,8 @@ class NetworkMetricsSnapshot:
     outbound_max_kib_per_sec: float
     inbound_packets_per_sec: float
     outbound_packets_per_sec: float
+    inbound_packet_tags_per_sec: dict[str, int]
+    outbound_packet_tags_per_sec: dict[str, int]
 
 
 NetworkEvent = Union[
@@ -464,6 +466,8 @@ class Network:
         self._metrics_lock = threading.Lock()
         self._sent_samples: deque[tuple[float, int]] = deque()
         self._recv_samples: deque[tuple[float, int]] = deque()
+        self._sent_tag_samples: deque[tuple[float, str]] = deque()
+        self._recv_tag_samples: deque[tuple[float, str]] = deque()
         self._next_ping_seq: int = 0
         self._pending_ping: dict[int, float] = {}
         self._rtt_window = LatencyWindow(maxlen=RTT_WINDOW_DEFAULT_SIZE)
@@ -521,7 +525,7 @@ class Network:
         tag = _packet_tag_name(payload)
         try:
             self.client.sendto(payload, target)
-            self._record_sent(len(payload))
+            self._record_sent(len(payload), tag)
             LOGGER.debug("send packet tag=%s bytes=%s target=%s player_id=%s", tag, len(payload), target, self.id)
             return True
         except OSError as error:
@@ -537,17 +541,26 @@ class Network:
         while samples and samples[0][0] < cutoff:
             samples.popleft()
 
-    def _record_sent(self, byte_count: int) -> None:
+    def _prune_tag_samples(self, samples: deque[tuple[float, str]], now: float) -> None:
+        cutoff = now - 1.0
+        while samples and samples[0][0] < cutoff:
+            samples.popleft()
+
+    def _record_sent(self, byte_count: int, tag: str) -> None:
         now = time.monotonic()
         with self._metrics_lock:
             self._sent_samples.append((now, max(0, int(byte_count))))
+            self._sent_tag_samples.append((now, tag))
             self._prune_metric_samples(self._sent_samples, now)
+            self._prune_tag_samples(self._sent_tag_samples, now)
 
-    def _record_received(self, byte_count: int) -> None:
+    def _record_received(self, byte_count: int, tag: str) -> None:
         now = time.monotonic()
         with self._metrics_lock:
             self._recv_samples.append((now, max(0, int(byte_count))))
+            self._recv_tag_samples.append((now, tag))
             self._prune_metric_samples(self._recv_samples, now)
+            self._prune_tag_samples(self._recv_tag_samples, now)
 
     def _prune_stale_pending_locked(self, now: float) -> None:
         cutoff = now - PING_PENDING_MAX_AGE_SEC
@@ -614,6 +627,8 @@ class Network:
             self._next_ping_seq = 0
             self._sent_samples.clear()
             self._recv_samples.clear()
+            self._sent_tag_samples.clear()
+            self._recv_tag_samples.clear()
             self._throughput_sample_count = 0
             self._throughput_in_total = 0.0
             self._throughput_out_total = 0.0
@@ -628,9 +643,13 @@ class Network:
         with self._metrics_lock:
             self._prune_metric_samples(self._sent_samples, now)
             self._prune_metric_samples(self._recv_samples, now)
+            self._prune_tag_samples(self._sent_tag_samples, now)
+            self._prune_tag_samples(self._recv_tag_samples, now)
             self._prune_stale_pending_locked(now)
             sent_bytes = sum(byte_count for _t, byte_count in self._sent_samples)
             recv_bytes = sum(byte_count for _t, byte_count in self._recv_samples)
+            sent_tags = dict(Counter(tag for _t, tag in self._sent_tag_samples))
+            recv_tags = dict(Counter(tag for _t, tag in self._recv_tag_samples))
             inbound_kib = recv_bytes / 1024.0
             outbound_kib = sent_bytes / 1024.0
             self._record_throughput_sample(now, inbound_kib, outbound_kib)
@@ -664,6 +683,8 @@ class Network:
                 outbound_max_kib_per_sec=self._throughput_out_max,
                 inbound_packets_per_sec=float(len(self._recv_samples)),
                 outbound_packets_per_sec=float(len(self._sent_samples)),
+                inbound_packet_tags_per_sec=recv_tags,
+                outbound_packet_tags_per_sec=sent_tags,
             )
 
     def _set_remote_addr(self, addr: str, port: int) -> bool:
@@ -1101,7 +1122,7 @@ class Network:
         model_type: str = "Default",
         model_color: str = "Blue",
     ):
-        if self.id < 0 or not payload:
+        if self.id < 0 or payload is None:
             return
         LOGGER.info(
             "send AVATAR player_id=%s avatar_id=%s bytes=%s model=%s/%s",
@@ -1344,8 +1365,9 @@ class Network:
                 return None
             return self._mark_connection_lost(f"Network receive failed: {error}")
         received_at = time.monotonic()
-        self._record_received(len(data))
-        LOGGER.debug("recv packet tag=%s bytes=%s", _packet_tag_name(data), len(data))
+        tag_name = _packet_tag_name(data)
+        self._record_received(len(data), tag_name)
+        LOGGER.debug("recv packet tag=%s bytes=%s", tag_name, len(data))
         event = self._parse_event(data)
         if isinstance(event, HeartbeatAckEvent):
             self._record_heartbeat_ack(received_at, event.ping_seq)

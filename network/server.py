@@ -401,7 +401,7 @@ class LobbyServer:
         model_type: str,
         model_color: str,
     ):
-        if total_chunks <= 0 or payload_size <= 0:
+        if total_chunks < 0 or payload_size < 0:
             return
         previous = self._avatar_headers.get(player_id)
         if previous is not None and previous[0] != avatar_id:
@@ -435,6 +435,8 @@ class LobbyServer:
         if header is None:
             return False
         avatar_id, total_chunks, payload_size, _model_type, _model_color = header
+        if total_chunks == 0 and payload_size == 0:
+            return True
         if total_chunks <= 0 or payload_size <= 0:
             return False
         chunks = self._avatar_chunks.get((player_id, avatar_id), {})
@@ -455,6 +457,9 @@ class LobbyServer:
                     pack_avatar_header(player_id, avatar_id, total_chunks, payload_size, model_type, model_color),
                     addr,
                 )
+                if total_chunks == 0:
+                    LOGGER.debug("Replayed avatar metadata player_id=%s avatar_id=%s to addr=%s", player_id, avatar_id, addr)
+                    continue
                 for chunk_index in range(total_chunks):
                     self.sock.sendto(
                         pack_avatar_chunk(
@@ -946,7 +951,7 @@ class LobbyServer:
         if new_count != prev:
             self.broadcast(pack_platform_progress(player_id, new_count, self._match_id))
 
-    def eliminate_player(self, player_id: int):
+    def eliminate_player(self, player_id: int, reason: str = "unknown"):
         if not self.room_state.is_alive(player_id):
             return
 
@@ -954,7 +959,13 @@ class LobbyServer:
         self.room_state.mark_eliminated(player_id, placement)
         self._player_elapsed_at_result[player_id] = time.monotonic() - self._game_start_time
         self.end_policy.record_elimination(self.room_state.alive_positions())
-        LOGGER.info("Eliminated player_id=%s placement=%s standings=%s", player_id, placement, self.room_state.standings())
+        LOGGER.info(
+            "Eliminated player_id=%s placement=%s reason=%s standings=%s",
+            player_id,
+            placement,
+            reason,
+            self.room_state.standings(),
+        )
         self.broadcast(pack_elim(player_id, placement))
         self._check_game_end()
 
@@ -973,7 +984,7 @@ class LobbyServer:
             return
         self.room_state.touch_gameplay_player(player_id)
         LOGGER.info("Received DEAD player_id=%s addr=%s", player_id, addr)
-        self.eliminate_player(player_id)
+        self.eliminate_player(player_id, reason="dead_packet")
 
     def kick_player(self, target_player_id: int, reason_code: int):
         target_addr = self.room_state.get_addr_by_player_id(target_player_id)
@@ -1012,7 +1023,7 @@ class LobbyServer:
             return
 
         if self.room_state.state == STATE_IN_GAME and self.room_state.is_alive(target_player_id):
-            self.eliminate_player(target_player_id)
+            self.eliminate_player(target_player_id, reason="kick")
         self.kick_player(target_player_id, KICKED_REASON_KICKED)
 
     def handle_room_name_update(self, data: bytes, addr):
@@ -1319,7 +1330,7 @@ class LobbyServer:
 
         alive_positions = self.room_state.alive_positions()
         for player_id in self.end_policy.left_behind_candidates(alive_positions):
-            self.eliminate_player(player_id)
+            self.eliminate_player(player_id, reason="left_behind")
 
     def tick_paused(self):
         if self.room_state.state != STATE_PAUSED:
@@ -1339,7 +1350,7 @@ class LobbyServer:
 
         expired_ids = self.room_state.expired_reconnect_ids(now)
         for player_id in expired_ids:
-            self.eliminate_player(player_id)
+            self.eliminate_player(player_id, reason="reconnect_expired")
             if self.room_state.state != STATE_PAUSED:
                 return
 
