@@ -1,136 +1,268 @@
-# Tower-Jumping LAN Multiplayer (CS323 PDC Final)
+# Skyward Race LAN Multiplayer
 
-A small **pygame-ce** platformer with **UDP LAN lobby**: discovery on port **5556**, gameplay / lobby control on **5555** (default). No hardcoded LAN IP for normal play—hosts advertise rooms via beacons; joiners browse and connect.
+Skyward Race LAN Multiplayer is a real-time 2D tower-racing game built with
+Python and pygame-ce for CS323 - Parallel and Distributed Computing. Players
+host or join LAN rooms, ready up in a lobby, race upward through generated
+platform levels, and compare results after each match.
 
-**Dependency:** install **`pygame-ce`** (Community Edition), not the classic `pygame` package:
+The project focuses on practical distributed-systems concepts in a game setting:
+UDP networking, LAN discovery, client/server state synchronization, concurrent
+network threads, shared state protection, reconnect recovery, and runtime
+performance telemetry.
+
+Current app version is defined in [app/version.py](app/version.py). Run
+`python main.py --version` to print the exact version and build number.
+
+## Features
+
+- LAN room hosting, browsing, direct joining, and room closing.
+- Server-authoritative lobby and match state over UDP.
+- Ready checks, countdown start/cancel, host kick controls, and room name/level selection.
+- Real-time player synchronization with local input, remote animations, orb effects, and platform progress.
+- Customizable player profile, avatar head, model color, fullscreen/scale, control scheme, and metrics toggle.
+- Avatar transfer with compressed payloads, model-only metadata, replay for late joiners, and rematch cache retention.
+- Match results with placements, elapsed time, platform progress, avatars, and automatic return to lobby.
+- Reconnect tickets, pause/resume handling, spectator recovery, and stale packet rejection.
+- FPS, RTT, packet loss, throughput, packet rate, and packet-tag diagnostics in overlay and logs.
+- PyInstaller onedir build support for Windows distribution.
+
+## PDC Relevance
+
+| Concept | Implementation |
+| --- | --- |
+| Distributed clients | Each player runs a separate game client with local rendering/input and network event handling. |
+| Server-authoritative coordination | `network/server.py` owns room state, match state, eliminations, results, and validation. |
+| Message passing | UDP packets are packed/unpacked in `network/protocol.py` and sent with Python sockets. |
+| Concurrency | Client receiver, heartbeat, discovery, presence, beacon, and server loops run in separate threads/processes. |
+| Shared state synchronization | `network/room_state.py` centralizes players, readiness, positions, alive state, reconnect data, and standings. |
+| Synchronization mechanisms | Locks, queues, thread events, and monotonic timers protect shared data and coordinate background work. |
+| Performance evaluation | Built-in overlay and logs report FPS, latency/RTT, heartbeat loss, packet rates, and network throughput. |
+
+## Requirements
+
+- Python 3.10 or newer.
+- Windows is the primary packaged-build target.
+- Runtime dependency: `pygame-ce==2.5.2`.
+- Development/build dependency: `pyinstaller>=6.0`.
+
+Install runtime dependencies:
 
 ```bash
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
-Use **Python 3.10+**. Networking uses the standard library only (`socket`, `struct`, `threading`).
+Install test/build dependencies:
 
-## Quick start
+```bash
+python -m pip install -r requirements-dev.txt
+```
 
-From the project root (so `assets/` paths resolve):
+Use `pygame-ce`, not the legacy `pygame` package.
 
-### Menu (typical)
+## Quick Start
+
+Run from the project root so assets and local paths resolve correctly:
 
 ```bash
 python main.py
 ```
 
-Enter an **alphanumeric player name** (3–24 characters), then **Host Room** or **Join Room**.
+The normal flow is:
 
-### Host (CLI shortcut)
+1. Choose or load a player profile.
+2. Select or edit an avatar/model.
+3. Host a room or browse LAN rooms.
+4. Ready up, start countdown, race, view results, and return to lobby.
 
-```bash
-python main.py --host --name YourName --room YourRoomName
-```
-
-Room names must match `^[A-Za-z0-9]{3,24}$`.
-
-### Join without discovery (emergency / AP isolation)
+### Host From CLI
 
 ```bash
-python main.py --name YourName --server 192.168.1.10:5555
+python main.py --host --name KURT --room "Game Room"
 ```
 
-### Verbose logs
+### Direct Join
+
+Use this when discovery is blocked, when using a tunnel such as playit.gg, or
+when joining by known host address:
+
+```bash
+python main.py --name Player2 --server 192.168.1.10:5555
+```
+
+The value must be `HOST:PORT`.
+
+### Development Profiles
+
+Use `--dev` when running multiple local instances on one machine:
+
+```bash
+python main.py --dev
+```
+
+The packaged build also includes `dev.bat` beside the exe for quick multi-window
+testing.
+
+### Logs
+
+Client logs are written to:
+
+```text
+logs/<timestamp>-<player>/client.log
+```
+
+Hosted rooms also create:
+
+```text
+logs/<timestamp>-<player>/server.log
+```
+
+In PyInstaller builds, logs are created beside `SkywardRaceLAN.exe`. In source
+runs, logs are created under the repository root.
+
+Use verbose logging when diagnosing network behavior:
 
 ```bash
 python main.py --log-level DEBUG
 ```
 
-The dedicated server process supports the same flag:
+## Controls
 
-```bash
-python network/server.py --room MyRoom --log-level DEBUG
+| Context | Input | Action |
+| --- | --- | --- |
+| Menu/lobby/results | Mouse | Buttons, room cards, settings, ready/start, kick, return |
+| In game | A / D | Move left/right |
+| In game | W | Jump |
+| Settings | Control scheme toggle | Switch movement between WASD and arrow-key layouts |
+| Settings | Metrics toggle | Show or hide FPS/network metrics overlay |
+
+## Networking
+
+| Port | Protocol | Purpose |
+| --- | --- | --- |
+| 5555 | UDP | Room, lobby control, gameplay, avatar transfer, heartbeat, reconnect |
+| 5556 | UDP broadcast | LAN room discovery and presence |
+
+Notes:
+
+- Hosts run a local server subprocess, then connect to it like any other client.
+- Joiners normally discover rooms by UDP broadcast on the same LAN.
+- Direct join bypasses discovery but still requires UDP traffic to reach the host.
+- Campus, guest, or public Wi-Fi may block peer-to-peer traffic through AP/client isolation.
+- Windows Defender Firewall may need private-network access for Python or the packaged exe.
+
+## Performance Metrics
+
+The in-game/settings-controlled overlay and logs expose:
+
+- FPS.
+- RTT/ping EMA, rolling average/min/max, jitter, p50, p95, session average/min/max.
+- Heartbeat sent/acked/lost and loss percentage.
+- Inbound/outbound KiB/s current/average/min/max.
+- Packet rates and packet tags per second, such as `PSTA`, `HRTB`, `HBAK`, `AVHD`, and `AVCK`.
+
+These metrics support the academic evaluation requirement for response time,
+latency, throughput, and runtime performance evidence. For report generation,
+see [tools/brochure_performance.py](tools/brochure_performance.py).
+
+## Building A Windows Distribution
+
+Prebuilt Windows packages may be distributed as zip artifacts. Download or share
+the full zip package for a release/build, then extract it before running
+`SkywardRaceLAN.exe`.
+
+Install development dependencies first:
+
+```powershell
+python -m pip install -r requirements-dev.txt
 ```
 
-## Host vs joiner
+Build the executable folder:
 
-| Role   | What runs |
-|--------|-----------|
-| **Host** | `main.py` starts a **subprocess** `network/server.py`, then connects to `127.0.0.1:5555` like any client. |
-| **Joiner** | `main.py` only runs the client; discovery listens on **5556** while browsing. |
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build_exe.ps1
+```
 
-## Controls (in-game)
+Output:
 
-| Input | Action |
-|-------|--------|
-| **A** / **D** | Move |
-| **W** | Jump (when on a platform) |
-| Window | Resizable |
+```text
+dist\SkywardRaceLAN\SkywardRaceLAN.exe
+```
 
-Lobby screens use the **mouse** for buttons, room cards, ready, kick, etc.
+Distribute the whole `dist\SkywardRaceLAN\` folder, not just the exe. The
+`_internal` folder contains bundled assets and runtime dependencies. A good
+manual package artifact name is:
 
-## Ports and firewall
+```text
+SkywardRaceLAN-v<semver>-build-<build>.zip
+```
 
-| Port  | Role |
-|------|------|
-| **5555** | Game / lobby UDP (host binds here). |
-| **5556** | Discovery beacons (all LAN listeners; must not be blocked for browse). |
-
-On **Windows**, the first time Python listens on UDP, **Windows Defender Firewall** may prompt—allow access on **private** networks for the demo. If joiners never see rooms, check that **both** ports are allowed for Python.
-
-## Wi-Fi / AP isolation
-
-Some campus or guest Wi-Fi networks use **client isolation** (devices cannot see each other). Discovery **will not work** on those SSIDs. Mitigations:
-
-- Use a **phone hotspot** or a known “game LAN” where device-to-device traffic is allowed.
-- Or use **`--server HOST:PORT`** so the joiner connects directly by IP (still needs the router to allow UDP between clients).
+Before distributing a packaged build, update `VERSION_MAJOR`,
+`VERSION_MINOR`, `VERSION_PATCH`, and/or `BUILD_NUMBER` in
+[app/version.py](app/version.py).
 
 ## Testing
 
-Automated tests use **pytest**. Bytecode under `tests/` is discouraged: `tests/conftest.py` sets `sys.dont_write_bytecode = True`, and `.gitignore` excludes `__pycache__` / `*.pyc`.
+Run the full test suite:
 
 ```bash
-# Fast unit tests (no subprocess server)
-python -m pytest tests -q -m "not integration"
-
-# Full suite including loopback UDP smoke tests (starts `network/server.py`)
 python -m pytest tests -q
 ```
 
-Coverage includes **protocol** round-trips and malformed packets, **discovery** TTL + beacon version filtering, **room state / cooldown / end policy**, **UI animations**, and **integration** checks (sixth player rejected, garbage datagram does not kill the server).
-
-A richer scripted flow (countdown, `GSTART`, eliminations) is available via:
+Run quick tests without subprocess/loopback integration checks:
 
 ```bash
-python tools/scripted_lobby.py --help
-python tools/list_rooms.py
+python -m pytest tests -q -m "not integration"
 ```
 
-## Manual smoke / acceptance
+Run only integration checks:
 
-For course demos, use the **manual matrix** in `docs/implementationPlan/lan_lobby_implementation_plan.md` (§9.3, cases M1–M20): multi-client scenarios, kick/cooldown, countdown, two rooms on one LAN, etc.
+```bash
+python -m pytest tests -q -m integration
+```
 
-## Report / demo checklist (Phase 5)
+The suite covers protocol encoding/decoding, malformed packets, room state,
+cooldowns, end policy, lobby integration, reconnect recovery, avatar assembly,
+network metrics, UI helpers, results rendering, and gameplay edge cases.
 
-1. Record a **short demo video** (host + at least one joiner on your LAN or loopback).  
-2. Capture **screenshots** of: main menu, browse lobby, host lobby, joined lobby, in-game, results.  
-3. Keep **`readme.md`** with the class; cite the implementation plan for protocol details.
+## Useful Tools
 
-## Project layout (high level)
+```bash
+python tools/list_rooms.py
+python tools/scripted_lobby.py --help
+python tools/brochure_performance.py --help
+```
 
-- `main.py` — Entry; CLI flags; pygame bootstrap.  
-- `app/state_machine.py` — Global app context, server subprocess, network attach/detach.  
-- `states/` — Menu, browse, host/joined lobby, in-game, results.  
-- `network/` — `protocol.py`, `server.py`, `discovery.py`, `beacon.py`, `room_state.py`, `network_handler.py`, etc.  
-- `ui/` — Theme, components, animations.  
-- `tests/` — Pytest suite.  
-- `docs/` — Analysis and implementation plan.
+- `list_rooms.py` inspects LAN discovery beacons.
+- `scripted_lobby.py` drives lobby/gameplay protocol scenarios.
+- `brochure_performance.py` produces performance evidence for reports.
+
+## Project Structure
+
+```text
+app/                 Application context, display, profile, logging, versioning
+assets/              Sprites, UI frames, fonts, maps, and game art
+network/             Protocol, UDP client/server, discovery, room state, reconnect
+player_scripts/      Player physics, animation, avatar/model assets
+states/              Menu, avatar setup, browse lobby, host/join lobby, game, results
+ui/                  Theme, widgets, HUD, metrics overlay, results table
+world/               Level generation, constants, assets, camera
+tools/               Manual diagnostics and performance/report helpers
+scripts/             Build and packaged-dev helpers
+tests/               Pytest unit and integration coverage
+```
 
 ## Troubleshooting
 
-| Symptom | Things to try |
-|---------|----------------|
-| Joiner sees **no rooms** | Same subnet? Firewall? AP isolation? Try hotspot; or `--server IP:5555`. |
-| **Address already in use** | Another host is on 5555/5556; close other instances or change `--port` / discovery (advanced). |
-| **Could not start server** | Port 5555 taken; stop duplicate `server.py` or other app using UDP 5555. |
-| Kicked / room closed | Red **banner** on main menu explains; cooldown re-join shows remainings or “session blocked”. |
+| Symptom | Likely cause | What to try |
+| --- | --- | --- |
+| Joiner sees no rooms | UDP broadcast blocked or different subnet | Use the same private LAN, allow firewall access, or direct join with `--server`. |
+| Direct join fails | Wrong host/port or UDP tunnel not mapped | Verify host address, port forwarding/tunnel, and server log. |
+| Address already in use | Another server is bound to UDP 5555/5556 | Close duplicate instances or restart the old packaged build. |
+| Missing assets in packaged build | Only the exe was copied | Copy or zip the whole `dist\SkywardRaceLAN\` folder. |
+| Avatars missing | Late packet, stale cache, or interrupted transfer | Check `AVHD`/`AVCK` entries in logs; reconnect/rematch paths now replay and cache avatar metadata. |
+| High ping or packet loss | Tunnel route, Wi-Fi interference, or blocked UDP | Compare direct LAN vs tunnel logs and inspect RTT/loss/throughput metrics. |
+| Player not eliminated or result delayed | Terminal packet loss | Current clients resend pending DEAD/GOAL until server confirmation. |
 
-## License / course use
+## License And Course Use
 
-Academic project (CS323 — Parallel and Distributed Computing).
+Academic project for CS323 - Parallel and Distributed Computing.
