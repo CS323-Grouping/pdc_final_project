@@ -1,6 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
 # PyInstaller spec: onedir build with bundled assets (pygame-ce).
 #
+# The spec walks ``assets/`` (``datas``), so ``assets/font/`` (see ``app/fonts.py``)
+# ships bundled TTF files with the build automatically.
+#
 # Release semver and build number: edit app/version.py (VERSION_* and BUILD_NUMBER).
 # Distribute the whole built folder under dist/ (application + _internal), not a lone .exe.
 # For Windows File Properties version info, you can generate a VSVersionInfo block

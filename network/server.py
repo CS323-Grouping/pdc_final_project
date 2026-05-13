@@ -747,7 +747,7 @@ class LobbyServer:
         unpacked = safe_unpack_heartbeat(data)
         if unpacked is None:
             return
-        _tag, player_id, session_token, _client_state, _countdown_id, _match_id = unpacked
+        _tag, player_id, session_token, _client_state, _countdown_id, _match_id, ping_seq = unpacked
         addr_player_id = self.room_state.get_player_id_by_addr(addr)
         if addr_player_id != player_id:
             position = self.room_state.reconnect_player(addr, player_id, session_token)
@@ -765,7 +765,15 @@ class LobbyServer:
             return
         self.room_state.touch_player(player_id)
         try:
-            self.sock.sendto(pack_heartbeat_ack(self.room_state.state, self._countdown_id, self._match_id), addr)
+            self.sock.sendto(
+                pack_heartbeat_ack(
+                    self.room_state.state,
+                    self._countdown_id,
+                    self._match_id,
+                    ping_seq=int(ping_seq) & UINT32_MAX,
+                ),
+                addr,
+            )
         except OSError as error:
             LOGGER.debug("Heartbeat ack failed player_id=%s addr=%s: %s", player_id, addr, error)
 
@@ -906,7 +914,7 @@ class LobbyServer:
         unpacked = safe_unpack_orb_collect(data)
         if unpacked is None:
             return
-        _tag, player_id, orb_index, cooldown_sec = unpacked
+        _tag, player_id, orb_index, cooldown_sec, effect_id = unpacked
         addr_player_id = self.room_state.get_player_id_by_addr(addr)
         if addr_player_id is None or addr_player_id != player_id:
             return
@@ -917,7 +925,7 @@ class LobbyServer:
             return
         if not self.room_state.is_alive(player_id):
             return
-        self.broadcast(pack_orb_collect(player_id, orb_index, cooldown_sec))
+        self.broadcast(pack_orb_collect(player_id, orb_index, cooldown_sec, effect_id))
 
     def handle_platform_progress(self, data: bytes, addr):
         unpacked = safe_unpack_platform_progress(data)

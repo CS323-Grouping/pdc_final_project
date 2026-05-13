@@ -7,21 +7,33 @@ import zlib
 
 import pygame
 
+from app.fonts import load_ui_font
+from app.input_config import CONTROL_SCHEME_ARROWS, normalize_control_scheme
 from network import network_handler as nw
 from network import protocol
+from network.orb_effect_sync import (
+    ORB_EFFECT_UNSPECIFIED,
+    apply_effect_id_to_hud_timers,
+    effect_id_from_collect_result,
+    is_valid_effect_id,
+    tick_hud_timers,
+)
 from player_scripts.animation import AnimationState, load_spritesheet_frames
 from player_scripts.avatar_sprite import AVATAR_RECT, compose_player_frames, make_default_avatar
 from player_scripts import player as pl
 from states.common import ScreenState
+from ui.gameplay_effects_hud import draw_playable_effect_acquire_toasts
 from ui.ingame_layout import InGameLayoutRenderer, InGameNotification, RankingRow
+from ui.pixel_chrome import DEFAULT_PIXEL_STYLE, draw_neutral_button, draw_panel_shell, draw_well, line_width_for_scale
 from ui.theme import DEFAULT_THEME
-from ui.widgets import Button, draw_button
 from world.assets import load_world_assets
 from world.constants import (
     BORDER_WIDTH,
     INTERNAL_HEIGHT,
     INTERNAL_WIDTH,
     PLAYABLE_RIGHT,
+    PLAYABLE_WIDTH,
+    PLAYABLE_X,
     PLAYER_FRAME_HEIGHT,
     PLAYER_FRAME_WIDTH,
     PLAYER_HITBOX_HEIGHT,
@@ -35,7 +47,28 @@ from player_scripts import camera
 
 LOGGER = logging.getLogger(__name__)
 
+_ORB_EFFECT_READABLE = {
+    "speed": "Speed Buff",
+    "jump": "Jump Buff",
+    "shield": "Shield Buff",
+    "double_jump": "Double Jump Buff",
+    "launch": "Launch Boost",
+    "reverse_control": "Reverse Control",
+    "slippery": "Slippery",
+    "slow_falling": "Slow Falling",
+    "heavy": "Heavy",
+    "weak_jump": "Weak Jump",
+    "shield_blocked": "Shield Destroyed",
+}
+_ORB_DEBUFF_EFFECTS = frozenset({"reverse_control", "slippery", "slow_falling", "heavy", "weak_jump"})
+
 AVATAR_FALLBACK_DELAY_SEC = 1.0
+
+_SPECTATOR_BAR_Y = INTERNAL_HEIGHT - 32
+_SPECTATOR_BTN_W, _SPECTATOR_BTN_H = 22, 15
+_SPECTATOR_PANEL_W = 128
+_SPECTATOR_GAP = 5
+_SPECTATOR_OUTER_MARGIN = 4
 
 
 @dataclass
@@ -94,6 +127,8 @@ class InGameState(ScreenState):
         self._ui_elapsed = 0.0
         self._ingame_layout: InGameLayoutRenderer | None = None
         self._status_notice_cooldown = 0.0
+        self._effect_acquire_toasts: list[tuple[str, bool, float]] = []
+        self._remote_orb_hud_timers: dict[int, dict[str, float]] = {}
 
     def enter(self):
         self.camera = camera.Camera(INTERNAL_WIDTH, INTERNAL_HEIGHT)
@@ -163,6 +198,8 @@ class InGameState(ScreenState):
         self._notification_elapsed = 0.0
         self._ui_elapsed = 0.0
         self._status_notice_cooldown = 0.0
+        self._effect_acquire_toasts = []
+        self._remote_orb_hud_timers.clear()
         self.goal = Goal(level.goal_center_x, level.goal_y, width=level.goal_width)
         self._goal_reached = False
         self._window_hud_font = None
@@ -178,23 +215,31 @@ class InGameState(ScreenState):
                 self.context.network.set_client_state(protocol.CLIENT_STATE_SPECTATING)
             self._set_spectator_target(self._default_spectator_target(), snap=True)
 
+    def _spectator_strafe_keys(self) -> tuple[int, int]:
+        if normalize_control_scheme(self.context.control_scheme) == CONTROL_SCHEME_ARROWS:
+            return pygame.K_LEFT, pygame.K_RIGHT
+        return pygame.K_a, pygame.K_d
+
     def handle_event(self, event):
         super().handle_event(event)
         if not self._observing or self._paused_players:
             return
         if event.type == pygame.KEYDOWN:
-            if event.key in (pygame.K_RIGHT, pygame.K_d):
+            left_k, right_k = self._spectator_strafe_keys()
+            if event.key == right_k:
                 self._cycle_spectator_target(1)
                 return
-            if event.key in (pygame.K_LEFT, pygame.K_a):
+            if event.key == left_k:
                 self._cycle_spectator_target(-1)
                 return
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-            prev_rect, next_rect = self._spectator_control_rects()
-            if prev_rect.collidepoint(event.pos):
+            _outer, prev_rect, _panel, next_rect = self._spectator_controls_layout_logical()
+            prev_win = self._scale_window_rect(prev_rect)
+            next_win = self._scale_window_rect(next_rect)
+            if prev_win.collidepoint(event.pos):
                 self._cycle_spectator_target(-1)
                 return
-            if next_rect.collidepoint(event.pos):
+            if next_win.collidepoint(event.pos):
                 self._cycle_spectator_target(1)
                 return
 
@@ -349,6 +394,14 @@ class InGameState(ScreenState):
                 self.context.set_status("Match resumed.", duration=2.0)
             elif isinstance(event, nw.OrbCollectEvent):
                 self._sync_orb_pickup(event.orb_index, event.cooldown_sec)
+                my_id = self.context.network.id if self.context.network else -1
+                if (
+                    event.player_id != my_id
+                    and is_valid_effect_id(event.effect_id)
+                    and int(event.effect_id) != ORB_EFFECT_UNSPECIFIED
+                ):
+                    remote = self._remote_orb_hud_timers.setdefault(event.player_id, {})
+                    apply_effect_id_to_hud_timers(event.effect_id, remote)
             elif isinstance(event, nw.GoalEvent):
                 self._finished_player_ids.add(event.player_id)
                 if event.player_id == (self.context.network.id if self.context.network else -1):
@@ -372,6 +425,7 @@ class InGameState(ScreenState):
                     self._enqueue_ingame_notification("eliminated", name, event.placement)
                 self._elimination_feed.append(feed_line)
                 self._placements_by_id[event.player_id] = event.placement
+                self._remote_orb_hud_timers.pop(event.player_id, None)
                 if event.player_id == my_id:
                     self._finish_pending = False
                     self._death_pending = False
@@ -395,6 +449,7 @@ class InGameState(ScreenState):
                         self._set_spectator_target(self._default_spectator_target(), snap=True)
                 self._paused_players.pop(event.player_id, None)
             elif isinstance(event, nw.ReconnectSnapshotEvent):
+                self._remote_orb_hud_timers.clear()
                 self.context.room_name = event.room_name
                 self.context.selected_level = protocol.normalize_level_id(event.selected_level)
                 self.context.level_seed = int(event.level_seed) & protocol.UINT32_MAX
@@ -436,6 +491,7 @@ class InGameState(ScreenState):
                     if player_id not in active_ids:
                         self._remote_positions.pop(player_id, None)
                         self._remote_players.pop(player_id, None)
+                        self._remote_orb_hud_timers.pop(player_id, None)
                         self._platforms_reached_by_id.pop(player_id, None)
                         self._finished_player_ids.discard(player_id)
                         # Keep avatar in receiver — results screen reads it from the same dict.
@@ -462,6 +518,8 @@ class InGameState(ScreenState):
         self._ui_elapsed += dt
         self._status_notice_cooldown = max(0.0, self._status_notice_cooldown - dt)
         self._tick_ingame_notifications(dt)
+        self._prune_effect_acquire_toasts()
+        self._tick_remote_orb_hud_timers(dt)
 
         if self._drain_network():
             return
@@ -492,7 +550,7 @@ class InGameState(ScreenState):
                 self.camera.update(self.hero)
             return
 
-        self.hero.update(dt, INTERNAL_WIDTH, INTERNAL_HEIGHT, self.platforms)
+        self.hero.update(dt, INTERNAL_WIDTH, INTERNAL_HEIGHT, self.platforms, self.context.control_scheme)
 
         pr = self.hero.platforms_reached_count()
         my_id = self.context.network.id if self.context.network else -1
@@ -513,21 +571,11 @@ class InGameState(ScreenState):
                 cooldown_sec = random.randint(protocol.ORB_COOLDOWN_MIN_SEC, protocol.ORB_COOLDOWN_MAX_SEC)
                 powerup.start_cooldown(float(cooldown_sec))
                 actual_effect = self.hero.collect_power_up(powerup.effect_type)
-                net.send_orb_collect(i, cooldown_sec)
-                readable = {
-                    'speed': 'Speed Buff',
-                    'jump': 'Jump Buff',
-                    'shield': 'Shield Buff',
-                    'double_jump': 'Double Jump Buff',
-                    'launch': 'Launch Boost',
-                    'reverse_control': 'Reverse Control',
-                    'slippery': 'Slippery',
-                    'slow_falling': 'Slow Falling',
-                    'heavy': 'Heavy',
-                    'weak_jump': 'Weak Jump',
-                    'shield_blocked': 'Shield Destroyed',
-                }.get(actual_effect, 'Unknown')
+                eid = effect_id_from_collect_result(actual_effect)
+                net.send_orb_collect(i, cooldown_sec, eid)
+                readable = _ORB_EFFECT_READABLE.get(actual_effect, "Unknown")
                 self.context.set_status(f"Orb: {readable}", duration=3.0)
+                self._push_effect_acquire_toast_from_orb(actual_effect, readable)
 
         for remote in self._remote_players.values():
             remote.animation.update(dt)
@@ -572,6 +620,42 @@ class InGameState(ScreenState):
             self._last_pos = self.hero.pos.copy()
             self._last_animation_state = current_state
             self._net_send_elapsed = 0.0
+
+    def _tick_remote_orb_hud_timers(self, dt: float) -> None:
+        for timers in list(self._remote_orb_hud_timers.values()):
+            tick_hud_timers(dt, timers)
+        ids = list(self._remote_orb_hud_timers.keys())
+        for pid in ids:
+            if not self._remote_orb_hud_timers.get(pid):
+                self._remote_orb_hud_timers.pop(pid, None)
+
+    def _hud_powerup_timers_overlay(self) -> dict[str, float]:
+        """Left-panel buff icons: spectating follows the targeted live player's synced HUD timers."""
+        if self._observing:
+            alive = self._alive_spectator_ids()
+            tid = self._spectate_player_id
+            if tid is None or tid not in alive:
+                return {}
+            return dict(self._remote_orb_hud_timers.get(tid, {}))
+        if self.hero is None:
+            return {}
+        return self.hero.active_power_up_timers()
+
+    def _prune_effect_acquire_toasts(self) -> None:
+        now = time.monotonic()
+        self._effect_acquire_toasts = [(t, d, e) for t, d, e in self._effect_acquire_toasts if e > now]
+
+    def _push_effect_acquire_toast_from_orb(self, actual_effect: str, readable: str) -> None:
+        if actual_effect == "shield_blocked":
+            msg, is_debuff = "Shield destroyed", True
+        else:
+            base = readable if readable != "Unknown" else "Effect"
+            msg = f"{base} acquired"
+            is_debuff = actual_effect in _ORB_DEBUFF_EFFECTS
+        expire = time.monotonic() + 2.35
+        self._effect_acquire_toasts.append((msg, is_debuff, expire))
+        if len(self._effect_acquire_toasts) > 5:
+            self._effect_acquire_toasts = self._effect_acquire_toasts[-5:]
 
     def _notify_status_once(self, message: str, duration: float = 2.0, cooldown: float = 1.5) -> None:
         if self._status_notice_cooldown > 0.0:
@@ -826,8 +910,7 @@ class InGameState(ScreenState):
 
     def _ingame_window_hud_font(self) -> pygame.font.Font:
         if self._window_hud_font is None:
-            t = DEFAULT_THEME
-            self._window_hud_font = pygame.font.SysFont(t.font_body, 16, bold=True)
+            self._window_hud_font = load_ui_font(self.context.project_root, 16, bold=True)
         return self._window_hud_font
 
     def _tick_pause(self, dt: float, net: nw.Network):
@@ -967,9 +1050,19 @@ class InGameState(ScreenState):
                 match_elapsed,
                 self.context.room_name,
                 pr_local,
-                self.hero.active_power_up_timers(),
+                self._hud_powerup_timers_overlay(),
                 self._active_notification,
                 self._ui_elapsed,
+            )
+
+        if not self._observing:
+            draw_playable_effect_acquire_toasts(
+                surface,
+                self.context.small_font,
+                scale,
+                [(t, d) for t, d, _ in self._effect_acquire_toasts],
+                self.context.show_performance_metrics,
+                self.context.tiny_font,
             )
 
         if self._observing:
@@ -1029,12 +1122,21 @@ class InGameState(ScreenState):
             scaled_body = pygame.transform.scale(body_image, body_target.size)
             surface.blit(scaled_body, body_target)
 
-    def _spectator_control_rects(self) -> tuple[pygame.Rect, pygame.Rect]:
-        center_x = INTERNAL_WIDTH // 2
-        y = INTERNAL_HEIGHT - 28
-        prev_rect = pygame.Rect(center_x - 64, y, 18, 14)
-        next_rect = pygame.Rect(center_x + 46, y, 18, 14)
-        return prev_rect, next_rect
+    def _spectator_controls_layout_logical(self) -> tuple[pygame.Rect, pygame.Rect, pygame.Rect, pygame.Rect]:
+        """Spectator bar centered in the playable column: outer shell, <, name well, >."""
+        bw, bh = _SPECTATOR_BTN_W, _SPECTATOR_BTN_H
+        pw = _SPECTATOR_PANEL_W
+        gap = _SPECTATOR_GAP
+        m = _SPECTATOR_OUTER_MARGIN
+        inner_w = bw + gap + pw + gap + bw
+        cx = PLAYABLE_X + PLAYABLE_WIDTH // 2
+        left = cx - inner_w // 2
+        y = _SPECTATOR_BAR_Y
+        prev_r = pygame.Rect(left, y, bw, bh)
+        panel_r = pygame.Rect(prev_r.right + gap, y, pw, bh)
+        next_r = pygame.Rect(panel_r.right + gap, y, bw, bh)
+        outer = pygame.Rect(left - m, y - m, inner_w + m * 2, bh + m * 2)
+        return outer, prev_r, panel_r, next_r
 
     def _scale_window_rect(self, rect: pygame.Rect) -> pygame.Rect:
         display = self.context.display_manager
@@ -1042,12 +1144,20 @@ class InGameState(ScreenState):
         return pygame.Rect(rect.x * scale, rect.y * scale, rect.w * scale, rect.h * scale)
 
     def _draw_spectator_controls(self, surface: pygame.Surface):
-        theme = DEFAULT_THEME
-        prev_rect, next_rect = self._spectator_control_rects()
-        panel_rect = pygame.Rect(prev_rect.right + 4, prev_rect.y, next_rect.left - prev_rect.right - 8, prev_rect.h)
-        prev_window = self._scale_window_rect(prev_rect)
-        next_window = self._scale_window_rect(next_rect)
-        panel_window = self._scale_window_rect(panel_rect)
+        display = self.context.display_manager
+        if display is None:
+            return
+        px = DEFAULT_PIXEL_STYLE
+        scale_v = display.config.selected_scale
+        lw = line_width_for_scale(scale_v)
+
+        outer_l, prev_l, panel_l, next_l = self._spectator_controls_layout_logical()
+        outer_w = self._scale_window_rect(outer_l)
+        prev_w = self._scale_window_rect(prev_l)
+        panel_w = self._scale_window_rect(panel_l)
+        next_w = self._scale_window_rect(next_l)
+
+        draw_panel_shell(surface, outer_w, lw, px)
 
         alive_ids = self._alive_spectator_ids()
         target_id = self._spectate_player_id if self._spectate_player_id in alive_ids else None
@@ -1055,33 +1165,30 @@ class InGameState(ScreenState):
             target_id = self._default_spectator_target()
             self._set_spectator_target(target_id, snap=True)
         name = self._name_by_id.get(target_id, f"P{target_id}") if target_id is not None else "No live targets"
-        label = self._fit_text(f"Watching {name}", self.context.small_font, max(24, panel_window.w - 12))
+        label_raw = f"Watching {name}"
+        label = self._fit_text(label_raw, self.context.small_font, max(32, panel_w.w - scale_v * 4))
 
-        card = pygame.Surface(panel_window.size, pygame.SRCALPHA)
-        card.fill((*theme.bg_panel, 220))
-        surface.blit(card, panel_window.topleft)
-        pygame.draw.rect(surface, theme.border, panel_window, width=1, border_radius=6)
-        text = self.context.small_font.render(label, True, theme.text_warn)
-        surface.blit(text, text.get_rect(center=panel_window.center))
+        draw_well(surface, panel_w, lw, px)
 
         enabled = len(alive_ids) > 1
-        mouse_pos = self.context.mouse_pos
-        draw_button(
-            surface,
-            self.context.small_font,
-            Button(prev_window, "<", enabled),
-            theme,
-            hovered=enabled and prev_rect.collidepoint(mouse_pos),
-            variant="neutral",
-        )
-        draw_button(
-            surface,
-            self.context.small_font,
-            Button(next_window, ">", enabled),
-            theme,
-            hovered=enabled and next_rect.collidepoint(mouse_pos),
-            variant="neutral",
-        )
+        mp = self.context.mouse_pos
+
+        draw_neutral_button(surface, prev_w, lw, px)
+        if enabled and prev_w.collidepoint(mp):
+            pygame.draw.rect(surface, px.hover_outline, prev_w.inflate(2, 2), width=1)
+
+        draw_neutral_button(surface, next_w, lw, px)
+        if enabled and next_w.collidepoint(mp):
+            pygame.draw.rect(surface, px.hover_outline, next_w.inflate(2, 2), width=1)
+
+        caret = self.context.small_font.render("<", True, px.text_btn_dim if not enabled else px.text_btn_bright)
+        surface.blit(caret, caret.get_rect(center=prev_w.center))
+        caret_r = self.context.small_font.render(">", True, px.text_btn_dim if not enabled else px.text_btn_bright)
+        surface.blit(caret_r, caret_r.get_rect(center=next_w.center))
+
+        text_color = px.text_muted if target_id is None else px.text_label
+        text_s = self.context.small_font.render(label, True, text_color)
+        surface.blit(text_s, text_s.get_rect(center=panel_w.center))
 
     def _player_position(self, player_id: int) -> tuple[float, float] | None:
         my_id = self.context.network.id if self.context.network else -1

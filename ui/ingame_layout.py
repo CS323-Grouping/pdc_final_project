@@ -6,11 +6,11 @@ from typing import Literal, Mapping
 
 import pygame
 
-from ui.theme import DEFAULT_THEME
+from app.fonts import load_ui_font
 
 
 INTERNAL_RECTS = {
-    "ranking_label": pygame.Rect(7, 7, 56, 16),
+    "ranking_label": pygame.Rect(7, 6, 56, 16),
     "card_base": pygame.Rect(5, 28, 60, 20),
     "card_layout": pygame.Rect(5, 28, 60, 100),
     "head_base": pygame.Rect(7, 90, 16, 16),
@@ -78,6 +78,7 @@ EFFECT_ICON_FILES = {
     "Weak Jump": "10_WeakJumpDebuff.png",
 }
 
+
 BUFF_LABELS = ("Speed Buff", "Jump Buff", "Shield Aura", "Double Jump", "Launch Boost", "Slow Falling")
 DEBUFF_LABELS = ("Reverse Control", "Slippery", "Heavy", "Weak Jump")
 
@@ -102,6 +103,7 @@ class InGameNotification:
 
 class InGameLayoutRenderer:
     def __init__(self, project_root: Path):
+        self._project_root = project_root
         root = project_root / "assets" / "inGame"
         self.assets = {
             key: pygame.image.load(str(root / filename)).convert_alpha()
@@ -137,7 +139,7 @@ class InGameLayoutRenderer:
         key = (max(6, int(px)), bold)
         font = self._font_cache.get(key)
         if font is None:
-            font = pygame.font.SysFont(DEFAULT_THEME.font_body, key[0], bold=bold)
+            font = load_ui_font(self._project_root, key[0], bold=bold)
             self._font_cache[key] = font
         return font
 
@@ -254,7 +256,8 @@ class InGameLayoutRenderer:
         surface.blit(overlay, target)
 
     def _draw_ranking(self, surface: pygame.Surface, scale: int, rows: list[RankingRow], elapsed: float) -> None:
-        self._draw_text_center(surface, "RANKINGS", INTERNAL_RECTS["ranking_label"], scale, max_internal_px=6)
+        # 56×16 label; y=6 centers it in the 28px strip above the first ranking row (y=28).
+        self._draw_text_center(surface, "RANKINGS", INTERNAL_RECTS["ranking_label"], scale, max_internal_px=12)
 
         overlay_keys = ("overlay_gold", "overlay_silver", "overlay_bronze")
         head_keys = ("head_gold", "head_silver", "head_bronze")
@@ -295,7 +298,9 @@ class InGameLayoutRenderer:
             dist_rect = self._offset_rect(INTERNAL_RECTS["distance_textbox"], row_y)
             self._draw_text_center(surface, str(row.rank), rank_rect, scale, max_internal_px=5)
             self._draw_marquee_text(surface, row.name, name_rect, scale, elapsed)
-            self._draw_text_center(surface, row.distance_text, dist_rect, scale, (188, 198, 210), max_internal_px=5)
+            self._draw_text_center(
+                surface, row.distance_text, dist_rect, scale, (188, 198, 210), max_internal_px=5, bold=False
+            )
 
     def _draw_eliminated_badge(self, surface: pygame.Surface, row_y: int, scale: int) -> None:
         textbox = pygame.Rect(23, row_y + 2, 40, 16)
@@ -316,7 +321,14 @@ class InGameLayoutRenderer:
 
         self._draw_text_center(surface, room_name or "Room", INTERNAL_RECTS["room_name_textbox"], scale, max_internal_px=6)
 
-        self._draw_text_center(surface, f"Platform: {platforms_reached}", INTERNAL_RECTS["platforms_textbox"], scale, max_internal_px=5)
+        self._draw_text_center(
+            surface,
+            f"Platform: {platforms_reached}",
+            INTERNAL_RECTS["platforms_textbox"],
+            scale,
+            max_internal_px=5,
+            bold=False,
+        )
 
     def _format_clock(self, seconds: float | None) -> str:
         if seconds is None:
@@ -369,6 +381,6 @@ class InGameLayoutRenderer:
         if icon is not None:
             self._draw_image(surface, icon, icon_rect, scale)
         if text_align == "right":
-            self._draw_text_right(surface, f"{remaining:.1f}s", text_rect, scale, max_internal_px=5)
+            self._draw_text_right(surface, f"{remaining:.1f}s", text_rect, scale, max_internal_px=5, bold=False)
         else:
-            self._draw_text_left(surface, f"{remaining:.1f}s", text_rect, scale, max_internal_px=5)
+            self._draw_text_left(surface, f"{remaining:.1f}s", text_rect, scale, max_internal_px=5, bold=False)

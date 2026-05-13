@@ -278,12 +278,12 @@ def test_heartbeat_round_trip():
     p = protocol.pack_heartbeat(3, 1234, protocol.CLIENT_STATE_RESULTS, countdown_id=7, match_id=9)
     u = protocol.safe_unpack_heartbeat(p)
     assert u is not None
-    assert u[1:] == (3, 1234, protocol.CLIENT_STATE_RESULTS, 7, 9)
+    assert u[1:] == (3, 1234, protocol.CLIENT_STATE_RESULTS, 7, 9, 0)
 
-    ack = protocol.pack_heartbeat_ack(protocol.STATE_LOBBY, countdown_id=7, match_id=9)
+    ack = protocol.pack_heartbeat_ack(protocol.STATE_LOBBY, countdown_id=7, match_id=9, ping_seq=42)
     ack_u = protocol.safe_unpack_heartbeat_ack(ack)
     assert ack_u is not None
-    assert ack_u[1:] == (protocol.STATE_LOBBY, 7, 9)
+    assert ack_u[1:] == (protocol.STATE_LOBBY, 7, 9, 42)
 
 
 def test_cdwn_round_trip():

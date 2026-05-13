@@ -9,6 +9,7 @@ from pathlib import Path
 import tempfile
 
 from network import protocol
+from app.input_config import CONTROL_SCHEME_WASD, normalize_control_scheme
 
 
 SCHEMA_VERSION = 1
@@ -25,6 +26,8 @@ class ProfileData:
     model_type: str = protocol.DEFAULT_MODEL_TYPE
     model_color: str = protocol.DEFAULT_MODEL_COLOR
     use_custom_head: bool = False
+    control_scheme: str = CONTROL_SCHEME_WASD
+    show_performance_metrics: bool = True
     head_texture: str = CUSTOM_HEAD_FILENAME
     schema_version: int = SCHEMA_VERSION
     created_at: str = ""
@@ -89,6 +92,8 @@ def _profile_from_dict(raw: dict, fallback_name: str) -> ProfileData:
         model_type=model_type,
         model_color=model_color,
         use_custom_head=bool(raw.get("use_custom_head", False)),
+        control_scheme=normalize_control_scheme(str(raw.get("control_scheme") or CONTROL_SCHEME_WASD)),
+        show_performance_metrics=bool(raw.get("show_performance_metrics", True)),
         head_texture=str(raw.get("head_texture") or CUSTOM_HEAD_FILENAME),
         created_at=created_at,
         updated_at=str(raw.get("updated_at") or created_at),
@@ -138,7 +143,9 @@ def save_profile(session: ProfileSession) -> None:
         "player_name": session.data.player_name,
         "model_type": session.data.model_type,
         "model_color": session.data.model_color,
-        "use_custom_head": session.data.use_custom_head,
+        "use_custom_head": bool(session.data.use_custom_head),
+        "control_scheme": normalize_control_scheme(session.data.control_scheme),
+        "show_performance_metrics": bool(session.data.show_performance_metrics),
         "head_texture": session.data.head_texture,
         "created_at": session.data.created_at,
         "updated_at": session.data.updated_at,

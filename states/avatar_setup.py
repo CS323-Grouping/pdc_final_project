@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pygame
 
+from app.fonts import load_ui_font
 from network import protocol
 from player_scripts.avatar_sprite import AVATAR_RECT, VALID_AVATAR_EXTENSIONS, crop_square
 from player_scripts.model_assets import load_body_variation_frame, load_default_head_texture
@@ -629,7 +630,7 @@ class AvatarSetupState(ScreenState):
         key = (size, bold)
         font = self._window_fonts.get(key)
         if font is None:
-            font = pygame.font.SysFont("consolas", size, bold=bold)
+            font = load_ui_font(self.context.project_root, size, bold=bold)
             self._window_fonts[key] = font
         return font
 

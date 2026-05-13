@@ -3,6 +3,7 @@ import time
 
 import pygame
 
+from app.fonts import load_ui_font
 from network.discovery import LobbyBrowser
 from network import network_handler as nw
 from network import protocol
@@ -1000,7 +1001,7 @@ class BrowseLobbyState(ScreenState):
         key = (size, bold)
         font = self._window_fonts.get(key)
         if font is None:
-            font = pygame.font.SysFont("consolas", size, bold=bold)
+            font = load_ui_font(self.context.project_root, size, bold=bold)
             self._window_fonts[key] = font
         return font
 

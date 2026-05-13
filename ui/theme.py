@@ -35,7 +35,7 @@ class Theme:
 
     overlay_scrim: tuple[int, int, int, int] = (8, 10, 18, 220)
 
-    # Fonts (logical names; pygame SysFont)
+    # Fonts (``app.fonts.BUNDLED_UI_FONT_FILENAME`` in ``assets/font/``; names below are SysFont fallbacks)
     font_title: str = "segoe ui"
     font_body: str = "segoe ui"
     size_title: int = 32

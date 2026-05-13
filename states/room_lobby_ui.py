@@ -5,6 +5,7 @@ import zlib
 import pygame
 
 from app.config import LobbyPlayerStatus, lobby_player_status
+from app.fonts import load_ui_font
 from network import network_handler as nw
 from network import protocol
 from player_scripts.animation import load_spritesheet_frames
@@ -486,7 +487,7 @@ class RoomLobbyUi:
         key = (size, bold)
         font = self._window_fonts.get(key)
         if font is None:
-            font = pygame.font.SysFont("consolas", size, bold=bold)
+            font = load_ui_font(self.context.project_root, size, bold=bold)
             self._window_fonts[key] = font
         return font
 

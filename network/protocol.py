@@ -3,7 +3,7 @@ import struct
 import time
 from typing import List, Optional, Tuple
 
-PROTO_VERSION = 1
+PROTO_VERSION = 3
 MAX_PLAYERS = 5
 MIN_PLAYERS = 2
 MAX_NAME_LEN = 32
@@ -182,8 +182,8 @@ FRMT_RECONNECT_SNAPSHOT = "!4siffBBIIIIBB32s"
 FRMT_LIST_HEAD = "!4sB"
 FRMT_LIST_ITEM = "!iB32s"
 FRMT_READY = "!4siB"
-FRMT_HEARTBEAT = "!4siIBII"
-FRMT_HEARTBEAT_ACK = "!4sBII"
+FRMT_HEARTBEAT = "!4siIBIII"
+FRMT_HEARTBEAT_ACK = "!4sBIII"
 FRMT_START_LEGACY = "!4si"
 FRMT_START = "!4siB"
 FRMT_CDWN_LEGACY = "!4sf"
@@ -220,7 +220,7 @@ FRMT_MATCH_PAUSE = "!4sif"
 FRMT_MATCH_RESUME = "!4s"
 FRMT_ROOM_NAME_UPDATE = "!4si32s"
 FRMT_LEVEL_SELECT = "!4siB"
-FRMT_ORB_COLLECT = "!4siii"  # player_id, orb_index, cooldown_sec (1–10)
+FRMT_ORB_COLLECT = "!4siiii"  # player_id, orb_index, cooldown_sec (1–10), effect_id (see orb_effect_sync)
 ORB_COLLECT_PACKET_SIZE = struct.calcsize(FRMT_ORB_COLLECT)
 ORB_COOLDOWN_MIN_SEC = 1
 ORB_COOLDOWN_MAX_SEC = 10
@@ -771,6 +771,8 @@ def pack_heartbeat(
     client_state: int = CLIENT_STATE_LOBBY,
     countdown_id: int = 0,
     match_id: int = 0,
+    *,
+    ping_seq: int = 0,
 ) -> bytes:
     return struct.pack(
         FRMT_HEARTBEAT,
@@ -780,37 +782,45 @@ def pack_heartbeat(
         max(0, min(255, int(client_state))),
         int(countdown_id) & UINT32_MAX,
         int(match_id) & UINT32_MAX,
+        int(ping_seq) & UINT32_MAX,
     )
 
 
-def safe_unpack_heartbeat(data: bytes) -> Optional[Tuple[bytes, int, int, int, int, int]]:
+def safe_unpack_heartbeat(data: bytes) -> Optional[Tuple[bytes, int, int, int, int, int, int]]:
     unpacked = _safe_unpack_exact(data, FRMT_HEARTBEAT)
     if unpacked is None:
         return None
-    tag, player_id, session_token, client_state, countdown_id, match_id = unpacked
+    tag, player_id, session_token, client_state, countdown_id, match_id, ping_seq = unpacked
     if tag != HEARTBEAT:
         return None
-    return tag, player_id, session_token, client_state, countdown_id, match_id
+    return tag, player_id, session_token, client_state, countdown_id, match_id, ping_seq
 
 
-def pack_heartbeat_ack(server_state: int, countdown_id: int = 0, match_id: int = 0) -> bytes:
+def pack_heartbeat_ack(
+    server_state: int,
+    countdown_id: int = 0,
+    match_id: int = 0,
+    *,
+    ping_seq: int = 0,
+) -> bytes:
     return struct.pack(
         FRMT_HEARTBEAT_ACK,
         HEARTBEAT_ACK,
         max(0, min(255, int(server_state))),
         int(countdown_id) & UINT32_MAX,
         int(match_id) & UINT32_MAX,
+        int(ping_seq) & UINT32_MAX,
     )
 
 
-def safe_unpack_heartbeat_ack(data: bytes) -> Optional[Tuple[bytes, int, int, int]]:
+def safe_unpack_heartbeat_ack(data: bytes) -> Optional[Tuple[bytes, int, int, int, int]]:
     unpacked = _safe_unpack_exact(data, FRMT_HEARTBEAT_ACK)
     if unpacked is None:
         return None
-    tag, server_state, countdown_id, match_id = unpacked
+    tag, server_state, countdown_id, match_id, ping_seq = unpacked
     if tag != HEARTBEAT_ACK:
         return None
-    return tag, server_state, countdown_id, match_id
+    return tag, server_state, countdown_id, match_id, ping_seq
 
 
 def pack_start(host_id: int, action: int = START_ACTION_START) -> bytes:
@@ -964,26 +974,33 @@ def safe_unpack_goal(data: bytes) -> Optional[Tuple[bytes, int, int]]:
     return tag, int(player_id), 0
 
 
-def pack_orb_collect(player_id: int, orb_index: int, cooldown_sec: int) -> bytes:
+def pack_orb_collect(player_id: int, orb_index: int, cooldown_sec: int, effect_id: int = 0) -> bytes:
     cd = int(cooldown_sec)
     cd = max(ORB_COOLDOWN_MIN_SEC, min(ORB_COOLDOWN_MAX_SEC, cd))
-    return struct.pack(FRMT_ORB_COLLECT, ORB_COLLECT, int(player_id), int(orb_index), cd)
+    eid = int(effect_id)
+    if eid < 0:
+        eid = 0
+    if eid > 255:
+        eid = 255
+    return struct.pack(FRMT_ORB_COLLECT, ORB_COLLECT, int(player_id), int(orb_index), cd, eid)
 
 
-def safe_unpack_orb_collect(data: bytes) -> Optional[Tuple[bytes, int, int, int]]:
+def safe_unpack_orb_collect(data: bytes) -> Optional[Tuple[bytes, int, int, int, int]]:
     if len(data) != ORB_COLLECT_PACKET_SIZE:
         return None
     unpacked = _safe_unpack_exact(data, FRMT_ORB_COLLECT)
     if unpacked is None:
         return None
-    tag, player_id, orb_index, cooldown_sec = unpacked
+    tag, player_id, orb_index, cooldown_sec, effect_id = unpacked
     if tag != ORB_COLLECT:
         return None
     if orb_index < 0 or orb_index > 8192:
         return None
     if not (ORB_COOLDOWN_MIN_SEC <= cooldown_sec <= ORB_COOLDOWN_MAX_SEC):
         return None
-    return tag, player_id, orb_index, cooldown_sec
+    if effect_id < 0 or effect_id > 255:
+        return None
+    return tag, player_id, orb_index, cooldown_sec, int(effect_id)
 
 
 def pack_elim(player_id: int, placement: int) -> bytes:

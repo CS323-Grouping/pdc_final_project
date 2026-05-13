@@ -1,6 +1,8 @@
 import pygame
 import random
 
+from app.input_config import CONTROL_SCHEME_ARROWS, normalize_control_scheme
+
 from player_scripts.animation import AnimationState, load_spritesheet_frames
 from player_scripts.avatar_sprite import compose_player_frames, make_default_avatar
 from world.constants import (
@@ -43,7 +45,7 @@ class Player:
         self.rect.center = (int(self.pos.x), int(self.pos.y))
         self.on_ground = False
         self.color = color
-        self._w_down_prev = False
+        self._jump_key_down_prev = False
         self._move_dir = 0
         self._idle_timer = self.IDLE_DEBOUNCE_SECONDS
         self._jump_buffer = 0.0
@@ -76,21 +78,29 @@ class Player:
         self.pos.x = max(PLAYABLE_X + half_width, min(PLAYABLE_RIGHT - half_width, self.pos.x))
         self._sync_rect_from_pos()
 
-    def handle_input(self, dt, screen_width, screen_height):
+    def handle_input(self, dt, screen_width, screen_height, control_scheme: str = "wasd"):
         _ = screen_width, screen_height
+        scheme = normalize_control_scheme(control_scheme)
         keys = pygame.key.get_pressed()
-        w_down = keys[pygame.K_w]
-        w_pressed_edge = w_down and not self._w_down_prev
-        self._w_down_prev = w_down
-        if w_pressed_edge:
+        if scheme == CONTROL_SCHEME_ARROWS:
+            jump_down = keys[pygame.K_UP]
+            left_key = pygame.K_LEFT
+            right_key = pygame.K_RIGHT
+        else:
+            jump_down = keys[pygame.K_w]
+            left_key = pygame.K_a
+            right_key = pygame.K_d
+        jump_pressed_edge = jump_down and not self._jump_key_down_prev
+        self._jump_key_down_prev = jump_down
+        if jump_pressed_edge:
             self._jump_buffer = self.JUMP_BUFFER_SECONDS
         elif self._jump_buffer > 0:
             self._jump_buffer = max(0.0, self._jump_buffer - dt)
 
         direction = pygame.Vector2(0, 0)
-        if keys[pygame.K_a]:
+        if keys[left_key]:
             direction.x -= 1
-        if keys[pygame.K_d]:
+        if keys[right_key]:
             direction.x += 1
         if direction.length() > 0:
             direction = direction.normalize()
@@ -281,8 +291,8 @@ class Player:
             if not moved:
                 break
 
-    def update(self, dt, screen_width, screen_height, entities):
-        self.handle_input(dt, screen_width, screen_height)
+    def update(self, dt, screen_width, screen_height, entities, control_scheme: str = "wasd"):
+        self.handle_input(dt, screen_width, screen_height, control_scheme)
 
         skip_solids_horizontal, _ = self._launch_platform_collision_mode(entities)
 

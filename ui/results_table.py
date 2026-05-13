@@ -6,6 +6,8 @@ from typing import Callable, Optional, Tuple
 
 import pygame
 
+from app.fonts import load_ui_font
+from app.paths import get_resource_root
 from ui import animations as anim
 from ui.theme import DEFAULT_THEME, Theme
 from ui.widgets import truncate_text_to_px
@@ -69,7 +71,7 @@ def _draw_corner_rivets(surface: pygame.Surface, rect: pygame.Rect) -> None:
 
 def _winner_badge_top_font(detail_f: pygame.font.Font) -> pygame.font.Font:
     sz = max(8, min(11, detail_f.get_height() - 4))
-    return pygame.font.SysFont(DEFAULT_THEME.font_body, sz)
+    return load_ui_font(get_resource_root(), sz, bold=False)
 
 
 def _fmt_time_played(cs: int) -> str:

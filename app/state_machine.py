@@ -13,6 +13,8 @@ from typing import Dict, Optional, Type
 import pygame
 
 from app.display import DisplayConfig, DisplayManager
+from app.fonts import load_ui_font
+from app.input_config import CONTROL_SCHEME_WASD, normalize_control_scheme
 from app.message_hud import MessageHud
 from app.paths import get_resource_root
 from app.profile_store import ProfileSession
@@ -23,8 +25,9 @@ from network.avatar_receiver import AvatarReceiver
 from network.discovery import PresenceBroadcaster
 from player_scripts.avatar_sprite import prepare_avatar
 from player_scripts.model_assets import animation_path, load_default_head_texture
+from ui.performance_overlay import PerformanceOverlayData, draw_performance_overlay
 from ui.theme import DEFAULT_THEME
-from world.constants import BORDER_WIDTH
+from world.constants import BORDER_WIDTH, INTERNAL_HEIGHT, PLAYABLE_WIDTH, PLAYABLE_X
 
 from states.avatar_setup import AvatarSetupState
 from states.browse_lobby import BrowseLobbyState
@@ -44,6 +47,12 @@ RECONNECT_TICKET_LOCAL_TTL_SECONDS = max(45.0, protocol.RECONNECT_GRACE_SECONDS 
 def random_player_name(length: int = protocol.PLAYER_NAME_MAX_LEN) -> str:
     length = max(protocol.PLAYER_NAME_MIN_LEN, min(protocol.PLAYER_NAME_MAX_LEN, int(length)))
     return "P" + "".join(secrets.choice(RANDOM_PLAYER_NAME_CHARS) for _ in range(length - 1))
+
+
+def _fmt_metric(value: float | None, digits: int = 1) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value:.{digits}f}"
 
 
 @dataclass
@@ -116,6 +125,10 @@ class AppContext:
     last_heartbeat_ack_monotonic: float = 0.0
     local_player_alive: bool = True
     match_start_unix_sec: int | None = None
+    show_performance_metrics: bool = True
+    control_scheme: str = CONTROL_SCHEME_WASD
+    performance_fps: float | None = None
+    _last_performance_log_at: float = 0.0
     mouse_pos: tuple[int, int] = (0, 0)
     presence_instance_id: int = 0
     presence_status: int = protocol.PRESENCE_STATUS_ONLINE
@@ -131,12 +144,13 @@ class AppContext:
             self.player_name = random_player_name()
         if self.presence_instance_id == 0:
             self.presence_instance_id = secrets.randbits(32) or 1
-        t = DEFAULT_THEME
-        self.font = pygame.font.SysFont(t.font_body, t.size_large)
-        self.small_font = pygame.font.SysFont(t.font_body, t.size_small)
-        self.tiny_font = pygame.font.SysFont(t.font_body, t.size_tiny)
-        self.title_font = pygame.font.SysFont(t.font_title, t.size_title)
         self.project_root = get_resource_root()
+        t = DEFAULT_THEME
+        root = self.project_root
+        self.font = load_ui_font(root, t.size_large, bold=False)
+        self.small_font = load_ui_font(root, t.size_small, bold=False)
+        self.tiny_font = load_ui_font(root, t.size_tiny, bold=False)
+        self.title_font = load_ui_font(root, t.size_title, bold=False, fallback_family=t.font_title)
         if self.roster is None:
             self.roster = []
         if self.results_standings is None:
@@ -228,6 +242,8 @@ class AppContext:
         self.player_name = session.data.player_name
         self.model_type = protocol.normalize_model_type(session.data.model_type)
         self.model_color = protocol.normalize_model_color(session.data.model_color)
+        self.show_performance_metrics = bool(session.data.show_performance_metrics)
+        self.control_scheme = normalize_control_scheme(session.data.control_scheme)
         if session.data.use_custom_head and session.custom_head_path.exists():
             try:
                 source = pygame.image.load(str(session.custom_head_path)).convert_alpha()
@@ -250,7 +266,109 @@ class AppContext:
         self.profile_session.data.model_type = protocol.normalize_model_type(self.model_type)
         self.profile_session.data.model_color = protocol.normalize_model_color(self.model_color)
         self.profile_session.data.use_custom_head = self.use_custom_head
+        self.profile_session.data.show_performance_metrics = bool(self.show_performance_metrics)
+        self.profile_session.data.control_scheme = normalize_control_scheme(self.control_scheme)
         self.profile_session.save()
+
+    def set_control_scheme(self, scheme: str, save: bool = True) -> None:
+        self.control_scheme = normalize_control_scheme(scheme)
+        if save:
+            self.save_profile()
+
+    def set_show_performance_metrics(self, enabled: bool, save: bool = True) -> None:
+        self.show_performance_metrics = bool(enabled)
+        if save:
+            self.save_profile()
+
+    def update_performance_fps(self, raw_dt: float) -> None:
+        if raw_dt <= 0.0:
+            return
+        current = 1.0 / raw_dt
+        if self.performance_fps is None:
+            self.performance_fps = current
+        else:
+            self.performance_fps = self.performance_fps * 0.88 + current * 0.12
+
+    def performance_overlay_anchor(self, surface: pygame.Surface, playable_only: bool = False) -> pygame.Rect:
+        if not playable_only or self.display_manager is None:
+            return surface.get_rect()
+        scale = int(self.display_manager.config.selected_scale)
+        return pygame.Rect(PLAYABLE_X * scale, 0, PLAYABLE_WIDTH * scale, INTERNAL_HEIGHT * scale)
+
+    def draw_performance_overlay(self, surface: pygame.Surface, playable_only: bool = False):
+        if not self.show_performance_metrics:
+            return
+        net_snapshot = self.network.metrics_snapshot() if self.network is not None else None
+        metrics = PerformanceOverlayData(
+            fps=self.performance_fps,
+            ping_ms=net_snapshot.ping_ms if net_snapshot is not None else None,
+            ping_avg_ms=net_snapshot.ping_avg_ms if net_snapshot is not None else None,
+            ping_min_ms=net_snapshot.ping_min_ms if net_snapshot is not None else None,
+            ping_max_ms=net_snapshot.ping_max_ms if net_snapshot is not None else None,
+            ping_jitter_ms=net_snapshot.ping_jitter_ms if net_snapshot is not None else None,
+            ping_p95_ms=net_snapshot.ping_p95_ms if net_snapshot is not None else None,
+            ping_session_avg_ms=net_snapshot.ping_session_avg_ms if net_snapshot is not None else None,
+            ping_session_min_ms=net_snapshot.ping_session_min_ms if net_snapshot is not None else None,
+            ping_session_max_ms=net_snapshot.ping_session_max_ms if net_snapshot is not None else None,
+            heartbeat_loss_pct=float(net_snapshot.heartbeat_loss_pct) if net_snapshot is not None else 0.0,
+            inbound_kib_per_sec=net_snapshot.inbound_kib_per_sec if net_snapshot is not None else 0.0,
+            inbound_avg_kib_per_sec=net_snapshot.inbound_avg_kib_per_sec if net_snapshot is not None else 0.0,
+            inbound_min_kib_per_sec=net_snapshot.inbound_min_kib_per_sec if net_snapshot is not None else 0.0,
+            inbound_max_kib_per_sec=net_snapshot.inbound_max_kib_per_sec if net_snapshot is not None else 0.0,
+            outbound_kib_per_sec=net_snapshot.outbound_kib_per_sec if net_snapshot is not None else 0.0,
+            outbound_avg_kib_per_sec=net_snapshot.outbound_avg_kib_per_sec if net_snapshot is not None else 0.0,
+            outbound_min_kib_per_sec=net_snapshot.outbound_min_kib_per_sec if net_snapshot is not None else 0.0,
+            outbound_max_kib_per_sec=net_snapshot.outbound_max_kib_per_sec if net_snapshot is not None else 0.0,
+        )
+        draw_performance_overlay(
+            surface,
+            self.tiny_font,
+            metrics,
+            self.performance_overlay_anchor(surface, playable_only=playable_only),
+        )
+
+    def log_performance_metrics(self) -> None:
+        if self.network is None:
+            return
+        now = time.monotonic()
+        if now - self._last_performance_log_at < 1.0:
+            return
+        self._last_performance_log_at = now
+        snapshot = self.network.metrics_snapshot()
+        LOGGER.info(
+            "performance metrics fps=%.1f "
+            "rtt_ms=ema:%s win_mean:%s win_min:%s win_max:%s jitter:%s p50:%s p95:%s "
+            "session_mean:%s session_min:%s session_max:%s "
+            "hb_sent=%s hb_ack=%s hb_lost=%s hb_loss_pct:%.2f "
+            "net_in_kibps=current:%.2f avg:%.2f min:%.2f max:%.2f "
+            "net_out_kibps=current:%.2f avg:%.2f min:%.2f max:%.2f "
+            "packets_per_sec=in:%.0f out:%.0f",
+            self.performance_fps or 0.0,
+            _fmt_metric(snapshot.ping_ms, 1),
+            _fmt_metric(snapshot.ping_avg_ms, 1),
+            _fmt_metric(snapshot.ping_min_ms, 1),
+            _fmt_metric(snapshot.ping_max_ms, 1),
+            _fmt_metric(snapshot.ping_jitter_ms, 1),
+            _fmt_metric(snapshot.ping_p50_ms, 1),
+            _fmt_metric(snapshot.ping_p95_ms, 1),
+            _fmt_metric(snapshot.ping_session_avg_ms, 1),
+            _fmt_metric(snapshot.ping_session_min_ms, 1),
+            _fmt_metric(snapshot.ping_session_max_ms, 1),
+            snapshot.heartbeat_sent,
+            snapshot.heartbeat_acked,
+            snapshot.heartbeat_lost,
+            snapshot.heartbeat_loss_pct,
+            snapshot.inbound_kib_per_sec,
+            snapshot.inbound_avg_kib_per_sec,
+            snapshot.inbound_min_kib_per_sec,
+            snapshot.inbound_max_kib_per_sec,
+            snapshot.outbound_kib_per_sec,
+            snapshot.outbound_avg_kib_per_sec,
+            snapshot.outbound_min_kib_per_sec,
+            snapshot.outbound_max_kib_per_sec,
+            snapshot.inbound_packets_per_sec,
+            snapshot.outbound_packets_per_sec,
+        )
 
     def window_border_inset_px(self) -> int:
         """Horizontal pillar width in **window** pixels (internal border is `BORDER_WIDTH` × scale)."""
@@ -262,6 +380,7 @@ class AppContext:
         self.messages.tick(dt)
         if self.countdown_remaining is not None:
             self.countdown_remaining = max(0.0, self.countdown_remaining - dt)
+        self.log_performance_metrics()
 
     def reserved_bottom_message_strip_px(self) -> int:
         return self.messages.reserved_bottom_strip_px()
@@ -441,6 +560,7 @@ class AppContext:
     def attach_network(self, network_obj: nw.Network, is_host: bool, room_name: str, start_pos):
         self.detach_network(send_disconnect=False)
         self.network = network_obj
+        self.network.reset_telemetry()
         self.is_host = is_host
         self.room_name = room_name
         self.start_pos = start_pos or (100.0, 100.0)
@@ -611,6 +731,7 @@ class StateMachine:
         self.change(initial_state)
         while self.context.running:
             raw_dt = self.context.clock.tick(60) / 1000.0
+            self.context.update_performance_fps(raw_dt)
             dt = min(raw_dt, MAX_FRAME_DT)
             use_internal = (
                 self.context.display_manager is not None
@@ -637,10 +758,16 @@ class StateMachine:
             if self.context.display_manager is not None and use_internal:
                 window_surface = self.context.display_manager.blit_internal_to_window()
                 self.current_state.draw_window_overlay(window_surface)
+                self.context.draw_performance_overlay(
+                    window_surface,
+                    playable_only=isinstance(self.current_state, InGameState),
+                )
                 pygame.display.flip()
             elif self.context.display_manager is not None:
+                self.context.draw_performance_overlay(surface)
                 self.context.display_manager.present_window()
             else:
+                self.context.draw_performance_overlay(surface)
                 pygame.display.flip()
 
         if self.current_state is not None:
