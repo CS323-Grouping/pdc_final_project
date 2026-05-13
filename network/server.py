@@ -2,6 +2,7 @@ import argparse
 import logging
 from datetime import datetime
 from pathlib import Path
+import secrets
 import socket
 import time
 from typing import Optional
@@ -43,10 +44,13 @@ try:
         KICKED_REASON_KICKED,
         KICKED_REASON_NOT_READY,
         KICKED_REASON_ROOM_CLOSED,
+        LEVEL_SELECT,
         LOBBY_PLAYER_TIMEOUT_SECONDS,
         MIN_PLAYERS,
         MATCH_PAUSE,
         MATCH_RESUME,
+        ORB_COLLECT,
+        PLATFORM_PROGRESS,
         PLAYER_TIMEOUT_SECONDS,
         PLAYER_STATE,
         POSITION,
@@ -87,10 +91,13 @@ try:
         pack_list,
         pack_match_pause,
         pack_match_resume,
+        pack_orb_collect,
         pack_packet,
+        pack_platform_progress,
         pack_player_state,
         pack_reconnect_no,
         pack_reconnect_ok,
+        pack_level_select,
         pack_room_name_update,
         pack_session,
         safe_unpack,
@@ -101,9 +108,12 @@ try:
         safe_unpack_goal,
         safe_unpack_heartbeat,
         safe_unpack_kick,
+        safe_unpack_orb_collect,
+        safe_unpack_platform_progress,
         safe_unpack_player_state,
         safe_unpack_ready,
         safe_unpack_reconnect,
+        safe_unpack_level_select,
         safe_unpack_room_name_update,
         safe_unpack_start,
         tag_of,
@@ -146,10 +156,13 @@ except ModuleNotFoundError:
         KICKED_REASON_KICKED,
         KICKED_REASON_NOT_READY,
         KICKED_REASON_ROOM_CLOSED,
+        LEVEL_SELECT,
         LOBBY_PLAYER_TIMEOUT_SECONDS,
         MIN_PLAYERS,
         MATCH_PAUSE,
         MATCH_RESUME,
+        ORB_COLLECT,
+        PLATFORM_PROGRESS,
         PLAYER_TIMEOUT_SECONDS,
         PLAYER_STATE,
         POSITION,
@@ -190,10 +203,13 @@ except ModuleNotFoundError:
         pack_list,
         pack_match_pause,
         pack_match_resume,
+        pack_orb_collect,
         pack_packet,
+        pack_platform_progress,
         pack_player_state,
         pack_reconnect_no,
         pack_reconnect_ok,
+        pack_level_select,
         pack_room_name_update,
         pack_session,
         safe_unpack,
@@ -204,9 +220,12 @@ except ModuleNotFoundError:
         safe_unpack_goal,
         safe_unpack_heartbeat,
         safe_unpack_kick,
+        safe_unpack_orb_collect,
+        safe_unpack_platform_progress,
         safe_unpack_player_state,
         safe_unpack_ready,
         safe_unpack_reconnect,
+        safe_unpack_level_select,
         safe_unpack_room_name_update,
         safe_unpack_start,
         tag_of,
@@ -247,7 +266,11 @@ class LobbyServer:
         self._game_start_time: float = 0.0
         # Maps player_id -> elapsed seconds when they touched the goal.
         self._finish_times: dict[int, float] = {}
+        # Match metrics: wall-clock elapsed at finish/elim, and max platforms reported per player.
+        self._player_elapsed_at_result: dict[int, float] = {}
+        self._player_platform_max: dict[int, int] = {}
         self._match_player_count: int = 0
+        self._match_level_seed: int = 0
         self._avatar_headers: dict[int, tuple[int, int, int, str, str]] = {}
         self._avatar_chunks: dict[tuple[int, int], dict[int, bytes]] = {}
 
@@ -511,6 +534,8 @@ class LobbyServer:
         session_token = self.room_state.session_token(player_id) or 0
         self.sock.sendto(pack_session(player_id, session_token), addr)
         self.sock.sendto(pack_conok(player_id, self.room_state.room_name), addr)
+        selected_level = self.room_state.get_selected_level()
+        self.sock.sendto(pack_level_select(self.room_state.host_id or player_id, selected_level), addr)
         # Legacy client compatibility: existing main.py expects CONN with coordinates.
         self.sock.sendto(pack_packet(CONNECTION, start_x, start_y, player_id), addr)
         self.broadcast_roster()
@@ -545,6 +570,10 @@ class LobbyServer:
                 pack_reconnect_ok(reconnected_id, position[0], position[1], self.room_state.room_name),
                 addr,
             )
+            self.sock.sendto(
+                pack_level_select(self.room_state.host_id or reconnected_id, self.room_state.get_selected_level()),
+                addr,
+            )
             self.replay_cached_avatars(addr, exclude_player_id=reconnected_id)
             self.resume_if_ready()
             if self.room_state.state == STATE_PAUSED:
@@ -569,6 +598,7 @@ class LobbyServer:
         LOGGER.info("Reconnected player %s (%s) as id %s", player_name, addr, player_id)
         self.sock.sendto(pack_session(player_id, session_token), addr)
         self.sock.sendto(pack_reconnect_ok(player_id, position[0], position[1], self.room_state.room_name), addr)
+        self.sock.sendto(pack_level_select(self.room_state.host_id or player_id, self.room_state.get_selected_level()), addr)
         self.replay_cached_avatars(addr, exclude_player_id=player_id)
         self.resume_if_ready()
         if self.room_state.state == STATE_PAUSED:
@@ -583,7 +613,7 @@ class LobbyServer:
         if addr_player_id != player_id:
             return
         self.room_state.touch_player(player_id)
-        if self.room_state.state not in (STATE_LOBBY, STATE_COUNTDOWN):
+        if self.room_state.state != STATE_LOBBY:
             return
         if self.room_state.set_ready(player_id, ready_flag):
             self.broadcast_roster()
@@ -653,6 +683,15 @@ class LobbyServer:
 
         LOGGER.debug("Ignored start action=%s state=%s host_id=%s", action, self.room_state.state, host_id)
 
+    def _extended_gend_rows(self) -> list[tuple[int, int, str, int, int]]:
+        rows: list[tuple[int, int, str, int, int]] = []
+        for player_id, placement, name in self.room_state.standings():
+            elapsed = self._player_elapsed_at_result.get(player_id)
+            ecs = 0 if elapsed is None else min(UINT32_MAX, int(max(0.0, elapsed) * 100.0))
+            plat = min(65535, int(self._player_platform_max.get(player_id, 0)))
+            rows.append((player_id, placement, name, ecs, plat))
+        return rows
+
     def _check_game_end(self):
         """End the game when no alive players remain who haven't finished."""
         alive_ids = self.room_state.alive_ids()
@@ -666,12 +705,12 @@ class LobbyServer:
         # Everyone still alive has either finished or there's nobody left.
         if len(alive_ids) == 0 and not self._finish_times:
             # All eliminated, no one finished — forfeit.
-            standings = self.room_state.standings()
+            standings = self._extended_gend_rows()
             LOGGER.info("Game ended by forfeit standings=%s", standings)
             self.reliable_broadcast(pack_gend(GEND_REASON_FORFEIT, standings, self._match_id))
         else:
             # Normal end: assign 1st place to the last finisher if not yet placed.
-            standings = self.room_state.standings()
+            standings = self._extended_gend_rows()
             LOGGER.info("Game ended normally standings=%s", standings)
             self.reliable_broadcast(pack_gend(GEND_REASON_NORMAL, standings, self._match_id))
 
@@ -679,7 +718,10 @@ class LobbyServer:
         self.room_state.reset_for_lobby()
         self.block_lobby_pruning()
         self._finish_times = {}
+        self._player_elapsed_at_result.clear()
+        self._player_platform_max.clear()
         self._match_player_count = 0
+        self._match_level_seed = 0
         self.end_policy.clear_elimination_cooldown()
         self.broadcast_roster()
 
@@ -714,6 +756,7 @@ class LobbyServer:
 
         elapsed = time.monotonic() - self._game_start_time
         self._finish_times[player_id] = elapsed
+        self._player_elapsed_at_result[player_id] = elapsed
 
         placement = len(self._finish_times)
         self.room_state.mark_eliminated(player_id, placement)
@@ -721,12 +764,44 @@ class LobbyServer:
         LOGGER.info("Player %s reached the goal in %.2fs (place %d)", player_id, elapsed, placement)
         self._check_game_end()
 
+    def handle_orb_collect(self, data: bytes, addr):
+        unpacked = safe_unpack_orb_collect(data)
+        if unpacked is None:
+            return
+        _tag, player_id, orb_index, cooldown_sec = unpacked
+        addr_player_id = self.room_state.get_player_id_by_addr(addr)
+        if addr_player_id is None or addr_player_id != player_id:
+            return
+        if orb_index < 0 or orb_index > 8192:
+            return
+        self.room_state.touch_gameplay_player(player_id)
+        if self.room_state.state not in (STATE_IN_GAME, STATE_PAUSED):
+            return
+        if not self.room_state.is_alive(player_id):
+            return
+        self.broadcast(pack_orb_collect(player_id, orb_index, cooldown_sec))
+
+    def handle_platform_progress(self, data: bytes, addr):
+        unpacked = safe_unpack_platform_progress(data)
+        if unpacked is None:
+            return
+        _tag, player_id, platforms_reached = unpacked
+        addr_player_id = self.room_state.get_player_id_by_addr(addr)
+        if addr_player_id is None or addr_player_id != player_id:
+            return
+        self.room_state.touch_gameplay_player(player_id)
+        if self.room_state.state not in (STATE_IN_GAME, STATE_PAUSED):
+            return
+        prev = self._player_platform_max.get(player_id, 0)
+        self._player_platform_max[player_id] = max(prev, int(platforms_reached))
+
     def eliminate_player(self, player_id: int):
         if not self.room_state.is_alive(player_id):
             return
 
         placement = self._next_elimination_placement()
         self.room_state.mark_eliminated(player_id, placement)
+        self._player_elapsed_at_result[player_id] = time.monotonic() - self._game_start_time
         self.end_policy.record_elimination(self.room_state.alive_positions())
         LOGGER.info("Eliminated player_id=%s placement=%s standings=%s", player_id, placement, self.room_state.standings())
         self.broadcast(pack_elim(player_id, placement))
@@ -803,6 +878,21 @@ class LobbyServer:
         self.room_state.set_room_name(room_name)
         LOGGER.info("Host %s renamed room to %s", host_id, room_name)
         self.broadcast(pack_room_name_update(host_id, room_name))
+
+    def handle_level_select(self, data: bytes, addr):
+        unpacked = safe_unpack_level_select(data)
+        if unpacked is None:
+            return
+        _tag, host_id, level_id = unpacked
+        addr_player_id = self.room_state.get_player_id_by_addr(addr)
+        if addr_player_id != host_id or host_id != self.room_state.host_id:
+            return
+        if self.room_state.state != STATE_LOBBY:
+            return
+        self.room_state.touch_player(host_id)
+        if self.room_state.set_selected_level(level_id):
+            LOGGER.info("Host %s selected level %s", host_id, level_id)
+        self.broadcast(pack_level_select(host_id, self.room_state.get_selected_level()))
 
     def handle_position(self, data: bytes, addr):
         unpacked = safe_unpack(data)
@@ -960,11 +1050,20 @@ class LobbyServer:
         if tag == ROOM_NAME_UPDATE:
             self.handle_room_name_update(data, addr)
             return
+        if tag == LEVEL_SELECT:
+            self.handle_level_select(data, addr)
+            return
         if tag == DEAD:
             self.handle_dead(data, addr)
             return
         if tag == GOAL:
             self.handle_goal(data, addr)
+            return
+        if tag == ORB_COLLECT:
+            self.handle_orb_collect(data, addr)
+            return
+        if tag == PLATFORM_PROGRESS:
+            self.handle_platform_progress(data, addr)
             return
         if tag == POSITION:
             self.handle_position(data, addr)
@@ -1013,12 +1112,30 @@ class LobbyServer:
         self.room_state.enter_game()
         self._match_id = self._next_match_id
         self._next_match_id += 1
+        self._match_level_seed = secrets.randbits(32) or 1
+        selected_level = self.room_state.get_selected_level()
         self._finish_times = {}
+        self._player_elapsed_at_result.clear()
+        self._player_platform_max.clear()
         self._match_player_count = self.room_state.connected_count()
         self.end_policy.clear_elimination_cooldown()
         self._game_start_time = time.monotonic()
-        LOGGER.info("Game started players=%s", self.room_state.connected_roster_entries())
-        self.reliable_broadcast(pack_gstart(self._countdown_id, self._match_id))
+        match_start_unix_sec = int(time.time())
+        LOGGER.info(
+            "Game started players=%s level=%s seed=%s",
+            self.room_state.connected_roster_entries(),
+            selected_level,
+            self._match_level_seed,
+        )
+        self.reliable_broadcast(
+            pack_gstart(
+                self._countdown_id,
+                self._match_id,
+                selected_level=selected_level,
+                level_seed=self._match_level_seed,
+                match_start_unix_sec=match_start_unix_sec,
+            )
+        )
         self.broadcast_match_snapshot()
 
     def tick_in_game(self):

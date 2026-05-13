@@ -1,4 +1,5 @@
 import pygame
+import random
 
 from player_scripts.animation import AnimationState, load_spritesheet_frames
 from player_scripts.avatar_sprite import compose_player_frames, make_default_avatar
@@ -7,9 +8,19 @@ from world.constants import (
     PLAYABLE_X,
     PLAYER_FRAME_HEIGHT,
     PLAYER_FRAME_WIDTH,
+    PLAYER_GRAVITY,
     PLAYER_HITBOX_HEIGHT,
     PLAYER_HITBOX_WIDTH,
+    PLAYER_JUMP_VELOCITY,
+    PLAYER_MOVE_SPEED,
 )
+
+# Launch boost: ghost through platforms while ascending; overlap escape afterwards (apex = vel.y near zero).
+LAUNCH_PHASE_APEX_EPS = 0.5
+LAUNCH_OVERLAP_NUDGE_PX = 2
+
+# Slippery ice: how fast horizontal momentum ramps up (higher = snappier start, less "slow motion").
+SLIPPERY_ACCEL_SCALE = 3.25
 
 
 class Player:
@@ -25,9 +36,9 @@ class Player:
         self.image = self.animation.image
         self.vel = pygame.Vector2(0, 0)
         self.pos = pygame.Vector2(start_pos)
-        self.speed = 90.0
-        self.gravity = 520.0
-        self.jump_velocity = -220.0
+        self.speed = PLAYER_MOVE_SPEED
+        self.gravity = PLAYER_GRAVITY
+        self.jump_velocity = PLAYER_JUMP_VELOCITY
         self.rect = pygame.Rect(0, 0, PLAYER_HITBOX_WIDTH, PLAYER_HITBOX_HEIGHT)
         self.rect.center = (int(self.pos.x), int(self.pos.y))
         self.on_ground = False
@@ -38,6 +49,24 @@ class Player:
         self._jump_buffer = 0.0
         self._coyote_timer = 0.0
         self._air_animation_state = "jump_front"
+        self.speed_boost_timer = 0.0
+        self.speed_boost = 1.0
+        self.jump_boost_timer = 0.0
+        self.jump_boost = 1.0
+        self.shield_timer = 0.0
+        self.double_jump_timer = 0.0
+        self.has_double_jumped = False
+        self.reverse_control_timer = 0.0
+        self.slippery_timer = 0.0
+        self.hvel = 0.0
+        self._slippery_prev_input_dir = 0
+        self.slippery_boost = 1.0
+        self._visited_platform_indices: set[int] = set()
+        self.slow_falling_timer = 0.0
+        self.heavy_timer = 0.0
+        self.launch_timer = 0.0
+        self.weak_jump_timer = 0.0
+        self._launch_overlap_escape = False
 
     def _sync_rect_from_pos(self):
         self.rect.center = (int(round(self.pos.x)), int(round(self.pos.y)))
@@ -66,13 +95,41 @@ class Player:
         if direction.length() > 0:
             direction = direction.normalize()
         self._move_dir = int(direction.x)
-        if self._move_dir == 0:
-            self._idle_timer += dt
-        else:
-            self._idle_timer = 0.0
 
-        self.pos.x += direction.x * self.speed * dt
-        self._clamp_to_playable_width()
+        # Apply debuffs on input direction
+        if self.reverse_control_timer > 0:
+            direction.x *= -1
+
+        if self.slippery_timer > 0:
+            input_dir = int(round(direction.x)) if self._move_dir != 0 else 0
+
+            accel = (
+                self.speed
+                * self.speed_boost
+                * self.slippery_boost
+                * SLIPPERY_ACCEL_SCALE
+            )
+            if input_dir != 0:
+                self.hvel += input_dir * accel * dt
+            else:
+                self.hvel *= max(0.0, 1.0 - (6.0 * dt))
+
+            max_hvel = self.speed * self.speed_boost * 2.0
+            self.hvel = max(-max_hvel, min(max_hvel, self.hvel))
+
+            self.pos.x += self.hvel * dt
+            self._clamp_to_playable_width()
+        else:
+
+            if self._move_dir == 0:
+                self._idle_timer += dt
+            else:
+                self._idle_timer = 0.0
+
+            self.hvel = 0.0
+            self.slippery_boost = 1.0
+            self.pos.x += direction.x * self.speed * self.speed_boost * self.slippery_boost * dt
+            self._clamp_to_playable_width()
 
     def _supported_on_platform_top(self, platforms) -> bool:
         """Feet sit on a platform surface (horizontal overlap + small vertical band)."""
@@ -147,6 +204,43 @@ class Player:
             if not moved:
                 break
 
+    def _any_platform_overlap(self, platforms) -> bool:
+        return any(self.rect.colliderect(p.rect) for p in platforms)
+
+    def _launch_platform_collision_mode(self, platforms) -> tuple[bool, str | None]:
+        """Return (skip_platform_solids, mode) with mode \"ascent\", \"escape\", or None."""
+        ascend = self.launch_timer > 0 and self.vel.y < -LAUNCH_PHASE_APEX_EPS
+        if ascend:
+            return True, "ascent"
+
+        overlap = self._any_platform_overlap(platforms)
+        overlap_escape_needed = overlap and (
+            (self.launch_timer > 0 and self.vel.y >= -LAUNCH_PHASE_APEX_EPS)
+            or self._launch_overlap_escape
+        )
+        if overlap_escape_needed:
+            self._launch_overlap_escape = True
+            return True, "escape"
+
+        self._launch_overlap_escape = False
+        return False, None
+
+    def _launch_overlap_centroid_nudge(self, platforms) -> None:
+        """Small separation when stuck overlapping after apex; favors down when tied."""
+        overlapping = [p for p in platforms if self.rect.colliderect(p.rect)]
+        if not overlapping:
+            return
+        score = sum(1 if self.rect.centery > p.rect.centery else -1 for p in overlapping)
+        if score > 0:
+            dy = LAUNCH_OVERLAP_NUDGE_PX
+        elif score < 0:
+            dy = -LAUNCH_OVERLAP_NUDGE_PX
+        else:
+            dy = LAUNCH_OVERLAP_NUDGE_PX
+        self.pos.y += dy
+        self._sync_rect_from_pos()
+        self._clamp_to_playable_width()
+
     def _resolve_platforms_vertical(self, platforms):
         """Top (land) and bottom (bonk) collision after vertical move."""
         self._sync_rect_from_pos()
@@ -190,40 +284,111 @@ class Player:
     def update(self, dt, screen_width, screen_height, entities):
         self.handle_input(dt, screen_width, screen_height)
 
-        self._resolve_platforms_horizontal(entities)
+        skip_solids_horizontal, _ = self._launch_platform_collision_mode(entities)
 
-        if self.vel.y >= 0 and self._supported_on_platform_top(entities):
+        if not skip_solids_horizontal:
+            self._resolve_platforms_horizontal(entities)
+
+        if not skip_solids_horizontal and self.vel.y >= 0 and self._supported_on_platform_top(entities):
             self._snap_to_supported_platform_top(entities)
-        elif self.on_ground:
+        elif self.on_ground and not skip_solids_horizontal:
             self.on_ground = False
             self._set_air_animation_from_ground_state()
 
         if self.on_ground:
             self._coyote_timer = self.COYOTE_SECONDS
+            self.has_double_jumped = False
         else:
             self._coyote_timer = max(0.0, self._coyote_timer - dt)
 
         if self._jump_buffer > 0 and (self.on_ground or self._coyote_timer > 0):
             self._start_jump()
+        elif self._jump_buffer > 0 and not self.on_ground and not self.has_double_jumped and self.double_jump_timer > 0:
+            self._start_double_jump()
 
         if not self.on_ground:
-            self.vel.y += self.gravity * dt
+            gravity_modifier = 1.0
+            if self.vel.y > 0:  # Only apply gravity modifiers when falling
+                if self.slow_falling_timer > 0:
+                    gravity_modifier = 0.5
+                elif self.heavy_timer > 0:
+                    gravity_modifier = 1.5
+            self.vel.y += self.gravity * gravity_modifier * dt
 
         self.pos.y += self.vel.y * dt
 
-        self._resolve_platforms_vertical(entities)
+        skip_solids_post, skip_mode_post = self._launch_platform_collision_mode(entities)
+
+        if skip_solids_post and skip_mode_post == "escape":
+            self._launch_overlap_centroid_nudge(entities)
+            skip_solids_post, skip_mode_post = self._launch_platform_collision_mode(entities)
+
+        if not skip_solids_post:
+            self._resolve_platforms_vertical(entities)
         self._sync_rect_from_pos()
-        if not self.on_ground and self.vel.y >= 0:
+        if not skip_solids_post and not self.on_ground and self.vel.y >= 0:
             self._snap_to_supported_platform_top(entities)
         self._select_animation_state()
         self.animation.update(dt)
         self.image = self.animation.image
 
+        # Update power up timers
+        self.speed_boost_timer = max(0.0, self.speed_boost_timer - dt)
+        if self.speed_boost_timer == 0:
+            self.speed_boost = 1.0
+
+        self.jump_boost_timer = max(0.0, self.jump_boost_timer - dt)
+        if self.jump_boost_timer == 0:
+            self.jump_boost = 1.0
+
+        self.shield_timer = max(0.0, self.shield_timer - dt)
+
+        self.double_jump_timer = max(0.0, self.double_jump_timer - dt)
+
+        self.reverse_control_timer = max(0.0, self.reverse_control_timer - dt)
+
+        self.slippery_timer = max(0.0, self.slippery_timer - dt)
+
+        self.slow_falling_timer = max(0.0, self.slow_falling_timer - dt)
+
+        self.heavy_timer = max(0.0, self.heavy_timer - dt)
+
+        self.launch_timer = max(0.0, self.launch_timer - dt)
+
+        self.weak_jump_timer = max(0.0, self.weak_jump_timer - dt)
+
+        self.register_grounded_platforms(entities)
+
+    def register_grounded_platforms(self, platforms) -> None:
+        """Count unique platforms the player has landed on (by level platform index)."""
+        if not self.on_ground:
+            return
+        for i, p in enumerate(platforms):
+            overlap_x = min(self.rect.right, p.rect.right) - max(self.rect.left, p.rect.left)
+            if overlap_x <= 2:
+                continue
+            dy = self.rect.bottom - p.rect.top
+            if 0 <= dy <= 10:
+                self._visited_platform_indices.add(i)
+
+    def platforms_reached_count(self) -> int:
+        return len(self._visited_platform_indices)
+
     def _start_jump(self):
         self._set_air_animation_from_ground_state()
-        self.vel.y = self.jump_velocity
+        jump_modifier = 1.0
+        if self.weak_jump_timer > 0:
+            jump_modifier = 0.5  # Weaker jump
+        self.vel.y = self.jump_velocity * self.jump_boost * jump_modifier
         self.on_ground = False
         self._coyote_timer = 0.0
+        self._jump_buffer = 0.0
+        self.has_double_jumped = False
+        self.animation.set_state(self._air_animation_state)
+
+    def _start_double_jump(self):
+        self.vel.y = self.jump_velocity * 1.25  # Slightly stronger double jump
+        self.has_double_jumped = True
         self._jump_buffer = 0.0
         self.animation.set_state(self._air_animation_state)
 
@@ -248,8 +413,79 @@ class Player:
     def body_image(self) -> pygame.Surface:
         return self.body_frames_by_state[self.animation.state][self.animation.frame_index]
 
+    def collect_power_up(self, effect_type):
+        if effect_type == 'orb':
+            effect_type = random.choice([
+                'speed', 'jump', 'shield', 'double_jump', 'launch',
+                'reverse_control', 'slippery', 'slow_falling', 'heavy', 'weak_jump'
+            ])
+
+        debuffs = {'reverse_control', 'slippery', 'slow_falling', 'heavy', 'weak_jump'}
+        if effect_type in debuffs and self.shield_timer > 0:
+            self.shield_timer = 0.0
+            return 'shield_blocked'
+
+        if effect_type == 'speed':
+            self.speed_boost_timer = 3.0
+            self.speed_boost = 1.5
+        elif effect_type == 'jump':
+            self.jump_boost_timer = 3.0
+            self.jump_boost = 1.5
+        elif effect_type == 'shield':
+            self.shield_timer = 15.0
+        elif effect_type == 'double_jump':
+            self.double_jump_timer = 3.0
+        elif effect_type == 'launch':
+            self.vel.y = -520.0  # Stronger launch upward
+            self.launch_timer = 1.0  # Air control window; solids use phased collision rules
+            self._launch_overlap_escape = False
+        elif effect_type == 'reverse_control':
+            self.shield_timer = 0.0
+            self.reverse_control_timer = 5.0
+        elif effect_type == 'slippery':
+            self.shield_timer = 0.0
+            self.slippery_timer = 5.0
+        elif effect_type == 'slow_falling':
+            self.shield_timer = 0.0
+            self.slow_falling_timer = 5.0
+        elif effect_type == 'heavy':
+            self.shield_timer = 0.0
+            self.heavy_timer = 5.0
+        elif effect_type == 'weak_jump':
+            self.shield_timer = 0.0
+            self.weak_jump_timer = 2.0
+
+        return effect_type
+
+    def active_power_up_timers(self) -> dict[str, float]:
+        timers = {}
+        if self.speed_boost_timer > 0:
+            timers['Speed Buff'] = self.speed_boost_timer
+        if self.jump_boost_timer > 0:
+            timers['Jump Buff'] = self.jump_boost_timer
+        if self.shield_timer > 0:
+            timers['Shield Aura'] = self.shield_timer
+        if self.double_jump_timer > 0:
+            timers['Double Jump'] = self.double_jump_timer
+        if self.launch_timer > 0:
+            timers['Launch'] = self.launch_timer
+        if self.reverse_control_timer > 0:
+            timers['Reverse Control'] = self.reverse_control_timer
+        if self.slippery_timer > 0:
+            timers['Slippery'] = self.slippery_timer
+        if self.slow_falling_timer > 0:
+            timers['Slow Falling'] = self.slow_falling_timer
+        if self.heavy_timer > 0:
+            timers['Heavy'] = self.heavy_timer
+        if self.weak_jump_timer > 0:
+            timers['Weak Jump'] = self.weak_jump_timer
+        return timers
+
     def draw(self, surface, camera=None):
         rect = self.visual_rect()
         if camera is not None:
             rect = rect.move(-int(round(camera.x)), -int(round(camera.y)))
         surface.blit(self.image, rect)
+        if self.shield_timer > 0:
+            center = rect.center
+            pygame.draw.circle(surface, (0, 255, 255), center, 30, 2)  # Cyan aura for shield

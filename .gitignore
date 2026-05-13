@@ -40,7 +40,6 @@ venv.bak/
 
 # PyInstaller
 *.manifest
-*.spec
 
 # Installer logs
 pip-log.txt
@@ -123,3 +122,4 @@ cython_debug/
 Thumbs.db
 
 /docs
+.claude

@@ -1,5 +1,6 @@
 from typing import Optional
 
+import time
 import pygame
 
 from network import network_handler as nw
@@ -60,6 +61,9 @@ class ScreenState:
             self.context.last_countdown_id = max(self.context.last_countdown_id, event.countdown_id)
             self.context.current_match_id = max(self.context.current_match_id, event.match_id)
             return True
+        if isinstance(event, nw.LevelSelectEvent):
+            self.context.selected_level = protocol.normalize_level_id(event.level_id)
+            return True
         if isinstance(event, nw.ConnectionLostEvent):
             message = event.message
             if "WinError 10054" in message or "forcibly closed" in message:
@@ -111,6 +115,10 @@ class ScreenState:
         self.context.countdown_remaining = None
         self.context.active_countdown_id = 0
         self.context.current_match_id = event.match_id
+        self.context.selected_level = protocol.normalize_level_id(event.selected_level)
+        self.context.level_seed = int(event.level_seed) & protocol.UINT32_MAX
+        wall = int(event.match_start_unix_sec) & protocol.UINT32_MAX
+        self.context.match_start_unix_sec = wall if wall != 0 else int(time.time())
         if self.context.network is not None:
             self.context.network.set_client_state(protocol.CLIENT_STATE_IN_GAME)
         return True
