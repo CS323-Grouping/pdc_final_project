@@ -1,9 +1,43 @@
 import time
 from types import SimpleNamespace
 
+import pygame
+
+from app.input_config import CONTROL_SCHEME_ARROWS
 from network import protocol
 from network import network_handler as nw
 from states.in_game import InGameState
+
+
+def test_spectator_controls_sit_between_top_row_effect_overlays():
+    state = InGameState.__new__(InGameState)
+
+    outer, prev_rect, panel_rect, next_rect = InGameState._spectator_controls_layout_logical(state)
+
+    assert 128 <= outer.left
+    assert outer.right <= 264
+    assert outer.top >= 142
+    assert outer.bottom <= 162
+    assert prev_rect.right <= panel_rect.left
+    assert panel_rect.right <= next_rect.left
+
+
+def test_spectator_mouse_clicks_use_internal_control_rects():
+    clicks = []
+    state = InGameState.__new__(InGameState)
+    state._observing = True
+    state._paused_players = {}
+    state.context = SimpleNamespace(
+        running=True,
+        control_scheme=CONTROL_SCHEME_ARROWS,
+    )
+    state._cycle_spectator_target = lambda direction: clicks.append(direction)
+    _outer, prev_rect, _panel, next_rect = InGameState._spectator_controls_layout_logical(state)
+
+    InGameState.handle_event(state, pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=prev_rect.center))
+    InGameState.handle_event(state, pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=next_rect.center))
+
+    assert clicks == [-1, 1]
 
 
 def test_reconcile_heartbeat_returns_to_lobby_when_server_state_is_lobby():

@@ -32,8 +32,6 @@ from world.constants import (
     INTERNAL_HEIGHT,
     INTERNAL_WIDTH,
     PLAYABLE_RIGHT,
-    PLAYABLE_WIDTH,
-    PLAYABLE_X,
     PLAYER_FRAME_HEIGHT,
     PLAYER_FRAME_WIDTH,
     PLAYER_HITBOX_HEIGHT,
@@ -65,11 +63,12 @@ _ORB_DEBUFF_EFFECTS = frozenset({"reverse_control", "slippery", "slow_falling", 
 AVATAR_FALLBACK_DELAY_SEC = 1.0
 TERMINAL_ACTION_RESEND_INTERVAL_SEC = 0.35
 
-_SPECTATOR_BAR_Y = INTERNAL_HEIGHT - 32
-_SPECTATOR_BTN_W, _SPECTATOR_BTN_H = 22, 15
-_SPECTATOR_PANEL_W = 128
-_SPECTATOR_GAP = 5
-_SPECTATOR_OUTER_MARGIN = 4
+_SPECTATOR_BAR_Y = 144
+_SPECTATOR_BTN_W, _SPECTATOR_BTN_H = 14, 16
+_SPECTATOR_PANEL_W = 82
+_SPECTATOR_GAP = 3
+_SPECTATOR_OUTER_MARGIN = 2
+_SPECTATOR_CENTER_X = 196  # centered in the top-row gap between buff (right=128) and debuff (left=264) HUD slots
 
 
 @dataclass
@@ -239,12 +238,10 @@ class InGameState(ScreenState):
                 return
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             _outer, prev_rect, _panel, next_rect = self._spectator_controls_layout_logical()
-            prev_win = self._scale_window_rect(prev_rect)
-            next_win = self._scale_window_rect(next_rect)
-            if prev_win.collidepoint(event.pos):
+            if prev_rect.collidepoint(event.pos):
                 self._cycle_spectator_target(-1)
                 return
-            if next_win.collidepoint(event.pos):
+            if next_rect.collidepoint(event.pos):
                 self._cycle_spectator_target(1)
                 return
 
@@ -1166,14 +1163,13 @@ class InGameState(ScreenState):
             surface.blit(scaled_body, body_target)
 
     def _spectator_controls_layout_logical(self) -> tuple[pygame.Rect, pygame.Rect, pygame.Rect, pygame.Rect]:
-        """Spectator bar centered in the playable column: outer shell, <, name well, >."""
+        """Spectator bar in the top-row gap between buff and debuff HUD slots."""
         bw, bh = _SPECTATOR_BTN_W, _SPECTATOR_BTN_H
         pw = _SPECTATOR_PANEL_W
         gap = _SPECTATOR_GAP
         m = _SPECTATOR_OUTER_MARGIN
         inner_w = bw + gap + pw + gap + bw
-        cx = PLAYABLE_X + PLAYABLE_WIDTH // 2
-        left = cx - inner_w // 2
+        left = _SPECTATOR_CENTER_X - inner_w // 2
         y = _SPECTATOR_BAR_Y
         prev_r = pygame.Rect(left, y, bw, bh)
         panel_r = pygame.Rect(prev_r.right + gap, y, pw, bh)
@@ -1207,27 +1203,26 @@ class InGameState(ScreenState):
         if target_id is None and alive_ids:
             target_id = self._default_spectator_target()
             self._set_spectator_target(target_id, snap=True)
-        name = self._name_by_id.get(target_id, f"P{target_id}") if target_id is not None else "No live targets"
-        label_raw = f"Watching {name}"
-        label = self._fit_text(label_raw, self.context.small_font, max(32, panel_w.w - scale_v * 4))
+        name = self._name_by_id.get(target_id, f"P{target_id}") if target_id is not None else "—"
+        label = self._fit_text(name, self.context.small_font, max(32, panel_w.w - scale_v * 4))
 
         draw_well(surface, panel_w, lw, px)
 
         enabled = len(alive_ids) > 1
-        mp = self.context.mouse_pos
+        mp = self.context.mouse_pos  # internal/logical coords
 
         draw_neutral_button(surface, prev_w, lw, px)
-        if enabled and prev_w.collidepoint(mp):
+        if enabled and prev_l.collidepoint(mp):
             pygame.draw.rect(surface, px.hover_outline, prev_w.inflate(2, 2), width=1)
 
         draw_neutral_button(surface, next_w, lw, px)
-        if enabled and next_w.collidepoint(mp):
+        if enabled and next_l.collidepoint(mp):
             pygame.draw.rect(surface, px.hover_outline, next_w.inflate(2, 2), width=1)
 
         caret = self.context.small_font.render("<", True, px.text_btn_dim if not enabled else px.text_btn_bright)
         surface.blit(caret, caret.get_rect(center=prev_w.center))
-        caret_r = self.context.small_font.render(">", True, px.text_btn_dim if not enabled else px.text_btn_bright)
-        surface.blit(caret_r, caret_r.get_rect(center=next_w.center))
+        caret_r2 = self.context.small_font.render(">", True, px.text_btn_dim if not enabled else px.text_btn_bright)
+        surface.blit(caret_r2, caret_r2.get_rect(center=next_w.center))
 
         text_color = px.text_muted if target_id is None else px.text_label
         text_s = self.context.small_font.render(label, True, text_color)
