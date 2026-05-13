@@ -43,8 +43,8 @@ def _fatal_missing_game_data(checked: list[Path]) -> None:
         places += "\n  - …"
     msg = (
         "Could not find bundled game data (assets folder).\n\n"
-        "Copy the entire build output folder (everything inside dist\\TowerJumpLAN\\), "
-        "not only TowerJumpLAN.exe.\n\n"
+        "Copy the entire build output folder (everything inside dist\\SkywardRaceLAN\\), "
+        "not only SkywardRaceLAN.exe.\n\n"
         f"Searched under:\n{places}"
     )
     if sys.platform == "win32":

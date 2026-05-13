@@ -4,30 +4,28 @@ import pygame
 
 from network import network_handler as nw
 from network import protocol
-from states.common import ScreenState, event_has_ctrl_modifier, filter_room_name_input, remove_previous_input_token
-from states.room_lobby_ui import RoomLobbyUi
-from ui import components as ui
+from states.common import (
+    event_has_ctrl_modifier,
+    filter_room_name_input,
+    host_player_id as _host_player_id,
+    remove_previous_input_token,
+)
+from states.lobby_base import LobbyStateBase
 from ui.theme import DEFAULT_THEME
+from ui.widgets import Button, TextInput, draw_button, draw_text_input
 
 
-def _host_player_id(roster: list) -> int | None:
-    if not roster:
-        return None
-    return min(entry[0] for entry in roster)
-
-
-class HostLobbyState(ScreenState):
-    render_to_internal = True
-    suppress_internal_global_messages = True
+class HostLobbyState(LobbyStateBase):
+    return_state_after_results = "host_lobby"
 
     def __init__(self, machine, context, **kwargs):
         super().__init__(machine, context, **kwargs)
         self.room_active = False
         self.room_input = context.room_name or "HostRoom"
-        self.open_button = ui.Button(pygame.Rect(0, 0, 200, 46), "Open Room")
-        self.start_button = ui.Button(pygame.Rect(0, 0, 200, 46), "Start")
-        self.cancel_button = ui.Button(pygame.Rect(0, 0, 220, 46), "Cancel Countdown")
-        self.close_button = ui.Button(pygame.Rect(0, 0, 180, 46), "Close Room")
+        self.open_button = Button(pygame.Rect(0, 0, 200, 46), "Open Room")
+        self.start_button = Button(pygame.Rect(0, 0, 200, 46), "Start")
+        self.cancel_button = Button(pygame.Rect(0, 0, 220, 46), "Cancel Countdown")
+        self.close_button = Button(pygame.Rect(0, 0, 180, 46), "Close Room")
         self.room_rect = pygame.Rect(0, 0, 360, 44)
         self.kick_rects: list[tuple[pygame.Rect, int, str]] = []
         self._session_open = False
@@ -43,7 +41,6 @@ class HostLobbyState(ScreenState):
         self._kick_hover: Optional[int] = None
         self._kick_mode_on = False
         self._hovered = None
-        self._room_ui = RoomLobbyUi(context)
 
     def enter(self):
         self._room_ui.enter()
@@ -155,41 +152,6 @@ class HostLobbyState(ScreenState):
             if not ready:
                 return f"Waiting for {name} to ready up."
         return ""
-
-    def _drain_network(self):
-        my_id = self.context.network.id if self.context.network else -1
-        for event in self.context.drain_network_events():
-            if self.handle_common_network_event(event):
-                continue
-            if self._room_ui.handle_avatar_event(event, my_id):
-                continue
-            if isinstance(event, nw.RosterEvent):
-                entries = list(event.entries)
-                old_ids = {player_id for player_id, _ready, _name in self.context.roster}
-                new_ids = {player_id for player_id, _ready, _name in entries}
-                if new_ids - old_ids:
-                    self._room_ui.restart_avatar_broadcast()
-                self.context.roster = entries
-                self._room_ui.retain_remote_avatars(new_ids)
-            elif isinstance(event, nw.CountdownEvent):
-                self.accept_countdown_event(event)
-            elif isinstance(event, nw.CountdownCancelEvent):
-                self.accept_countdown_cancel_event(event)
-            elif isinstance(event, nw.RoomNameEvent):
-                self.context.room_name = event.room_name
-            elif isinstance(event, nw.GameStartEvent):
-                if not self.accept_game_start_event(event):
-                    continue
-                self.switch("in_game")
-                return
-            elif isinstance(event, nw.GameEndEvent):
-                if not self.accept_game_end_event(event):
-                    continue
-                self.context.reset_lobby_after_game()
-                self.context.results_standings = list(event.standings)
-                self.context.return_state_after_results = "host_lobby"
-                self.switch("results")
-                return
 
     def handle_event(self, event):
         super().handle_event(event)
@@ -367,13 +329,13 @@ class HostLobbyState(ScreenState):
             title = self.context.title_font.render("Host a room", True, theme.text)
             surface.blit(title, title.get_rect(center=(surface.get_width() // 2, 76)))
 
-            inp = ui.TextInput(
+            inp = TextInput(
                 self.room_rect,
                 f"Room name ({protocol.ROOM_NAME_MIN_LEN}-{protocol.ROOM_NAME_MAX_LEN} chars)",
                 self.room_input,
                 self.room_active,
             )
-            ui.draw_text_input(surface, (self.context.font, self.context.tiny_font), inp, theme)
+            draw_text_input(surface, (self.context.font, self.context.tiny_font), inp, theme)
 
             if not protocol.is_valid_room_name(self.room_input):
                 warn = self.context.tiny_font.render(
@@ -383,7 +345,7 @@ class HostLobbyState(ScreenState):
                 )
                 surface.blit(warn, (self.room_rect.x, self.room_rect.y + self.room_rect.height + 8))
 
-            ui.draw_button(surface, self.context.small_font, self.open_button, theme, hovered=self._open_h)
+            draw_button(surface, self.context.small_font, self.open_button, theme, hovered=self._open_h)
             return
 
         hid = _host_player_id(self.context.roster)

@@ -43,16 +43,18 @@ class ScreenState:
         if reason_code == protocol.KICKED_REASON_KICKED:
             return "Host removed you from the room."
         if reason_code == protocol.KICKED_REASON_ROOM_CLOSED:
-            return "Host closed the room."
+            return "Host disconnected. Game closed."
         if reason_code == protocol.KICKED_REASON_NOT_READY:
             return "Removed: you were not ready at countdown end."
         return "Disconnected from room."
 
     def handle_common_network_event(self, event) -> bool:
         if isinstance(event, nw.SessionEvent):
-            self.context.remember_reconnect_ticket()
+            self.context.remember_reconnect_ticket(persist=not self.context.is_host, reason="session_event")
             return True
         if isinstance(event, nw.HeartbeatAckEvent):
+            self.context.last_server_state = event.server_state
+            self.context.last_heartbeat_ack_monotonic = time.monotonic()
             if event.server_state == protocol.STATE_COUNTDOWN and event.countdown_id != 0:
                 self.context.active_countdown_id = event.countdown_id
             elif event.server_state == protocol.STATE_LOBBY and event.countdown_id == self.context.active_countdown_id:
@@ -67,8 +69,14 @@ class ScreenState:
         if isinstance(event, nw.ConnectionLostEvent):
             message = event.message
             if "WinError 10054" in message or "forcibly closed" in message:
-                message = "Host closed the room or the connection was lost."
+                message = "Host disconnected. Game closed."
             self.context.set_banner(message, duration=5.0)
+            network = self.context.network
+            if network is not None and network.client_state in (
+                protocol.CLIENT_STATE_IN_GAME,
+                protocol.CLIENT_STATE_SPECTATING,
+            ) and self.context.local_player_alive:
+                self.context.remember_reconnect_ticket(persist=True, reason="connection_lost")
             self.context.detach_network(send_disconnect=False, preserve_reconnect=True)
             self.switch("browse_lobby" if self.context.reconnect_ticket is not None else "menu")
             return True
@@ -115,6 +123,7 @@ class ScreenState:
         self.context.countdown_remaining = None
         self.context.active_countdown_id = 0
         self.context.current_match_id = event.match_id
+        self.context.local_player_alive = True
         self.context.selected_level = protocol.normalize_level_id(event.selected_level)
         self.context.level_seed = int(event.level_seed) & protocol.UINT32_MAX
         wall = int(event.match_start_unix_sec) & protocol.UINT32_MAX
@@ -158,6 +167,13 @@ class ScreenState:
             if player_id == network.id:
                 return ready
         return None
+
+
+def host_player_id(roster: list) -> int | None:
+    """Lowest player_id in the roster owns the host slot."""
+    if not roster:
+        return None
+    return min(entry[0] for entry in roster)
 
 
 def filter_player_name_input(value: str) -> str:

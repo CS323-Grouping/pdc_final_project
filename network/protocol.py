@@ -3,7 +3,7 @@ import struct
 import time
 from typing import List, Optional, Tuple
 
-PROTO_VERSION = 1
+PROTO_VERSION = 3
 MAX_PLAYERS = 5
 MIN_PLAYERS = 2
 MAX_NAME_LEN = 32
@@ -30,6 +30,11 @@ PLAYER_TIMEOUT_SECONDS = 3.0
 LOBBY_PLAYER_TIMEOUT_SECONDS = 8.0
 HEARTBEAT_INTERVAL_SECONDS = 1.0
 RECONNECT_GRACE_SECONDS = 30.0
+# Gameplay clients can briefly stop pumping Python while the OS owns the
+# window-move/resize loop. Treat liveness as several missed heartbeats, not one
+# short render stall; clean closes still send DISCONNECT immediately.
+SESSION_TIMEOUT_SECONDS = 12.0
+GAMEPLAY_STALL_SECONDS = PLAYER_TIMEOUT_SECONDS
 
 STATE_LOBBY = 0
 STATE_COUNTDOWN = 1
@@ -83,6 +88,7 @@ RECONNECT_DENY_NO_SLOT = 0
 RECONNECT_DENY_BAD_TOKEN = 1
 RECONNECT_DENY_EXPIRED = 2
 RECONNECT_DENY_NOT_IN_GAME = 3
+RECONNECT_DENY_AMBIGUOUS_NAME = 4
 
 CONNECTION = b"CONN"  # Legacy handshake response compatibility
 POSITION = b"POSI"
@@ -114,6 +120,7 @@ SESSION = b"SESS"
 RECONNECT = b"RECN"
 RECONNECT_OK = b"RCOK"
 RECONNECT_NO = b"RCNO"
+RECONNECT_SNAPSHOT = b"RSNP"
 MATCH_PAUSE = b"PAUS"
 MATCH_RESUME = b"RSUM"
 ROOM_NAME_UPDATE = b"RNAM"
@@ -169,11 +176,14 @@ FRMT_SESSION = "!4siI"
 FRMT_RECONNECT = "!4sBiI32s"
 FRMT_RECONNECT_OK = "!4siff32s"
 FRMT_RECONNECT_NO = "!4sB"
+FRMT_RECONNECT_SNAPSHOT_LEGACY = "!4siffBBIIIBB32s"
+# v1: ends with level_seed (no wall clock). v2: adds match_start_unix_sec (uint32).
+FRMT_RECONNECT_SNAPSHOT = "!4siffBBIIIIBB32s"
 FRMT_LIST_HEAD = "!4sB"
 FRMT_LIST_ITEM = "!iB32s"
 FRMT_READY = "!4siB"
-FRMT_HEARTBEAT = "!4siIBII"
-FRMT_HEARTBEAT_ACK = "!4sBII"
+FRMT_HEARTBEAT = "!4siIBIII"
+FRMT_HEARTBEAT_ACK = "!4sBIII"
 FRMT_START_LEGACY = "!4si"
 FRMT_START = "!4siB"
 FRMT_CDWN_LEGACY = "!4sf"
@@ -187,10 +197,14 @@ FRMT_GSTART = "!4sIIBI"
 FRMT_GSTART_V2 = "!4sIIBII"
 GSTART_PACKET_SIZE_V1 = struct.calcsize(FRMT_GSTART)
 GSTART_PACKET_SIZE_V2 = struct.calcsize(FRMT_GSTART_V2)
-FRMT_PLATFORM_PROGRESS = "!4siH"
+FRMT_PLATFORM_PROGRESS_LEGACY = "!4siH"
+FRMT_PLATFORM_PROGRESS = "!4siIH"
 PLATFORM_PROGRESS_PACKET_SIZE = struct.calcsize(FRMT_PLATFORM_PROGRESS)
-FRMT_DEAD = "!4siB"
-FRMT_GOAL = "!4si"   # tag, player_id
+PLATFORM_PROGRESS_PACKET_SIZE_LEGACY = struct.calcsize(FRMT_PLATFORM_PROGRESS_LEGACY)
+FRMT_DEAD_LEGACY = "!4siB"
+FRMT_DEAD = "!4siIB"
+FRMT_GOAL_LEGACY = "!4si"
+FRMT_GOAL = "!4siI"   # tag, player_id, match_id
 FRMT_ELIM = "!4siB"
 FRMT_GEND_HEAD_LEGACY = "!4sBB"
 FRMT_GEND_HEAD = "!4sIBB"
@@ -206,7 +220,7 @@ FRMT_MATCH_PAUSE = "!4sif"
 FRMT_MATCH_RESUME = "!4s"
 FRMT_ROOM_NAME_UPDATE = "!4si32s"
 FRMT_LEVEL_SELECT = "!4siB"
-FRMT_ORB_COLLECT = "!4siii"  # player_id, orb_index, cooldown_sec (1–10)
+FRMT_ORB_COLLECT = "!4siiii"  # player_id, orb_index, cooldown_sec (1–10), effect_id (see orb_effect_sync)
 ORB_COLLECT_PACKET_SIZE = struct.calcsize(FRMT_ORB_COLLECT)
 ORB_COOLDOWN_MIN_SEC = 1
 ORB_COOLDOWN_MAX_SEC = 10
@@ -611,6 +625,100 @@ def safe_unpack_reconnect_no(data: bytes) -> Optional[Tuple[bytes, int]]:
     return tag, reason_code
 
 
+def pack_reconnect_snapshot(
+    player_id: int,
+    x: float,
+    y: float,
+    room_state: int,
+    selected_level: int,
+    countdown_id: int,
+    match_id: int,
+    level_seed: int,
+    alive: bool,
+    placement: int,
+    room_name: str,
+    match_start_unix_sec: int = 0,
+) -> bytes:
+    placement_value = 255 if placement < 0 else int(placement) & 0xFF
+    return struct.pack(
+        FRMT_RECONNECT_SNAPSHOT,
+        RECONNECT_SNAPSHOT,
+        int(player_id),
+        float(x),
+        float(y),
+        max(0, min(255, int(room_state))),
+        normalize_level_id(selected_level),
+        int(countdown_id) & UINT32_MAX,
+        int(match_id) & UINT32_MAX,
+        int(level_seed) & UINT32_MAX,
+        int(match_start_unix_sec) & UINT32_MAX,
+        1 if alive else 0,
+        placement_value,
+        _pack_name(room_name),
+    )
+
+
+def safe_unpack_reconnect_snapshot(
+    data: bytes,
+) -> Optional[Tuple[bytes, int, float, float, int, int, int, int, int, int, bool, int, str]]:
+    unpacked = _safe_unpack_exact(data, FRMT_RECONNECT_SNAPSHOT)
+    legacy = False
+    if unpacked is None:
+        unpacked = _safe_unpack_exact(data, FRMT_RECONNECT_SNAPSHOT_LEGACY)
+        legacy = True
+        if unpacked is None:
+            return None
+    if legacy:
+        (
+            tag,
+            player_id,
+            x,
+            y,
+            room_state,
+            selected_level,
+            countdown_id,
+            match_id,
+            level_seed,
+            alive,
+            placement,
+            raw_room_name,
+        ) = unpacked
+        match_start_unix_sec = 0
+    else:
+        (
+            tag,
+            player_id,
+            x,
+            y,
+            room_state,
+            selected_level,
+            countdown_id,
+            match_id,
+            level_seed,
+            match_start_unix_sec,
+            alive,
+            placement,
+            raw_room_name,
+        ) = unpacked
+    if tag != RECONNECT_SNAPSHOT:
+        return None
+    return (
+        tag,
+        int(player_id),
+        float(x),
+        float(y),
+        int(room_state),
+        normalize_level_id(selected_level),
+        int(countdown_id) & UINT32_MAX,
+        int(match_id) & UINT32_MAX,
+        int(level_seed) & UINT32_MAX,
+        int(match_start_unix_sec) & UINT32_MAX,
+        bool(alive),
+        int(placement),
+        _unpack_name(raw_room_name),
+    )
+
+
 def pack_list(entries: List[Tuple[int, bool, str]]) -> bytes:
     payload = struct.pack(FRMT_LIST_HEAD, LIST, len(entries))
     for player_id, ready, name in entries:
@@ -663,6 +771,8 @@ def pack_heartbeat(
     client_state: int = CLIENT_STATE_LOBBY,
     countdown_id: int = 0,
     match_id: int = 0,
+    *,
+    ping_seq: int = 0,
 ) -> bytes:
     return struct.pack(
         FRMT_HEARTBEAT,
@@ -672,37 +782,45 @@ def pack_heartbeat(
         max(0, min(255, int(client_state))),
         int(countdown_id) & UINT32_MAX,
         int(match_id) & UINT32_MAX,
+        int(ping_seq) & UINT32_MAX,
     )
 
 
-def safe_unpack_heartbeat(data: bytes) -> Optional[Tuple[bytes, int, int, int, int, int]]:
+def safe_unpack_heartbeat(data: bytes) -> Optional[Tuple[bytes, int, int, int, int, int, int]]:
     unpacked = _safe_unpack_exact(data, FRMT_HEARTBEAT)
     if unpacked is None:
         return None
-    tag, player_id, session_token, client_state, countdown_id, match_id = unpacked
+    tag, player_id, session_token, client_state, countdown_id, match_id, ping_seq = unpacked
     if tag != HEARTBEAT:
         return None
-    return tag, player_id, session_token, client_state, countdown_id, match_id
+    return tag, player_id, session_token, client_state, countdown_id, match_id, ping_seq
 
 
-def pack_heartbeat_ack(server_state: int, countdown_id: int = 0, match_id: int = 0) -> bytes:
+def pack_heartbeat_ack(
+    server_state: int,
+    countdown_id: int = 0,
+    match_id: int = 0,
+    *,
+    ping_seq: int = 0,
+) -> bytes:
     return struct.pack(
         FRMT_HEARTBEAT_ACK,
         HEARTBEAT_ACK,
         max(0, min(255, int(server_state))),
         int(countdown_id) & UINT32_MAX,
         int(match_id) & UINT32_MAX,
+        int(ping_seq) & UINT32_MAX,
     )
 
 
-def safe_unpack_heartbeat_ack(data: bytes) -> Optional[Tuple[bytes, int, int, int]]:
+def safe_unpack_heartbeat_ack(data: bytes) -> Optional[Tuple[bytes, int, int, int, int]]:
     unpacked = _safe_unpack_exact(data, FRMT_HEARTBEAT_ACK)
     if unpacked is None:
         return None
-    tag, server_state, countdown_id, match_id = unpacked
+    tag, server_state, countdown_id, match_id, ping_seq = unpacked
     if tag != HEARTBEAT_ACK:
         return None
-    return tag, server_state, countdown_id, match_id
+    return tag, server_state, countdown_id, match_id, ping_seq
 
 
 def pack_start(host_id: int, action: int = START_ACTION_START) -> bytes:
@@ -816,54 +934,73 @@ def safe_unpack_gstart(data: bytes) -> Optional[Tuple[bytes, int, int, int, int,
     return tag, countdown_id, match_id, normalize_level_id(selected_level), level_seed, now
 
 
-def pack_dead(player_id: int, cause: int = 0) -> bytes:
-    return struct.pack(FRMT_DEAD, DEAD, player_id, cause)
+def pack_dead(player_id: int, cause: int = 0, match_id: int = 0) -> bytes:
+    return struct.pack(FRMT_DEAD, DEAD, int(player_id), int(match_id) & UINT32_MAX, int(cause) & 0xFF)
 
 
-def safe_unpack_dead(data: bytes) -> Optional[Tuple[bytes, int, int]]:
+def safe_unpack_dead(data: bytes) -> Optional[Tuple[bytes, int, int, int]]:
     unpacked = _safe_unpack_exact(data, FRMT_DEAD)
-    if unpacked is None:
+    if unpacked is not None:
+        tag, player_id, match_id, cause = unpacked
+        if tag != DEAD:
+            return None
+        return tag, int(player_id), int(match_id) & UINT32_MAX, int(cause) & 0xFF
+    legacy = _safe_unpack_exact(data, FRMT_DEAD_LEGACY)
+    if legacy is None:
         return None
-    tag, player_id, cause = unpacked
+    tag, player_id, cause = legacy
     if tag != DEAD:
         return None
-    return tag, player_id, cause
+    return tag, int(player_id), 0, int(cause) & 0xFF
 
 
-def pack_goal(player_id: int) -> bytes:
-    return struct.pack(FRMT_GOAL, GOAL, player_id)
+def pack_goal(player_id: int, match_id: int = 0) -> bytes:
+    return struct.pack(FRMT_GOAL, GOAL, int(player_id), int(match_id) & UINT32_MAX)
 
 
-def safe_unpack_goal(data: bytes) -> Optional[Tuple[bytes, int]]:
+def safe_unpack_goal(data: bytes) -> Optional[Tuple[bytes, int, int]]:
     unpacked = _safe_unpack_exact(data, FRMT_GOAL)
-    if unpacked is None:
+    if unpacked is not None:
+        tag, player_id, match_id = unpacked
+        if tag != GOAL:
+            return None
+        return tag, int(player_id), int(match_id) & UINT32_MAX
+    legacy = _safe_unpack_exact(data, FRMT_GOAL_LEGACY)
+    if legacy is None:
         return None
-    tag, player_id = unpacked
+    tag, player_id = legacy
     if tag != GOAL:
         return None
-    return tag, player_id
+    return tag, int(player_id), 0
 
 
-def pack_orb_collect(player_id: int, orb_index: int, cooldown_sec: int) -> bytes:
+def pack_orb_collect(player_id: int, orb_index: int, cooldown_sec: int, effect_id: int = 0) -> bytes:
     cd = int(cooldown_sec)
     cd = max(ORB_COOLDOWN_MIN_SEC, min(ORB_COOLDOWN_MAX_SEC, cd))
-    return struct.pack(FRMT_ORB_COLLECT, ORB_COLLECT, int(player_id), int(orb_index), cd)
+    eid = int(effect_id)
+    if eid < 0:
+        eid = 0
+    if eid > 255:
+        eid = 255
+    return struct.pack(FRMT_ORB_COLLECT, ORB_COLLECT, int(player_id), int(orb_index), cd, eid)
 
 
-def safe_unpack_orb_collect(data: bytes) -> Optional[Tuple[bytes, int, int, int]]:
+def safe_unpack_orb_collect(data: bytes) -> Optional[Tuple[bytes, int, int, int, int]]:
     if len(data) != ORB_COLLECT_PACKET_SIZE:
         return None
     unpacked = _safe_unpack_exact(data, FRMT_ORB_COLLECT)
     if unpacked is None:
         return None
-    tag, player_id, orb_index, cooldown_sec = unpacked
+    tag, player_id, orb_index, cooldown_sec, effect_id = unpacked
     if tag != ORB_COLLECT:
         return None
     if orb_index < 0 or orb_index > 8192:
         return None
     if not (ORB_COOLDOWN_MIN_SEC <= cooldown_sec <= ORB_COOLDOWN_MAX_SEC):
         return None
-    return tag, player_id, orb_index, cooldown_sec
+    if effect_id < 0 or effect_id > 255:
+        return None
+    return tag, player_id, orb_index, cooldown_sec, int(effect_id)
 
 
 def pack_elim(player_id: int, placement: int) -> bytes:
@@ -880,21 +1017,35 @@ def safe_unpack_elim(data: bytes) -> Optional[Tuple[bytes, int, int]]:
     return tag, player_id, placement
 
 
-def pack_platform_progress(player_id: int, platforms_reached: int) -> bytes:
+def pack_platform_progress(player_id: int, platforms_reached: int, match_id: int = 0) -> bytes:
     count = max(0, min(65535, int(platforms_reached)))
-    return struct.pack(FRMT_PLATFORM_PROGRESS, PLATFORM_PROGRESS, int(player_id), count)
+    return struct.pack(
+        FRMT_PLATFORM_PROGRESS,
+        PLATFORM_PROGRESS,
+        int(player_id),
+        int(match_id) & UINT32_MAX,
+        count,
+    )
 
 
-def safe_unpack_platform_progress(data: bytes) -> Optional[Tuple[bytes, int, int]]:
-    if len(data) != PLATFORM_PROGRESS_PACKET_SIZE:
+def safe_unpack_platform_progress(data: bytes) -> Optional[Tuple[bytes, int, int, int]]:
+    if len(data) == PLATFORM_PROGRESS_PACKET_SIZE:
+        unpacked = _safe_unpack_exact(data, FRMT_PLATFORM_PROGRESS)
+        if unpacked is None:
+            return None
+        tag, player_id, match_id, count = unpacked
+        if tag != PLATFORM_PROGRESS:
+            return None
+        return tag, int(player_id), int(match_id) & UINT32_MAX, int(count)
+    if len(data) != PLATFORM_PROGRESS_PACKET_SIZE_LEGACY:
         return None
-    unpacked = _safe_unpack_exact(data, FRMT_PLATFORM_PROGRESS)
+    unpacked = _safe_unpack_exact(data, FRMT_PLATFORM_PROGRESS_LEGACY)
     if unpacked is None:
         return None
     tag, player_id, count = unpacked
     if tag != PLATFORM_PROGRESS:
         return None
-    return tag, int(player_id), int(count)
+    return tag, int(player_id), 0, int(count)
 
 
 def pack_gend(

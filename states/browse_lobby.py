@@ -3,6 +3,7 @@ import time
 
 import pygame
 
+from app.fonts import load_ui_font
 from network.discovery import LobbyBrowser
 from network import network_handler as nw
 from network import protocol
@@ -167,18 +168,29 @@ class BrowseLobbyState(ScreenState):
     def _can_reconnect(self, room) -> bool:
         if room.state not in (protocol.STATE_IN_GAME, protocol.STATE_PAUSED):
             return False
+        if self._matching_reconnect_ticket(room) is not None:
+            return True
+        return bool(getattr(self.context, "player_name", "").strip())
+
+    def _matching_reconnect_ticket(self, room):
         ticket = self.context.reconnect_ticket
         if ticket is None:
-            return False
+            return None
+        expires_at = int(getattr(ticket, "expires_at_unix", 0) or 0)
+        if expires_at and int(time.time()) > expires_at:
+            clear = getattr(self.context, "clear_reconnect_ticket", None)
+            if callable(clear):
+                clear("ticket_expired_in_browser")
+            return None
         if ticket.addr != room.addr or ticket.port != room.game_port:
-            return False
+            return None
         if ticket.room_name and ticket.room_name != room.room_name:
-            return False
-        return True
+            return None
+        return ticket
 
     def _status_label(self, room, reconnectable: bool = False) -> str:
         if reconnectable:
-            return "RECONNECT"
+            return "RECONNECT" if self._matching_reconnect_ticket(room) is not None else "TRY RECONNECT"
         if room.state == protocol.STATE_PAUSED:
             return "PAUSED"
         if room.state == protocol.STATE_COUNTDOWN:
@@ -210,9 +222,13 @@ class BrowseLobbyState(ScreenState):
         return True
 
     def _reconnect_room(self, room):
-        ticket = self.context.reconnect_ticket
+        ticket = self._matching_reconnect_ticket(room)
         net = nw.Network()
         if ticket is None:
+            if not self.context.player_name.strip():
+                self.context.set_status("Reconnect requires your player name.", duration=3.0)
+                net.close()
+                return
             result = net.reconnect_to_room(room.addr, room.game_port, -1, 0, self.context.player_name)
             is_host = False
         else:
@@ -223,9 +239,27 @@ class BrowseLobbyState(ScreenState):
                 ticket.session_token,
                 ticket.player_name,
             )
-            is_host = ticket.is_host
+            is_host = bool(getattr(ticket, "is_host", False))
         if not result.ok:
-            self.context.set_status("Reconnect failed. Use the same name before the slot expires.", duration=4.0)
+            reason = result.reason_code
+            if reason == protocol.RECONNECT_DENY_EXPIRED:
+                self.context.set_status("Reconnect expired. The reserved slot timed out.", duration=4.0)
+            elif reason == protocol.RECONNECT_DENY_BAD_TOKEN:
+                self.context.set_status("Reconnect denied. Session token no longer matches.", duration=4.0)
+            elif reason == protocol.RECONNECT_DENY_AMBIGUOUS_NAME:
+                self.context.set_status("Reconnect denied. Multiple matching names are disconnected.", duration=4.0)
+            elif reason == protocol.RECONNECT_DENY_NO_SLOT:
+                self.context.set_status("Reconnect failed. No matching reconnect slot found.", duration=4.0)
+            else:
+                self.context.set_status("Reconnect failed. Use the same name before the slot expires.", duration=4.0)
+            if reason in (
+                protocol.RECONNECT_DENY_EXPIRED,
+                protocol.RECONNECT_DENY_NO_SLOT,
+                protocol.RECONNECT_DENY_BAD_TOKEN,
+            ):
+                clear = getattr(self.context, "clear_reconnect_ticket", None)
+                if callable(clear):
+                    clear("reconnect_denied")
             net.close()
             return
 
@@ -235,6 +269,20 @@ class BrowseLobbyState(ScreenState):
             room_name=result.room_name,
             start_pos=result.start_pos,
         )
+        snapshot = result.reconnect_snapshot
+        if snapshot is not None:
+            self.context.room_name = snapshot.room_name or self.context.room_name
+            self.context.selected_level = protocol.normalize_level_id(snapshot.selected_level)
+            self.context.level_seed = int(snapshot.level_seed) & protocol.UINT32_MAX
+            wall = int(snapshot.match_start_unix_sec) & protocol.UINT32_MAX
+            self.context.match_start_unix_sec = wall if wall != 0 else int(time.time())
+            self.context.active_countdown_id = snapshot.countdown_id
+            self.context.current_match_id = snapshot.match_id
+            self.context.local_player_alive = bool(snapshot.alive)
+            self.context.start_pos = (snapshot.x, snapshot.y)
+        if snapshot is not None and snapshot.room_state == protocol.STATE_LOBBY:
+            self.switch("host_lobby" if is_host else "joined_lobby")
+            return
         self.switch("in_game")
 
     def _direct_join_room_by_addr(self, addr: str, port: int):
@@ -953,7 +1001,7 @@ class BrowseLobbyState(ScreenState):
         key = (size, bold)
         font = self._window_fonts.get(key)
         if font is None:
-            font = pygame.font.SysFont("consolas", size, bold=bold)
+            font = load_ui_font(self.context.project_root, size, bold=bold)
             self._window_fonts[key] = font
         return font
 
@@ -1005,6 +1053,27 @@ class BrowseLobbyState(ScreenState):
             surface.blit(shade, (rect.x + scale, y + scale))
         label = font.render(text, True, color)
         surface.blit(label, (rect.x, y))
+
+    def _draw_text_right(
+        self,
+        surface: pygame.Surface,
+        logical_size: int,
+        text: str,
+        logical_rect: pygame.Rect,
+        color: tuple[int, int, int],
+        bold: bool = True,
+        shadow: bool = False,
+    ):
+        rect = self._scale_rect(logical_rect)
+        scale = self._window_scale()
+        font = self._window_font(logical_size, bold=bold)
+        text = self._fit_text(text, font, max(4, rect.w - (4 * scale)))
+        y = rect.y + (rect.h - font.get_height()) // 2
+        if shadow:
+            shade = font.render(text, True, (8, 14, 25))
+            surface.blit(shade, (rect.right - shade.get_width() + scale, y + scale))
+        label = font.render(text, True, color)
+        surface.blit(label, (rect.right - label.get_width(), y))
 
     def _draw_text_caret(
         self,
@@ -1177,15 +1246,27 @@ class BrowseLobbyState(ScreenState):
         else:
             name_text = "ROOM NAME"
             name_color = theme.text_muted
+        name_text_rect = layout["text"].copy()
+        name_text_rect.w = max(20, name_text_rect.w - 34)
         self._draw_input_text_left(
             surface,
             7,
             name_text,
-            layout["text"],
+            name_text_rect,
             name_color,
             shadow=False,
             caret_active=self._create_room_field_active,
             caret_index=self._create_room_caret,
+        )
+        count_color = theme.text_muted if len(self._create_room_name) < protocol.ROOM_NAME_MAX_LEN else theme.text_warn
+        count_rect = pygame.Rect(layout["field"].right - 34, layout["field"].y + 5, 30, 8)
+        self._draw_text_right(
+            surface,
+            5,
+            f"{len(self._create_room_name)}/{protocol.ROOM_NAME_MAX_LEN}",
+            count_rect,
+            count_color,
+            shadow=False,
         )
         create_color = theme.text if create_enabled else theme.text_muted
         self._draw_text_center(surface, 7, "CREATE", layout["create"], create_color)

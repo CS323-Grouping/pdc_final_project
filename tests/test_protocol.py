@@ -204,6 +204,36 @@ def test_reconnect_response_round_trip():
     no = protocol.pack_reconnect_no(protocol.RECONNECT_DENY_EXPIRED)
     assert protocol.safe_unpack_reconnect_no(no) == (protocol.RECONNECT_NO, protocol.RECONNECT_DENY_EXPIRED)
 
+    snapshot = protocol.pack_reconnect_snapshot(
+        player_id=4,
+        x=12.5,
+        y=80.25,
+        room_state=protocol.STATE_PAUSED,
+        selected_level=3,
+        countdown_id=7,
+        match_id=9,
+        level_seed=123456,
+        alive=True,
+        placement=255,
+        room_name="RoomOne",
+        match_start_unix_sec=1700000001,
+    )
+    assert protocol.safe_unpack_reconnect_snapshot(snapshot) == (
+        protocol.RECONNECT_SNAPSHOT,
+        4,
+        pytest.approx(12.5),
+        pytest.approx(80.25),
+        protocol.STATE_PAUSED,
+        3,
+        7,
+        9,
+        123456,
+        1700000001,
+        True,
+        255,
+        "RoomOne",
+    )
+
 
 def test_match_pause_resume_round_trip():
     pause = protocol.pack_match_pause(3, 29.5)
@@ -248,12 +278,12 @@ def test_heartbeat_round_trip():
     p = protocol.pack_heartbeat(3, 1234, protocol.CLIENT_STATE_RESULTS, countdown_id=7, match_id=9)
     u = protocol.safe_unpack_heartbeat(p)
     assert u is not None
-    assert u[1:] == (3, 1234, protocol.CLIENT_STATE_RESULTS, 7, 9)
+    assert u[1:] == (3, 1234, protocol.CLIENT_STATE_RESULTS, 7, 9, 0)
 
-    ack = protocol.pack_heartbeat_ack(protocol.STATE_LOBBY, countdown_id=7, match_id=9)
+    ack = protocol.pack_heartbeat_ack(protocol.STATE_LOBBY, countdown_id=7, match_id=9, ping_seq=42)
     ack_u = protocol.safe_unpack_heartbeat_ack(ack)
     assert ack_u is not None
-    assert ack_u[1:] == (protocol.STATE_LOBBY, 7, 9)
+    assert ack_u[1:] == (protocol.STATE_LOBBY, 7, 9, 42)
 
 
 def test_cdwn_round_trip():
@@ -299,15 +329,37 @@ def test_level_select_round_trip():
 
 
 def test_dead_elim_round_trip():
-    p = protocol.pack_dead(2, 0)
+    p = protocol.pack_dead(2, 0, match_id=11)
     u = protocol.safe_unpack_dead(p)
     assert u is not None
     assert u[1] == 2
-    assert u[2] == 0
+    assert u[2] == 11
+    assert u[3] == 0
     p2 = protocol.pack_elim(2, 3)
     u2 = protocol.safe_unpack_elim(p2)
     assert u2 is not None
     assert u2[1:] == (2, 3)
+
+
+def test_goal_and_platform_progress_round_trip_with_match_id():
+    goal = protocol.pack_goal(7, match_id=13)
+    unpacked_goal = protocol.safe_unpack_goal(goal)
+    assert unpacked_goal == (protocol.GOAL, 7, 13)
+
+    progress = protocol.pack_platform_progress(7, 22, match_id=13)
+    unpacked_progress = protocol.safe_unpack_platform_progress(progress)
+    assert unpacked_progress == (protocol.PLATFORM_PROGRESS, 7, 13, 22)
+
+
+def test_legacy_dead_goal_and_platform_packets_still_unpack():
+    legacy_dead = struct.pack(protocol.FRMT_DEAD_LEGACY, protocol.DEAD, 2, 0)
+    assert protocol.safe_unpack_dead(legacy_dead) == (protocol.DEAD, 2, 0, 0)
+
+    legacy_goal = struct.pack(protocol.FRMT_GOAL_LEGACY, protocol.GOAL, 2)
+    assert protocol.safe_unpack_goal(legacy_goal) == (protocol.GOAL, 2, 0)
+
+    legacy_progress = struct.pack(protocol.FRMT_PLATFORM_PROGRESS_LEGACY, protocol.PLATFORM_PROGRESS, 2, 9)
+    assert protocol.safe_unpack_platform_progress(legacy_progress) == (protocol.PLATFORM_PROGRESS, 2, 0, 9)
 
 
 def test_gend_round_trip():

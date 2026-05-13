@@ -71,6 +71,10 @@ class RoomState:
         self._addr_to_id: Dict[Address, int] = {}
         self._positions: Dict[int, Position] = {}
 
+    @staticmethod
+    def _can_reconnect_match_player(player: PlayerEntry) -> bool:
+        return player.alive or player.placement is not None
+
     def _spawn_position_for_index(self, index: int) -> Position:
         start_x, start_y = self.start_position
         return (start_x + (12.0 * index), start_y)
@@ -240,7 +244,7 @@ class RoomState:
                 return None
             if player.connected:
                 return None
-            if not player.alive:
+            if not self._can_reconnect_match_player(player):
                 return None
             if player.reconnect_deadline is not None and now > player.reconnect_deadline:
                 return None
@@ -265,11 +269,11 @@ class RoomState:
         with self.lock:
             now = time.monotonic() if now is None else now
             requested_name = normalize_player_name(player_name)
-            matches = []
+            matches: List[int] = []
             for player_id, player in self._players.items():
                 if normalize_player_name(player.name) != requested_name:
                     continue
-                if not player.alive or player.connected:
+                if player.connected or not self._can_reconnect_match_player(player):
                     continue
                 if player.reconnect_deadline is not None and now > player.reconnect_deadline:
                     continue
@@ -291,6 +295,21 @@ class RoomState:
             player.disconnected_at = None
             player.reconnect_deadline = None
             return player_id, self._positions.get(player_id, self.start_position), player.session_token
+
+    def reconnect_name_matches(self, player_name: str, now: Optional[float] = None) -> List[int]:
+        with self.lock:
+            now = time.monotonic() if now is None else now
+            requested_name = normalize_player_name(player_name)
+            matches: List[int] = []
+            for player_id, player in self._players.items():
+                if normalize_player_name(player.name) != requested_name:
+                    continue
+                if player.connected or not self._can_reconnect_match_player(player):
+                    continue
+                if player.reconnect_deadline is not None and now > player.reconnect_deadline:
+                    continue
+                matches.append(player_id)
+            return sorted(matches)
 
     def remove_player(self, player_id: int):
         with self.lock:
@@ -332,6 +351,9 @@ class RoomState:
                 if (now - player.last_gameplay_seen) > timeout_seconds:
                     output.append(player_id)
             return sorted(output)
+
+    def gameplay_stalled_connected_alive_ids(self, now: float, stall_seconds: float) -> List[int]:
+        return self.timed_out_connected_alive_ids(now, stall_seconds)
 
     def timed_out_connected_ids(self, now: float, timeout_seconds: float) -> List[int]:
         with self.lock:
@@ -464,6 +486,16 @@ class RoomState:
         with self.lock:
             player = self._players.get(player_id)
             return False if player is None else player.alive
+
+    def is_connected(self, player_id: int) -> bool:
+        with self.lock:
+            player = self._players.get(player_id)
+            return False if player is None else player.connected
+
+    def player_placement(self, player_id: int) -> Optional[int]:
+        with self.lock:
+            player = self._players.get(player_id)
+            return None if player is None else player.placement
 
     def mark_eliminated(self, player_id: int, placement: int):
         with self.lock:

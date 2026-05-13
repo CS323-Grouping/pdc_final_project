@@ -1,20 +1,12 @@
 import pygame
 
-from network import network_handler as nw
-from states.common import ScreenState
+from states.common import host_player_id as _host_player_id
+from states.lobby_base import LobbyStateBase
 from ui import animations as anim
-from states.room_lobby_ui import RoomLobbyUi
 
 
-def _host_player_id(roster: list) -> int | None:
-    if not roster:
-        return None
-    return min(entry[0] for entry in roster)
-
-
-class JoinedLobbyState(ScreenState):
-    render_to_internal = True
-    suppress_internal_global_messages = True
+class JoinedLobbyState(LobbyStateBase):
+    return_state_after_results = "joined_lobby"
 
     def __init__(self, machine, context, **kwargs):
         super().__init__(machine, context, **kwargs)
@@ -24,7 +16,6 @@ class JoinedLobbyState(ScreenState):
         self._roster_ids: frozenset[int] = frozenset()
         self._row_flash: dict[int, float] = {}
         self._hovered = None
-        self._room_ui = RoomLobbyUi(context)
 
     def enter(self):
         self._room_ui.enter()
@@ -54,50 +45,17 @@ class JoinedLobbyState(ScreenState):
         self.context.detach_network(send_disconnect=True)
         self.switch("browse_lobby")
 
-    def _drain_network(self):
-        heard_server = False
-        my_id = self.context.network.id if self.context.network else -1
-        for event in self.context.drain_network_events():
-            heard_server = True
-            if self.handle_common_network_event(event):
-                if self.context.network is None:
-                    return True
-                continue
-            if self._room_ui.handle_avatar_event(event, my_id):
-                continue
-            if isinstance(event, nw.RosterEvent):
-                entries = list(event.entries)
-                old_ids = set(self._roster_ids)
-                new_ids = {player_id for player_id, _ready, _name in entries}
-                self._note_roster_change(entries)
-                if new_ids - old_ids:
-                    self._room_ui.restart_avatar_broadcast()
-                self.context.roster = entries
-                self._room_ui.retain_remote_avatars(new_ids)
-                lr = self.local_player_ready()
-                if lr is not None:
-                    self._ready_on = lr
-            elif isinstance(event, nw.CountdownEvent):
-                self.accept_countdown_event(event)
-            elif isinstance(event, nw.CountdownCancelEvent):
-                self.accept_countdown_cancel_event(event)
-            elif isinstance(event, nw.RoomNameEvent):
-                self.context.room_name = event.room_name
-            elif isinstance(event, nw.GameStartEvent):
-                if not self.accept_game_start_event(event):
-                    continue
-                self.switch("in_game")
-                return True
-            elif isinstance(event, nw.GameEndEvent):
-                if not self.accept_game_end_event(event):
-                    continue
-                self.context.reset_lobby_after_game()
-                self._ready_on = False
-                self.context.results_standings = list(event.standings)
-                self.context.return_state_after_results = "joined_lobby"
-                self.switch("results")
-                return True
-        return heard_server
+    # ---- LobbyStateBase hooks --------------------------------------------
+    def _on_roster_about_to_change(self, entries, old_ids, new_ids) -> None:
+        self._note_roster_change(entries)
+
+    def _on_roster_changed(self, entries, old_ids, new_ids) -> None:
+        lr = self.local_player_ready()
+        if lr is not None:
+            self._ready_on = lr
+
+    def _on_game_end(self) -> None:
+        self._ready_on = False
 
     def handle_event(self, event):
         super().handle_event(event)
@@ -137,7 +95,7 @@ class JoinedLobbyState(ScreenState):
         if self.context.network is None:
             return
         if self._server_silence_elapsed >= 4.0:
-            self.context.set_banner("Host closed the room or stopped responding.", duration=5.0)
+            self.context.set_banner("Host disconnected. Game closed.", duration=5.0)
             self.context.detach_network(send_disconnect=False, preserve_reconnect=True)
             self.switch("browse_lobby")
             return

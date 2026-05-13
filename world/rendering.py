@@ -3,7 +3,11 @@ import math
 import pygame
 
 from world.assets import WorldAssets
-from world.constants import BORDER_WIDTH, CHUNK_HEIGHT, INTERNAL_HEIGHT, PLAYABLE_RIGHT
+from world.constants import CHUNK_HEIGHT, INTERNAL_HEIGHT, PLAYABLE_X
+
+
+INGAME_BORDERS_POS = (70, 0)
+INGAME_PANEL_POS = (0, 0)
 
 
 def draw_static_game_frame(surface: pygame.Surface, assets: WorldAssets, camera_y: float = 0.0) -> None:
@@ -22,14 +26,13 @@ def draw_static_game_frame(surface: pygame.Surface, assets: WorldAssets, camera_
     for chunk in range(first_chunk, last_chunk + 1):
         chunk_world_y = chunk * CHUNK_HEIGHT
         screen_y = int(round(chunk_world_y - camera_y))
-        surface.blit(assets.background, (BORDER_WIDTH, screen_y))
+        surface.blit(assets.background, (PLAYABLE_X, screen_y))
 
-    bh = assets.border_left.get_height()
     y = 0
     while y < sh:
-        surface.blit(assets.border_left, (0, y))
-        surface.blit(assets.border_right, (PLAYABLE_RIGHT, y))
-        y += bh
+        surface.blit(assets.ingame_borders, (INGAME_BORDERS_POS[0], y))
+        surface.blit(assets.ingame_panel, (INGAME_PANEL_POS[0], y))
+        y += assets.ingame_panel.get_height()
 
 
 class LevelRenderer:
@@ -42,8 +45,8 @@ class LevelRenderer:
         for chunk in range(first_chunk, last_chunk + 1):
             chunk_world_y = chunk * CHUNK_HEIGHT
             screen_y = int(round(chunk_world_y - camera.y))
-            surface.blit(self.assets.background, (BORDER_WIDTH, screen_y))
+            surface.blit(self.assets.background, (PLAYABLE_X, screen_y))
 
     def draw_borders(self, surface: pygame.Surface) -> None:
-        surface.blit(self.assets.border_left, (0, 0))
-        surface.blit(self.assets.border_right, (PLAYABLE_RIGHT, 0))
+        surface.blit(self.assets.ingame_borders, INGAME_BORDERS_POS)
+        surface.blit(self.assets.ingame_panel, INGAME_PANEL_POS)

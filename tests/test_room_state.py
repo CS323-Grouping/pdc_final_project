@@ -81,6 +81,42 @@ def test_room_state_reconnects_disconnected_alive_player_by_name():
     assert room_state.disconnected_alive_ids() == []
 
 
+def test_room_state_reconnects_disconnected_eliminated_player_to_new_addr():
+    room_state = RoomState(room_name="TestRoom", game_port=5555)
+    old_addr = ("127.0.0.1", 12001)
+    new_addr = ("127.0.0.1", 12055)
+
+    player_id, _is_new = room_state.add_or_get_player(old_addr, "Alpha")
+    token = room_state.session_token(player_id)
+    assert token is not None
+    room_state.enter_game()
+    room_state.mark_eliminated(player_id, placement=3)
+    room_state.mark_disconnected(player_id, now=10.0, grace_seconds=30.0)
+
+    position = room_state.reconnect_player(new_addr, player_id, token, now=20.0)
+
+    assert position == room_state.start_position
+    assert room_state.get_player_id_by_addr(new_addr) == player_id
+    assert not room_state.is_alive(player_id)
+    assert room_state.player_placement(player_id) == 3
+
+
+def test_room_state_reconnects_disconnected_eliminated_player_by_name():
+    room_state = RoomState(room_name="TestRoom", game_port=5555)
+    player_id, _is_new = room_state.add_or_get_player(("127.0.0.1", 12001), "Alpha")
+    token = room_state.session_token(player_id)
+    assert token is not None
+    room_state.enter_game()
+    room_state.mark_eliminated(player_id, placement=2)
+    room_state.mark_disconnected(player_id, now=10.0, grace_seconds=30.0)
+
+    reconnected = room_state.reconnect_player_by_name(("127.0.0.1", 12044), "alpha", now=18.0)
+
+    assert reconnected == (player_id, room_state.start_position, token)
+    assert not room_state.is_alive(player_id)
+    assert room_state.player_placement(player_id) == 2
+
+
 def test_room_state_checks_connected_names_case_insensitively():
     room_state = RoomState(room_name="TestRoom", game_port=5555)
     addr = ("127.0.0.1", 12001)
@@ -137,3 +173,25 @@ def test_reset_for_lobby_refreshes_liveness_after_long_match():
     room_state.reset_for_lobby(now=60.0)
 
     assert room_state.timed_out_connected_ids(now=61.0, timeout_seconds=8.0) == []
+
+
+def test_reconnect_name_matches_reports_ambiguous_slots():
+    room_state = RoomState(room_name="TestRoom", game_port=5555)
+    first_id, _ = room_state.add_or_get_player(("127.0.0.1", 12001), "Alpha")
+    second_id, _ = room_state.add_or_get_player(("127.0.0.1", 12002), "alpha")
+    room_state.enter_game()
+    room_state.mark_disconnected(first_id, now=10.0, grace_seconds=30.0)
+    room_state.mark_disconnected(second_id, now=10.0, grace_seconds=30.0)
+
+    assert room_state.reconnect_name_matches("ALPHA", now=20.0) == [first_id, second_id]
+
+
+def test_gameplay_stall_is_distinct_from_session_timeout():
+    room_state = RoomState(room_name="TestRoom", game_port=5555)
+    player_id, _ = room_state.add_or_get_player(("127.0.0.1", 12001), "Alpha")
+    room_state.enter_game()
+    room_state.touch_gameplay_player(player_id, now=0.0)
+    room_state.touch_player(player_id, now=20.0)
+
+    assert room_state.gameplay_stalled_connected_alive_ids(now=25.0, stall_seconds=3.0) == [player_id]
+    assert room_state.timed_out_connected_ids(now=25.0, timeout_seconds=8.0) == []

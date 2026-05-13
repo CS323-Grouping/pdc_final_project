@@ -1,10 +1,13 @@
 from dataclasses import dataclass
+from collections import Counter, deque
 import logging
 import queue
 import socket
 import threading
+import time
 from typing import List, Optional, Tuple, Union
 
+from network.telemetry import LatencyWindow, RTT_WINDOW_DEFAULT_SIZE
 from network.protocol import (
     AVATAR_CHUNK,
     AVATAR_CHUNK_PAYLOAD_SIZE,
@@ -40,9 +43,11 @@ from network.protocol import (
     PROTO_VERSION,
     READY,
     ORB_COLLECT,
+    PLATFORM_PROGRESS,
     RECV_BUF,
     RECONNECT_NO,
     RECONNECT_OK,
+    RECONNECT_SNAPSHOT,
     ROOM_NAME_UPDATE,
     SESSION,
     START,
@@ -76,20 +81,27 @@ from network.protocol import (
     safe_unpack_elim,
     safe_unpack_gend,
     safe_unpack_gstart,
+    safe_unpack_goal,
     safe_unpack_heartbeat_ack,
     safe_unpack_kicked,
     safe_unpack_list,
     safe_unpack_match_pause,
     safe_unpack_match_resume,
     safe_unpack_orb_collect,
+    safe_unpack_platform_progress,
     safe_unpack_player_state,
     safe_unpack_reconnect_no,
     safe_unpack_reconnect_ok,
+    safe_unpack_reconnect_snapshot,
     safe_unpack_level_select,
     safe_unpack_room_name_update,
     safe_unpack_session,
     tag_of,
 )
+
+# Heartbeat RTT: sequenced request/response (cf. ICMP echo / STUN) + EMA smoothing for UI.
+PING_EMA_ALPHA = 0.125
+PING_PENDING_MAX_AGE_SEC = max(5.0, HEARTBEAT_INTERVAL_SECONDS * 4.0)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -105,7 +117,7 @@ def _packet_tag_name(payload: bytes) -> str:
 
 
 def _event_log_level(event: "NetworkEvent") -> int:
-    if isinstance(event, (PositionEvent, PlayerStateEvent, AvatarChunkEvent, OrbCollectEvent)):
+    if isinstance(event, (PositionEvent, PlayerStateEvent, AvatarChunkEvent, OrbCollectEvent, PlatformProgressEvent)):
         return logging.DEBUG
     if isinstance(event, ErrorEvent):
         return logging.WARNING
@@ -158,7 +170,10 @@ def _event_summary(event: "NetworkEvent") -> str:
     if isinstance(event, MatchResumeEvent):
         return "MatchResumeEvent"
     if isinstance(event, HeartbeatAckEvent):
-        return f"HeartbeatAckEvent state={event.server_state} countdown_id={event.countdown_id} match_id={event.match_id}"
+        return (
+            f"HeartbeatAckEvent state={event.server_state} countdown_id={event.countdown_id} "
+            f"match_id={event.match_id} ping_seq={event.ping_seq}"
+        )
     if isinstance(event, RoomNameEvent):
         return f"RoomNameEvent room_name={event.room_name}"
     if isinstance(event, LevelSelectEvent):
@@ -166,7 +181,23 @@ def _event_summary(event: "NetworkEvent") -> str:
     if isinstance(event, OrbCollectEvent):
         return (
             f"OrbCollectEvent player_id={event.player_id} orb_index={event.orb_index} "
-            f"cooldown_sec={event.cooldown_sec}"
+            f"cooldown_sec={event.cooldown_sec} effect_id={event.effect_id}"
+        )
+    if isinstance(event, GoalEvent):
+        return f"GoalEvent player_id={event.player_id} match_id={event.match_id}"
+    if isinstance(event, PlatformProgressEvent):
+        return (
+            "PlatformProgressEvent "
+            f"player_id={event.player_id} "
+            f"platforms_reached={event.platforms_reached} "
+            f"match_id={event.match_id}"
+        )
+    if isinstance(event, ReconnectSnapshotEvent):
+        return (
+            "ReconnectSnapshotEvent "
+            f"player_id={event.player_id} room_state={event.room_state} "
+            f"level={event.selected_level} countdown_id={event.countdown_id} "
+            f"match_id={event.match_id} alive={event.alive} placement={event.placement}"
         )
     if isinstance(event, ConnectDeniedEvent):
         return f"ConnectDeniedEvent reason={event.reason_code} extra={event.extra}"
@@ -186,6 +217,7 @@ class ConnectResult:
     extra: int = 0
     start_pos: Optional[Tuple[float, float]] = None
     session_token: int = 0
+    reconnect_snapshot: Optional["ReconnectSnapshotEvent"] = None
 
 
 @dataclass(frozen=True)
@@ -218,6 +250,35 @@ class GameStartEvent:
 class EliminationEvent:
     player_id: int
     placement: int
+
+
+@dataclass(frozen=True)
+class GoalEvent:
+    player_id: int
+    match_id: int = 0
+
+
+@dataclass(frozen=True)
+class PlatformProgressEvent:
+    player_id: int
+    platforms_reached: int
+    match_id: int = 0
+
+
+@dataclass(frozen=True)
+class ReconnectSnapshotEvent:
+    player_id: int
+    x: float
+    y: float
+    room_state: int
+    selected_level: int
+    countdown_id: int
+    match_id: int
+    level_seed: int
+    match_start_unix_sec: int
+    alive: bool
+    placement: int | None
+    room_name: str
 
 
 @dataclass(frozen=True)
@@ -288,6 +349,7 @@ class HeartbeatAckEvent:
     server_state: int
     countdown_id: int
     match_id: int
+    ping_seq: int = 0
 
 
 @dataclass(frozen=True)
@@ -305,6 +367,7 @@ class OrbCollectEvent:
     player_id: int
     orb_index: int
     cooldown_sec: int
+    effect_id: int = 0
 
 
 @dataclass(frozen=True)
@@ -323,12 +386,46 @@ class ErrorEvent:
     message: str
 
 
+@dataclass(frozen=True)
+class NetworkMetricsSnapshot:
+    # RTT: EMA / rolling window / session (foundation for SLO dashboards + future exporters).
+    ping_ms: float | None
+    ping_avg_ms: float | None  # rolling window mean (see LatencyWindow)
+    ping_min_ms: float | None  # rolling window min
+    ping_max_ms: float | None  # rolling window max
+    ping_jitter_ms: float | None
+    ping_p50_ms: float | None
+    ping_p95_ms: float | None
+    ping_session_avg_ms: float | None
+    ping_session_min_ms: float | None
+    ping_session_max_ms: float | None
+    heartbeat_sent: int
+    heartbeat_acked: int
+    heartbeat_lost: int
+    heartbeat_loss_pct: float
+    inbound_kib_per_sec: float
+    inbound_avg_kib_per_sec: float
+    inbound_min_kib_per_sec: float
+    inbound_max_kib_per_sec: float
+    outbound_kib_per_sec: float
+    outbound_avg_kib_per_sec: float
+    outbound_min_kib_per_sec: float
+    outbound_max_kib_per_sec: float
+    inbound_packets_per_sec: float
+    outbound_packets_per_sec: float
+    inbound_packet_tags_per_sec: dict[str, int]
+    outbound_packet_tags_per_sec: dict[str, int]
+
+
 NetworkEvent = Union[
     RosterEvent,
     CountdownEvent,
     CountdownCancelEvent,
     GameStartEvent,
     EliminationEvent,
+    GoalEvent,
+    PlatformProgressEvent,
+    ReconnectSnapshotEvent,
     GameEndEvent,
     KickedEvent,
     PositionEvent,
@@ -366,6 +463,31 @@ class Network:
         self._match_id = 0
         self._heartbeat_thread: Optional[threading.Thread] = None
         self._heartbeat_lock = threading.Lock()
+        self._metrics_lock = threading.Lock()
+        self._sent_samples: deque[tuple[float, int]] = deque()
+        self._recv_samples: deque[tuple[float, int]] = deque()
+        self._sent_tag_samples: deque[tuple[float, str]] = deque()
+        self._recv_tag_samples: deque[tuple[float, str]] = deque()
+        self._next_ping_seq: int = 0
+        self._pending_ping: dict[int, float] = {}
+        self._rtt_window = LatencyWindow(maxlen=RTT_WINDOW_DEFAULT_SIZE)
+        self._ping_ema_ms: float | None = None
+        self._last_ping_ms: float | None = None
+        self._ping_count = 0
+        self._ping_total_ms = 0.0
+        self._ping_session_min_ms: float | None = None
+        self._ping_session_max_ms: float | None = None
+        self._heartbeat_sent = 0
+        self._heartbeat_acked = 0
+        self._heartbeat_lost = 0
+        self._throughput_sample_count = 0
+        self._throughput_in_total = 0.0
+        self._throughput_out_total = 0.0
+        self._throughput_in_min: float | None = None
+        self._throughput_in_max = 0.0
+        self._throughput_out_min: float | None = None
+        self._throughput_out_max = 0.0
+        self._next_throughput_sample_at = 0.0
 
         self.events: "queue.Queue[NetworkEvent]" = queue.Queue()
         self._recv_thread: Optional[threading.Thread] = None
@@ -375,6 +497,21 @@ class Network:
     @property
     def is_open(self) -> bool:
         return not self._closed
+
+    @property
+    def client_state(self) -> int:
+        with self._heartbeat_lock:
+            return int(self._client_state)
+
+    @property
+    def current_countdown_id(self) -> int:
+        with self._heartbeat_lock:
+            return int(self._countdown_id)
+
+    @property
+    def current_match_id(self) -> int:
+        with self._heartbeat_lock:
+            return int(self._match_id)
 
     def _mark_connection_lost(self, message: str) -> ConnectionLostEvent:
         LOGGER.warning("Connection lost: %s", message)
@@ -388,6 +525,7 @@ class Network:
         tag = _packet_tag_name(payload)
         try:
             self.client.sendto(payload, target)
+            self._record_sent(len(payload), tag)
             LOGGER.debug("send packet tag=%s bytes=%s target=%s player_id=%s", tag, len(payload), target, self.id)
             return True
         except OSError as error:
@@ -397,6 +535,157 @@ class Network:
             else:
                 self._closed = True
             return False
+
+    def _prune_metric_samples(self, samples: deque[tuple[float, int]], now: float) -> None:
+        cutoff = now - 1.0
+        while samples and samples[0][0] < cutoff:
+            samples.popleft()
+
+    def _prune_tag_samples(self, samples: deque[tuple[float, str]], now: float) -> None:
+        cutoff = now - 1.0
+        while samples and samples[0][0] < cutoff:
+            samples.popleft()
+
+    def _record_sent(self, byte_count: int, tag: str) -> None:
+        now = time.monotonic()
+        with self._metrics_lock:
+            self._sent_samples.append((now, max(0, int(byte_count))))
+            self._sent_tag_samples.append((now, tag))
+            self._prune_metric_samples(self._sent_samples, now)
+            self._prune_tag_samples(self._sent_tag_samples, now)
+
+    def _record_received(self, byte_count: int, tag: str) -> None:
+        now = time.monotonic()
+        with self._metrics_lock:
+            self._recv_samples.append((now, max(0, int(byte_count))))
+            self._recv_tag_samples.append((now, tag))
+            self._prune_metric_samples(self._recv_samples, now)
+            self._prune_tag_samples(self._recv_tag_samples, now)
+
+    def _prune_stale_pending_locked(self, now: float) -> None:
+        cutoff = now - PING_PENDING_MAX_AGE_SEC
+        dead = [seq for seq, t in self._pending_ping.items() if t < cutoff]
+        self._heartbeat_lost += len(dead)
+        for seq in dead:
+            self._pending_ping.pop(seq, None)
+
+    def _record_heartbeat_ack(self, received_at: float, ping_seq: int) -> None:
+        seq = int(ping_seq) & UINT32_MAX
+        with self._metrics_lock:
+            self._prune_stale_pending_locked(received_at)
+            sent_at = self._pending_ping.pop(seq, None)
+            if sent_at is None:
+                return
+            ping_ms = max(0.0, (received_at - sent_at) * 1000.0)
+            self._last_ping_ms = ping_ms
+            self._rtt_window.add(ping_ms)
+            self._heartbeat_acked += 1
+            if self._ping_ema_ms is None:
+                self._ping_ema_ms = ping_ms
+            else:
+                a = PING_EMA_ALPHA
+                self._ping_ema_ms = a * ping_ms + (1.0 - a) * self._ping_ema_ms
+            self._ping_count += 1
+            self._ping_total_ms += ping_ms
+            self._ping_session_min_ms = (
+                ping_ms if self._ping_session_min_ms is None else min(self._ping_session_min_ms, ping_ms)
+            )
+            self._ping_session_max_ms = (
+                ping_ms if self._ping_session_max_ms is None else max(self._ping_session_max_ms, ping_ms)
+            )
+
+    def _record_throughput_sample(self, now: float, inbound_kib: float, outbound_kib: float) -> None:
+        if now < self._next_throughput_sample_at:
+            return
+        self._next_throughput_sample_at = now + 1.0
+        self._throughput_sample_count += 1
+        self._throughput_in_total += inbound_kib
+        self._throughput_out_total += outbound_kib
+        self._throughput_in_min = (
+            inbound_kib if self._throughput_in_min is None else min(self._throughput_in_min, inbound_kib)
+        )
+        self._throughput_out_min = (
+            outbound_kib if self._throughput_out_min is None else min(self._throughput_out_min, outbound_kib)
+        )
+        self._throughput_in_max = max(self._throughput_in_max, inbound_kib)
+        self._throughput_out_max = max(self._throughput_out_max, outbound_kib)
+
+    def reset_telemetry(self) -> None:
+        """Reset session-scoped telemetry (call when attaching a new network session)."""
+        with self._metrics_lock:
+            self._rtt_window.clear()
+            self._ping_ema_ms = None
+            self._last_ping_ms = None
+            self._ping_count = 0
+            self._ping_total_ms = 0.0
+            self._ping_session_min_ms = None
+            self._ping_session_max_ms = None
+            self._heartbeat_sent = 0
+            self._heartbeat_acked = 0
+            self._heartbeat_lost = 0
+            self._pending_ping.clear()
+            self._next_ping_seq = 0
+            self._sent_samples.clear()
+            self._recv_samples.clear()
+            self._sent_tag_samples.clear()
+            self._recv_tag_samples.clear()
+            self._throughput_sample_count = 0
+            self._throughput_in_total = 0.0
+            self._throughput_out_total = 0.0
+            self._throughput_in_min = None
+            self._throughput_in_max = 0.0
+            self._throughput_out_min = None
+            self._throughput_out_max = 0.0
+            self._next_throughput_sample_at = 0.0
+
+    def metrics_snapshot(self) -> NetworkMetricsSnapshot:
+        now = time.monotonic()
+        with self._metrics_lock:
+            self._prune_metric_samples(self._sent_samples, now)
+            self._prune_metric_samples(self._recv_samples, now)
+            self._prune_tag_samples(self._sent_tag_samples, now)
+            self._prune_tag_samples(self._recv_tag_samples, now)
+            self._prune_stale_pending_locked(now)
+            sent_bytes = sum(byte_count for _t, byte_count in self._sent_samples)
+            recv_bytes = sum(byte_count for _t, byte_count in self._recv_samples)
+            sent_tags = dict(Counter(tag for _t, tag in self._sent_tag_samples))
+            recv_tags = dict(Counter(tag for _t, tag in self._recv_tag_samples))
+            inbound_kib = recv_bytes / 1024.0
+            outbound_kib = sent_bytes / 1024.0
+            self._record_throughput_sample(now, inbound_kib, outbound_kib)
+            session_avg = self._ping_total_ms / self._ping_count if self._ping_count else None
+            sent_hb = self._heartbeat_sent
+            loss_pct = (100.0 * self._heartbeat_lost / sent_hb) if sent_hb > 0 else 0.0
+            throughput_count = max(1, self._throughput_sample_count)
+            win_mean = self._rtt_window.mean()
+            return NetworkMetricsSnapshot(
+                ping_ms=self._ping_ema_ms if self._ping_ema_ms is not None else self._last_ping_ms,
+                ping_avg_ms=win_mean,
+                ping_min_ms=self._rtt_window.minimum(),
+                ping_max_ms=self._rtt_window.maximum(),
+                ping_jitter_ms=self._rtt_window.stdev(),
+                ping_p50_ms=self._rtt_window.p50(),
+                ping_p95_ms=self._rtt_window.p95(),
+                ping_session_avg_ms=session_avg,
+                ping_session_min_ms=self._ping_session_min_ms,
+                ping_session_max_ms=self._ping_session_max_ms,
+                heartbeat_sent=sent_hb,
+                heartbeat_acked=self._heartbeat_acked,
+                heartbeat_lost=self._heartbeat_lost,
+                heartbeat_loss_pct=loss_pct,
+                inbound_kib_per_sec=inbound_kib,
+                inbound_avg_kib_per_sec=self._throughput_in_total / throughput_count,
+                inbound_min_kib_per_sec=self._throughput_in_min if self._throughput_in_min is not None else 0.0,
+                inbound_max_kib_per_sec=self._throughput_in_max,
+                outbound_kib_per_sec=outbound_kib,
+                outbound_avg_kib_per_sec=self._throughput_out_total / throughput_count,
+                outbound_min_kib_per_sec=self._throughput_out_min if self._throughput_out_min is not None else 0.0,
+                outbound_max_kib_per_sec=self._throughput_out_max,
+                inbound_packets_per_sec=float(len(self._recv_samples)),
+                outbound_packets_per_sec=float(len(self._sent_samples)),
+                inbound_packet_tags_per_sec=recv_tags,
+                outbound_packet_tags_per_sec=sent_tags,
+            )
 
     def _set_remote_addr(self, addr: str, port: int) -> bool:
         try:
@@ -451,6 +740,12 @@ class Network:
                 with self._heartbeat_lock:
                     self._countdown_id = max(self._countdown_id, event.countdown_id)
                     self._match_id = max(self._match_id, event.match_id)
+            elif isinstance(event, ReconnectSnapshotEvent):
+                self.room_name = event.room_name
+                self.selected_level = event.selected_level
+                with self._heartbeat_lock:
+                    self._countdown_id = max(self._countdown_id, event.countdown_id)
+                    self._match_id = max(self._match_id, event.match_id)
             LOGGER.log(_event_log_level(event), "recv %s", _event_summary(event))
             self.events.put(event)
         LOGGER.info("Network receiver stopped player_id=%s addr=%s", self.id, self.addr)
@@ -468,14 +763,22 @@ class Network:
         if self.id < 0:
             return
         with self._heartbeat_lock:
+            self._next_ping_seq = (self._next_ping_seq + 1) & UINT32_MAX
+            ping_seq = self._next_ping_seq
             payload = pack_heartbeat(
                 self.id,
                 self.session_token,
                 self._client_state,
                 self._countdown_id,
                 self._match_id,
+                ping_seq=ping_seq,
             )
-        self._sendto(payload, report_error=False)
+        sent_at = time.monotonic()
+        if self._sendto(payload, report_error=False):
+            with self._metrics_lock:
+                self._prune_stale_pending_locked(sent_at)
+                self._pending_ping[ping_seq] = sent_at
+                self._heartbeat_sent += 1
 
     def start_receiver(self):
         if self._closed:
@@ -620,6 +923,8 @@ class Network:
         if not self._sendto(payload, report_error=False):
             return ConnectResult(ok=False, reason_code=CONNO_REASON_VERSION)
 
+        accepted: ConnectResult | None = None
+        snapshot: ReconnectSnapshotEvent | None = None
         try:
             while True:
                 data, source_addr = self.client.recvfrom(RECV_BUF)
@@ -644,7 +949,6 @@ class Network:
                     self.room_name = room_name
                     if self.session_token == 0:
                         self.session_token = session_token
-                    self.client.settimeout(0.1)
                     LOGGER.info(
                         "Reconnect accepted room=%s player_id=%s token=%s start_pos=(%.1f, %.1f)",
                         room_name,
@@ -653,13 +957,24 @@ class Network:
                         x,
                         y,
                     )
-                    return ConnectResult(
+                    accepted = ConnectResult(
                         ok=True,
                         player_id=reconnected_id,
                         room_name=room_name,
                         start_pos=(x, y),
                         session_token=self.session_token,
                     )
+                    if snapshot is not None:
+                        self.client.settimeout(0.1)
+                        return ConnectResult(
+                            ok=True,
+                            player_id=accepted.player_id,
+                            room_name=snapshot.room_name or accepted.room_name,
+                            start_pos=(snapshot.x, snapshot.y),
+                            session_token=self.session_token,
+                            reconnect_snapshot=snapshot,
+                        )
+                    continue
 
                 if tag == RECONNECT_NO:
                     unpacked = safe_unpack_reconnect_no(data)
@@ -670,9 +985,29 @@ class Network:
 
                 parsed = self._parse_event(data)
                 if parsed is not None:
+                    if isinstance(parsed, ReconnectSnapshotEvent):
+                        snapshot = parsed
+                        self.room_name = parsed.room_name
+                        self.selected_level = parsed.selected_level
+                        with self._heartbeat_lock:
+                            self._countdown_id = max(self._countdown_id, parsed.countdown_id)
+                            self._match_id = max(self._match_id, parsed.match_id)
+                        if accepted is not None:
+                            self.client.settimeout(0.1)
+                            return ConnectResult(
+                                ok=True,
+                                player_id=accepted.player_id,
+                                room_name=parsed.room_name or accepted.room_name,
+                                start_pos=(parsed.x, parsed.y),
+                                session_token=self.session_token,
+                                reconnect_snapshot=parsed,
+                            )
                     self.events.put(parsed)
         except socket.timeout:
             self.client.settimeout(0.1)
+            if accepted is not None:
+                LOGGER.info("Reconnect accepted without RSNP snapshot; proceeding with RCOK fields only")
+                return accepted
             LOGGER.warning("Reconnect timed out addr=%s", self.addr)
             return ConnectResult(ok=False, reason_code=CONNO_REASON_VERSION)
 
@@ -742,14 +1077,18 @@ class Network:
     def send_dead(self):
         if self.id < 0:
             return
-        LOGGER.info("send DEAD player_id=%s", self.id)
-        self._sendto(pack_dead(self.id, 0))
+        with self._heartbeat_lock:
+            match_id = self._match_id
+        LOGGER.info("send DEAD player_id=%s match_id=%s", self.id, match_id)
+        self._sendto(pack_dead(self.id, 0, match_id=match_id))
 
     def send_goal(self):
         if self.id < 0:
             return
-        LOGGER.info("send GOAL player_id=%s", self.id)
-        self._sendto(pack_goal(self.id))
+        with self._heartbeat_lock:
+            match_id = self._match_id
+        LOGGER.info("send GOAL player_id=%s match_id=%s", self.id, match_id)
+        self._sendto(pack_goal(self.id, match_id=match_id))
 
     def close_room(self):
         self.send_kick(-1)
@@ -764,15 +1103,17 @@ class Network:
             return
         self._sendto(pack_player_state(x, y, self.id, animation_state))
 
-    def send_orb_collect(self, orb_index: int, cooldown_sec: int):
+    def send_orb_collect(self, orb_index: int, cooldown_sec: int, effect_id: int = 0):
         if self.id < 0:
             return
-        self._sendto(pack_orb_collect(self.id, int(orb_index), int(cooldown_sec)))
+        self._sendto(pack_orb_collect(self.id, int(orb_index), int(cooldown_sec), int(effect_id)))
 
     def send_platform_progress(self, platforms_reached: int):
         if self.id < 0:
             return
-        self._sendto(pack_platform_progress(self.id, int(platforms_reached)))
+        with self._heartbeat_lock:
+            match_id = self._match_id
+        self._sendto(pack_platform_progress(self.id, int(platforms_reached), match_id=match_id))
 
     def send_avatar(
         self,
@@ -781,7 +1122,7 @@ class Network:
         model_type: str = "Default",
         model_color: str = "Blue",
     ):
-        if self.id < 0 or not payload:
+        if self.id < 0 or payload is None:
             return
         LOGGER.info(
             "send AVATAR player_id=%s avatar_id=%s bytes=%s model=%s/%s",
@@ -875,8 +1216,13 @@ class Network:
             unpacked = safe_unpack_heartbeat_ack(data)
             if unpacked is None:
                 return ErrorEvent("Malformed HBAK packet")
-            _tag, server_state, countdown_id, match_id = unpacked
-            return HeartbeatAckEvent(server_state=server_state, countdown_id=countdown_id, match_id=match_id)
+            _tag, server_state, countdown_id, match_id, ping_seq = unpacked
+            return HeartbeatAckEvent(
+                server_state=server_state,
+                countdown_id=countdown_id,
+                match_id=match_id,
+                ping_seq=int(ping_seq) & UINT32_MAX,
+            )
         if tag == ROOM_NAME_UPDATE:
             unpacked = safe_unpack_room_name_update(data)
             if unpacked is None:
@@ -895,8 +1241,67 @@ class Network:
             unpacked = safe_unpack_orb_collect(data)
             if unpacked is None:
                 return ErrorEvent("Malformed ORBC packet")
-            _tag, picker_id, orb_index, cooldown_sec = unpacked
-            return OrbCollectEvent(player_id=picker_id, orb_index=orb_index, cooldown_sec=cooldown_sec)
+            _tag, picker_id, orb_index, cooldown_sec, effect_id = unpacked
+            return OrbCollectEvent(
+                player_id=picker_id,
+                orb_index=orb_index,
+                cooldown_sec=cooldown_sec,
+                effect_id=int(effect_id),
+            )
+        if tag == GOAL:
+            unpacked = safe_unpack_goal(data)
+            if unpacked is None:
+                return ErrorEvent("Malformed GOAL packet")
+            _tag, player_id, match_id = unpacked
+            return GoalEvent(player_id=player_id, match_id=match_id)
+        if tag == PLATFORM_PROGRESS:
+            unpacked = safe_unpack_platform_progress(data)
+            if unpacked is None:
+                return ErrorEvent("Malformed PLAT packet")
+            _tag, player_id, match_id, platforms_reached = unpacked
+            return PlatformProgressEvent(
+                player_id=player_id,
+                platforms_reached=platforms_reached,
+                match_id=match_id,
+            )
+        if tag == RECONNECT_SNAPSHOT:
+            unpacked = safe_unpack_reconnect_snapshot(data)
+            if unpacked is None:
+                return ErrorEvent("Malformed RSNP packet")
+            (
+                _tag,
+                player_id,
+                x,
+                y,
+                room_state,
+                selected_level,
+                countdown_id,
+                match_id,
+                level_seed,
+                match_start_unix_sec,
+                alive,
+                placement,
+                room_name,
+            ) = unpacked
+            self.room_name = room_name
+            self.selected_level = selected_level
+            with self._heartbeat_lock:
+                self._countdown_id = max(self._countdown_id, countdown_id)
+                self._match_id = max(self._match_id, match_id)
+            return ReconnectSnapshotEvent(
+                player_id=player_id,
+                x=x,
+                y=y,
+                room_state=room_state,
+                selected_level=selected_level,
+                countdown_id=countdown_id,
+                match_id=match_id,
+                level_seed=level_seed,
+                match_start_unix_sec=int(match_start_unix_sec) & UINT32_MAX,
+                alive=alive,
+                placement=None if placement == 255 else placement,
+                room_name=room_name,
+            )
         if tag == CONNO:
             unpacked = safe_unpack_conno(data)
             if unpacked is None:
@@ -959,8 +1364,14 @@ class Network:
                 LOGGER.debug("UDP recv WinError 10054 ignored (transient ICMP)")
                 return None
             return self._mark_connection_lost(f"Network receive failed: {error}")
-        LOGGER.debug("recv packet tag=%s bytes=%s", _packet_tag_name(data), len(data))
-        return self._parse_event(data)
+        received_at = time.monotonic()
+        tag_name = _packet_tag_name(data)
+        self._record_received(len(data), tag_name)
+        LOGGER.debug("recv packet tag=%s bytes=%s", tag_name, len(data))
+        event = self._parse_event(data)
+        if isinstance(event, HeartbeatAckEvent):
+            self._record_heartbeat_ack(received_at, event.ping_seq)
+        return event
 
     # Legacy receive API for existing gameplay loop.
     def receive(self):

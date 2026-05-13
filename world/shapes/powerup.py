@@ -23,12 +23,17 @@ class PowerUp:
                 self.respawn_timer = 0.0
         self._pulse = (self._pulse + dt * 3.0) % (2 * math.pi)
 
-    def draw(self, surface: pygame.Surface, camera=None) -> None:
+    def draw(self, surface: pygame.Surface, camera=None, orb_frames: tuple[pygame.Surface, ...] | None = None) -> None:
         if not self.active:
             return
         rect = self.rect
         if camera is not None:
             rect = rect.move(-int(round(camera.x)), -int(round(camera.y)))
+
+        if self.effect_type == 'orb' and orb_frames:
+            frame_index = int((self._pulse / (2 * math.pi)) * len(orb_frames)) % len(orb_frames)
+            surface.blit(orb_frames[frame_index], rect)
+            return
 
         # Simple glowing circle for power up
         brightness = int(150 + 100 * math.sin(self._pulse))
@@ -167,6 +172,6 @@ def create_orb_powerups_from_platform_specs(platforms, rng_seed: int = 42) -> li
     out: list[PowerUp] = []
     for spec in selected:
         x = spec.x + spec.width // 2
-        y = spec.y - 20
+        y = spec.y - 14
         out.append(PowerUp((x, y), "orb"))
     return out

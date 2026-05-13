@@ -43,7 +43,7 @@ def _pick_ports(base: int) -> tuple[int, int]:
 
 
 @pytest.mark.integration
-def test_sixth_player_gets_room_full():
+def test_sixth_player_gets_room_full(tmp_path):
     game_port, disc_port = _pick_ports(59400)
     proc = subprocess.Popen(
         [
@@ -59,6 +59,8 @@ def test_sixth_player_gets_room_full():
             "FullCap",
             "--log-level",
             "ERROR",
+            "--log-dir",
+            str(tmp_path / "FullCap"),
         ],
         cwd=str(ROOT),
     )
@@ -92,7 +94,7 @@ def test_sixth_player_gets_room_full():
 
 
 @pytest.mark.integration
-def test_malformed_datagram_does_not_break_server():
+def test_malformed_datagram_does_not_break_server(tmp_path):
     game_port, disc_port = _pick_ports(59520)
     proc = subprocess.Popen(
         [
@@ -108,6 +110,8 @@ def test_malformed_datagram_does_not_break_server():
             "NoiseRoom",
             "--log-level",
             "ERROR",
+            "--log-dir",
+            str(tmp_path / "NoiseRoom"),
         ],
         cwd=str(ROOT),
     )

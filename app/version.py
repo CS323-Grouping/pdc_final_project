@@ -23,16 +23,16 @@ Do not edit version numbers elsewhere; import from this module if you need them.
 # =============================================================================
 
 VERSION_MAJOR = 0
-VERSION_MINOR = 1
-VERSION_PATCH = 0
+VERSION_MINOR = 4
+VERSION_PATCH = 7
 
 # Increment for each new build you distribute (EXE / zip). Independent of semver.
-BUILD_NUMBER = 1
+BUILD_NUMBER = 13
 
 # Empty string for releases. Otherwise e.g. "dev", "rc1" (shown after semver).
 VERSION_SUFFIX = ""
 
-APP_NAME = "Tower Jump LAN"
+APP_NAME = "Skyward Race LAN Multiplayer"
 
 # =============================================================================
 
@@ -72,7 +72,7 @@ def windows_file_version_quad() -> tuple[int, int, int, int]:
     Four nonnegative ints for Windows FILEVERSION / PRODUCTVERSION (16 bits each).
 
     Maps (major, minor, patch, build). If BUILD_NUMBER ever exceeds 65535,
-    clamp or remap in TowerJumpLAN.spec when generating a VSVersionInfo file.
+    clamp or remap in SkywardRaceLAN.spec when generating a VSVersionInfo file.
     """
 
     return (VERSION_MAJOR, VERSION_MINOR, VERSION_PATCH, min(BUILD_NUMBER, 65535))
