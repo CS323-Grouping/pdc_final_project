@@ -1,0 +1,529 @@
+import time
+
+from network import protocol
+from network.room_state import RoomState
+from network.server import LobbyServer
+
+
+class FakeSocket:
+    def __init__(self):
+        self.sent = []
+
+    def sendto(self, payload, addr):
+        self.sent.append((payload, addr))
+
+
+def _server_with_started_room():
+    room_state = RoomState(room_name="TestRoom", game_port=5555)
+    addr_a = ("127.0.0.1", 12001)
+    addr_b = ("127.0.0.1", 12002)
+    addr_c = ("127.0.0.1", 12003)
+    id_a, _ = room_state.add_or_get_player(addr_a, "Alpha")
+    id_b, _ = room_state.add_or_get_player(addr_b, "Bravo")
+    id_c, _ = room_state.add_or_get_player(addr_c, "Charlie")
+    room_state.state = protocol.STATE_IN_GAME
+    room_state.enter_game()
+    sock = FakeSocket()
+    server = LobbyServer(sock, room_state, countdown_seconds=0.0)
+    return server, room_state, sock, (id_a, addr_a), (id_b, addr_b), (id_c, addr_c)
+
+
+def _server_with_lobby_room():
+    room_state = RoomState(room_name="TestRoom", game_port=5555)
+    host_addr = ("127.0.0.1", 12001)
+    guest_addr = ("127.0.0.1", 12002)
+    host_id, _ = room_state.add_or_get_player(host_addr, "Alpha")
+    guest_id, _ = room_state.add_or_get_player(guest_addr, "Bravo")
+    sock = FakeSocket()
+    server = LobbyServer(sock, room_state, countdown_seconds=0.0)
+    return server, room_state, sock, (host_id, host_addr), (guest_id, guest_addr)
+
+
+def test_host_level_select_updates_room_and_broadcasts():
+    server, room_state, sock, (host_id, host_addr), (_guest_id, _guest_addr) = _server_with_lobby_room()
+
+    server.handle_level_select(protocol.pack_level_select(host_id, 3), host_addr)
+
+    assert room_state.get_selected_level() == 3
+    assert any(protocol.safe_unpack_level_select(payload) == (protocol.LEVEL_SELECT, host_id, 3) for payload, _addr in sock.sent)
+
+
+def test_non_host_level_select_is_ignored():
+    server, room_state, sock, (_host_id, _host_addr), (guest_id, guest_addr) = _server_with_lobby_room()
+
+    server.handle_level_select(protocol.pack_level_select(guest_id, 3), guest_addr)
+
+    assert room_state.get_selected_level() == protocol.DEFAULT_LEVEL_ID
+    assert not any(protocol.tag_of(payload) == protocol.LEVEL_SELECT for payload, _addr in sock.sent)
+
+
+def test_level_select_is_locked_during_countdown():
+    server, room_state, sock, (host_id, host_addr), (_guest_id, _guest_addr) = _server_with_lobby_room()
+    room_state.state = protocol.STATE_COUNTDOWN
+    room_state.begin_countdown(time.monotonic() + 10.0)
+
+    server.handle_level_select(protocol.pack_level_select(host_id, 3), host_addr)
+
+    assert room_state.get_selected_level() == protocol.DEFAULT_LEVEL_ID
+    assert not any(protocol.tag_of(payload) == protocol.LEVEL_SELECT for payload, _addr in sock.sent)
+
+
+def test_game_start_packet_carries_selected_level_and_seed():
+    server, room_state, sock, (_host_id, _host_addr), (guest_id, _guest_addr) = _server_with_lobby_room()
+    room_state.set_ready(guest_id, True)
+    room_state.set_selected_level(2)
+    room_state.state = protocol.STATE_COUNTDOWN
+    room_state.begin_countdown(time.monotonic() - 1.0)
+
+    server.tick_countdown()
+
+    starts = [
+        protocol.safe_unpack_gstart(payload)
+        for payload, _addr in sock.sent
+        if protocol.tag_of(payload) == protocol.GSTART
+    ]
+    assert starts
+    for unpacked in starts:
+        assert unpacked is not None
+        assert unpacked[3] == 2
+        assert unpacked[4] != 0
+
+
+def test_name_only_reconnect_claims_single_disconnected_slot():
+    server, room_state, sock, (player_id, _old_addr), (_other_id, _other_addr), (_third_id, _third_addr) = _server_with_started_room()
+    new_addr = ("127.0.0.1", 12055)
+    room_state.update_position(player_id, 55.0, 77.0)
+    room_state.mark_disconnected(player_id, now=time.monotonic(), grace_seconds=30.0)
+    room_state.state = protocol.STATE_PAUSED
+    server._match_start_unix_sec = 1700000001
+
+    server.handle_reconnect(protocol.pack_reconnect(-1, 0, "Alpha"), new_addr)
+
+    assert room_state.get_player_id_by_addr(new_addr) == player_id
+    tags = [protocol.tag_of(payload) for payload, addr in sock.sent if addr == new_addr]
+    assert protocol.SESSION in tags
+    assert protocol.RECONNECT_OK in tags
+    assert protocol.RECONNECT_SNAPSHOT in tags
+    snapshot_packets = [payload for payload, addr in sock.sent if addr == new_addr and protocol.tag_of(payload) == protocol.RECONNECT_SNAPSHOT]
+    snapshot = protocol.safe_unpack_reconnect_snapshot(snapshot_packets[-1])
+    assert snapshot is not None
+    assert snapshot[1] == player_id
+    assert snapshot[5] == room_state.get_selected_level()
+    assert snapshot[9] == server._match_start_unix_sec
+
+
+def test_reconnect_broadcasts_in_match_roster_to_existing_peers():
+    server, room_state, sock, (_host_id, host_addr), (first_id, _first_addr), (second_id, _second_addr) = (
+        _server_with_started_room()
+    )
+    first_new_addr = ("127.0.0.1", 12055)
+    second_new_addr = ("127.0.0.1", 12056)
+    room_state.mark_disconnected(first_id, now=time.monotonic(), grace_seconds=30.0)
+    room_state.mark_disconnected(second_id, now=time.monotonic(), grace_seconds=30.0)
+    room_state.state = protocol.STATE_PAUSED
+
+    server.handle_reconnect(protocol.pack_reconnect(-1, 0, "Bravo"), first_new_addr)
+    sock.sent.clear()
+    server.handle_reconnect(protocol.pack_reconnect(-1, 0, "Charlie"), second_new_addr)
+
+    roster_packets = [
+        payload
+        for payload, addr in sock.sent
+        if addr == first_new_addr and protocol.tag_of(payload) == protocol.LIST
+    ]
+    assert roster_packets
+    roster = protocol.safe_unpack_list(roster_packets[-1])
+    assert roster is not None
+    assert {player_id for player_id, _ready, _name in roster} == {0, first_id, second_id}
+    assert any(
+        addr == first_new_addr and protocol.tag_of(payload) == protocol.PLAYER_STATE
+        for payload, addr in sock.sent
+    )
+
+
+def test_heartbeat_resumes_disconnected_session_without_manual_reconnect():
+    server, room_state, sock, (_host_id, host_addr), (player_id, old_addr), (_other_id, _other_addr) = (
+        _server_with_started_room()
+    )
+    token = room_state.session_token(player_id) or 0
+    room_state.mark_disconnected(player_id, now=time.monotonic(), grace_seconds=30.0)
+    room_state.state = protocol.STATE_PAUSED
+
+    server.handle_heartbeat(
+        protocol.pack_heartbeat(
+            player_id,
+            token,
+            protocol.CLIENT_STATE_IN_GAME,
+            countdown_id=server._countdown_id,
+            match_id=server._match_id,
+        ),
+        old_addr,
+    )
+
+    assert room_state.get_player_id_by_addr(old_addr) == player_id
+    assert room_state.disconnected_alive_ids() == []
+    assert room_state.state == protocol.STATE_IN_GAME
+    tags = [protocol.tag_of(payload) for payload, addr in sock.sent if addr == old_addr]
+    assert protocol.RECONNECT_SNAPSHOT in tags
+    assert protocol.HEARTBEAT_ACK in tags
+    assert any(
+        addr == host_addr and protocol.tag_of(payload) == protocol.LIST
+        for payload, addr in sock.sent
+    )
+
+
+def test_eliminated_player_can_reconnect_as_spectator_without_pausing_match():
+    server, room_state, sock, (_host_id, _host_addr), (player_id, old_addr), (_other_id, _other_addr) = (
+        _server_with_started_room()
+    )
+    room_state.mark_eliminated(player_id, placement=3)
+
+    server.handle_disconnect(protocol.pack_packet(protocol.DISCONNECT, 0.0, 0.0, player_id), old_addr)
+
+    assert room_state.state == protocol.STATE_IN_GAME
+    assert room_state.get_player_id_by_addr(old_addr) is None
+    assert not any(protocol.tag_of(payload) == protocol.MATCH_PAUSE for payload, _addr in sock.sent)
+
+    new_addr = ("127.0.0.1", 12057)
+    server.handle_reconnect(protocol.pack_reconnect(-1, 0, "Bravo"), new_addr)
+
+    assert room_state.get_player_id_by_addr(new_addr) == player_id
+    assert room_state.state == protocol.STATE_IN_GAME
+    snapshot_packets = [
+        payload
+        for payload, addr in sock.sent
+        if addr == new_addr and protocol.tag_of(payload) == protocol.RECONNECT_SNAPSHOT
+    ]
+    assert snapshot_packets
+    snapshot = protocol.safe_unpack_reconnect_snapshot(snapshot_packets[-1])
+    assert snapshot is not None
+    assert snapshot[1] == player_id
+    assert snapshot[10] is False
+    assert snapshot[11] == 3
+
+
+def test_name_only_reconnect_rejects_ambiguous_name_slots():
+    room_state = RoomState(room_name="TestRoom", game_port=5555)
+    addr_a = ("127.0.0.1", 12001)
+    addr_b = ("127.0.0.1", 12002)
+    id_a, _ = room_state.add_or_get_player(addr_a, "Alpha")
+    id_b, _ = room_state.add_or_get_player(addr_b, "alpha")
+    room_state.state = protocol.STATE_IN_GAME
+    room_state.enter_game()
+    room_state.mark_disconnected(id_a, now=time.monotonic(), grace_seconds=30.0)
+    room_state.mark_disconnected(id_b, now=time.monotonic(), grace_seconds=30.0)
+    room_state.state = protocol.STATE_PAUSED
+    sock = FakeSocket()
+    server = LobbyServer(sock, room_state, countdown_seconds=0.0)
+
+    server.handle_reconnect(protocol.pack_reconnect(-1, 0, "ALPHA"), ("127.0.0.1", 12055))
+
+    payload, _addr = sock.sent[-1]
+    assert protocol.safe_unpack_reconnect_no(payload) == (
+        protocol.RECONNECT_NO,
+        protocol.RECONNECT_DENY_AMBIGUOUS_NAME,
+    )
+
+
+def test_handle_conn_rejects_case_insensitive_duplicate_player_name():
+    room_state = RoomState(room_name="TestRoom", game_port=5555)
+    room_state.add_or_get_player(("127.0.0.1", 12001), "Alpha")
+    sock = FakeSocket()
+    server = LobbyServer(sock, room_state, countdown_seconds=0.0)
+    duplicate_addr = ("127.0.0.1", 12002)
+
+    server.handle_conn(protocol.pack_conn("alpha"), duplicate_addr)
+
+    assert room_state.connected_count() == 1
+    assert protocol.safe_unpack_conno(sock.sent[0][0]) == (
+        protocol.CONNO,
+        protocol.CONNO_REASON_NAME_TAKEN,
+        0,
+    )
+
+
+def test_handle_conn_prunes_stale_lobby_duplicate_before_name_check():
+    room_state = RoomState(room_name="TestRoom", game_port=5555)
+    host_id, _ = room_state.add_or_get_player(("127.0.0.1", 12001), "HostA")
+    stale_id, _ = room_state.add_or_get_player(("127.0.0.1", 12002), "Bravo")
+    room_state.touch_player(host_id, now=time.monotonic())
+    room_state.touch_player(stale_id, now=0.0)
+    sock = FakeSocket()
+    server = LobbyServer(sock, room_state, countdown_seconds=0.0, lobby_player_timeout_seconds=1.0)
+    reconnect_addr = ("127.0.0.1", 12003)
+
+    server.handle_conn(protocol.pack_conn("bravo"), reconnect_addr)
+
+    assert room_state.connected_count() == 2
+    assert room_state.get_player_id_by_addr(reconnect_addr) is not None
+    assert room_state.get_player_id_by_addr(("127.0.0.1", 12002)) is None
+    assert not any(protocol.safe_unpack_conno(payload) for payload, _addr in sock.sent)
+
+
+def test_cancel_countdown_is_rebroadcast_for_late_or_lossy_clients():
+    room_state = RoomState(room_name="TestRoom", game_port=5555)
+    room_state.add_or_get_player(("127.0.0.1", 12001), "Alpha")
+    room_state.add_or_get_player(("127.0.0.1", 12002), "Bravo")
+    room_state.state = protocol.STATE_COUNTDOWN
+    sock = FakeSocket()
+    server = LobbyServer(sock, room_state, countdown_seconds=0.0)
+
+    server.cancel_countdown(protocol.CDWNX_REASON_HOST_CANCELLED)
+    immediate_count = sum(1 for payload, _addr in sock.sent if protocol.tag_of(payload) == protocol.CDWNX)
+    sock.sent.clear()
+    for item in server._reliable_broadcasts:
+        item["next_at"] = 0.0
+    server.tick_reliable_broadcasts()
+
+    rebroadcast_count = sum(1 for payload, _addr in sock.sent if protocol.tag_of(payload) == protocol.CDWNX)
+    assert immediate_count == 2
+    assert rebroadcast_count == 2
+
+
+def test_start_and_cancel_actions_are_not_toggle_ambiguous():
+    room_state = RoomState(room_name="TestRoom", game_port=5555)
+    host_addr = ("127.0.0.1", 12001)
+    guest_addr = ("127.0.0.1", 12002)
+    host_id, _ = room_state.add_or_get_player(host_addr, "Alpha")
+    guest_id, _ = room_state.add_or_get_player(guest_addr, "Bravo")
+    room_state.set_ready(guest_id, True)
+    sock = FakeSocket()
+    server = LobbyServer(sock, room_state, countdown_seconds=10.0)
+
+    server.handle_start(protocol.pack_start(host_id, protocol.START_ACTION_START), host_addr)
+    first_countdown_id = server._countdown_id
+    server.handle_start(protocol.pack_start(host_id, protocol.START_ACTION_START), host_addr)
+
+    assert room_state.state == protocol.STATE_COUNTDOWN
+    assert server._countdown_id == first_countdown_id
+
+    server.handle_start(protocol.pack_start(host_id, protocol.START_ACTION_CANCEL), host_addr)
+    server.handle_start(protocol.pack_start(host_id, protocol.START_ACTION_CANCEL), host_addr)
+
+    assert room_state.state == protocol.STATE_LOBBY
+
+
+def test_heartbeat_refreshes_lobby_liveness_and_gets_ack():
+    room_state = RoomState(room_name="TestRoom", game_port=5555)
+    addr = ("127.0.0.1", 12001)
+    player_id, _ = room_state.add_or_get_player(addr, "Alpha")
+    token = room_state.session_token(player_id) or 0
+    room_state.touch_player(player_id, now=0.0)
+    sock = FakeSocket()
+    server = LobbyServer(sock, room_state, countdown_seconds=0.0, lobby_player_timeout_seconds=8.0)
+
+    server.handle_heartbeat(
+        protocol.pack_heartbeat(player_id, token, protocol.CLIENT_STATE_RESULTS, countdown_id=0, match_id=0),
+        addr,
+    )
+
+    assert sock.sent
+    assert protocol.tag_of(sock.sent[-1][0]) == protocol.HEARTBEAT_ACK
+    assert room_state.timed_out_connected_ids(time.monotonic(), 8.0) == []
+
+
+def test_tick_in_game_keeps_player_connected_with_fresh_heartbeat_but_stalled_gameplay():
+    room_state = RoomState(room_name="TestRoom", game_port=5555)
+    addr = ("127.0.0.1", 12001)
+    player_id, _ = room_state.add_or_get_player(addr, "Alpha")
+    room_state.state = protocol.STATE_IN_GAME
+    room_state.enter_game()
+    room_state.touch_gameplay_player(player_id, now=0.0)
+    room_state.touch_player(player_id, now=time.monotonic())
+    sock = FakeSocket()
+    server = LobbyServer(
+        sock,
+        room_state,
+        countdown_seconds=0.0,
+        session_timeout_seconds=3.0,
+        gameplay_stall_seconds=0.1,
+    )
+
+    server.tick_in_game()
+
+    assert room_state.state == protocol.STATE_IN_GAME
+    assert room_state.disconnected_alive_ids() == []
+
+
+def test_lobby_replays_cached_avatar_to_late_joiner():
+    room_state = RoomState(room_name="TestRoom", game_port=5555)
+    alpha_addr = ("127.0.0.1", 12001)
+    bravo_addr = ("127.0.0.1", 12002)
+    alpha_id, _ = room_state.add_or_get_player(alpha_addr, "Alpha")
+    _bravo_id, _ = room_state.add_or_get_player(bravo_addr, "Bravo")
+    sock = FakeSocket()
+    server = LobbyServer(sock, room_state, countdown_seconds=0.0)
+    avatar_id = 77
+    payload = b"avatar-payload"
+
+    server.handle_avatar_header(
+        protocol.pack_avatar_header(alpha_id, avatar_id, 1, len(payload), "Default", "Green"),
+        alpha_addr,
+    )
+    server.handle_avatar_chunk(
+        protocol.pack_avatar_chunk(alpha_id, avatar_id, 0, 1, payload),
+        alpha_addr,
+    )
+    late_addr = ("127.0.0.1", 12003)
+    sock.sent.clear()
+
+    server.handle_conn(protocol.pack_conn("Charlie"), late_addr)
+
+    late_packets = [packet for packet, addr in sock.sent if addr == late_addr]
+    assert any(
+        protocol.safe_unpack_avatar_header(packet) == (
+            protocol.AVATAR_HEADER,
+            alpha_id,
+            avatar_id,
+            1,
+            len(payload),
+            protocol.DEFAULT_MODEL_TYPE,
+            "Green",
+        )
+        for packet in late_packets
+    )
+    assert any(
+        protocol.safe_unpack_avatar_chunk(packet) == (
+            protocol.AVATAR_CHUNK,
+            alpha_id,
+            avatar_id,
+            0,
+            1,
+            payload,
+        )
+        for packet in late_packets
+    )
+
+
+def test_lobby_replays_model_only_avatar_metadata_to_late_joiner():
+    room_state = RoomState(room_name="TestRoom", game_port=5555)
+    alpha_addr = ("127.0.0.1", 12001)
+    bravo_addr = ("127.0.0.1", 12002)
+    alpha_id, _ = room_state.add_or_get_player(alpha_addr, "Alpha")
+    _bravo_id, _ = room_state.add_or_get_player(bravo_addr, "Bravo")
+    sock = FakeSocket()
+    server = LobbyServer(sock, room_state, countdown_seconds=0.0)
+    avatar_id = 88
+
+    server.handle_avatar_header(
+        protocol.pack_avatar_header(alpha_id, avatar_id, 0, 0, "Default", "Purple"),
+        alpha_addr,
+    )
+    late_addr = ("127.0.0.1", 12003)
+    sock.sent.clear()
+
+    server.handle_conn(protocol.pack_conn("Charlie"), late_addr)
+
+    late_packets = [packet for packet, addr in sock.sent if addr == late_addr]
+    assert any(
+        protocol.safe_unpack_avatar_header(packet) == (
+            protocol.AVATAR_HEADER,
+            alpha_id,
+            avatar_id,
+            0,
+            0,
+            protocol.DEFAULT_MODEL_TYPE,
+            "Purple",
+        )
+        for packet in late_packets
+    )
+    assert not any(protocol.tag_of(packet) == protocol.AVATAR_CHUNK for packet in late_packets)
+
+
+def test_eliminated_player_state_is_not_rebroadcast():
+    server, room_state, sock, (player_id, addr), (_other_id, other_addr), (_third_id, _third_addr) = _server_with_started_room()
+    room_state.update_position(player_id, 20.0, 20.0)
+    server.eliminate_player(player_id)
+    sock.sent.clear()
+
+    server.handle_player_state(protocol.pack_player_state(200.0, 200.0, player_id, "walk_right"), addr)
+
+    assert room_state.get_position(player_id) == (20.0, 20.0)
+    assert not any(protocol.tag_of(payload) == protocol.PLAYER_STATE and sent_addr == other_addr for payload, sent_addr in sock.sent)
+
+
+def test_tick_in_game_eliminates_left_behind_player():
+    server, room_state, sock, (leader_id, _leader_addr), (_near_id, _near_addr), (behind_id, _behind_addr) = _server_with_started_room()
+    room_state.update_position(leader_id, 100.0, 100.0)
+    room_state.update_position(_near_id, 100.0, 260.0)
+    room_state.update_position(behind_id, 100.0, 1100.0)
+    sock.sent.clear()
+
+    server.tick_in_game()
+
+    assert not room_state.is_alive(behind_id)
+    assert any(
+        protocol.safe_unpack_elim(payload) == (protocol.ELIM, behind_id, 3)
+        for payload, _addr in sock.sent
+    )
+
+
+def test_goal_finish_and_later_elimination_use_distinct_placements():
+    room_state = RoomState(room_name="TestRoom", game_port=5555)
+    players = []
+    for index, name in enumerate(("Alpha", "Bravo", "Charlie", "Delta")):
+        addr = ("127.0.0.1", 12100 + index)
+        player_id, _ = room_state.add_or_get_player(addr, name)
+        players.append((player_id, addr))
+    room_state.state = protocol.STATE_IN_GAME
+    room_state.enter_game()
+    sock = FakeSocket()
+    server = LobbyServer(sock, room_state, countdown_seconds=0.0)
+    server._match_player_count = 4
+
+    first_id, first_addr = players[0]
+    fallen_id, _fallen_addr = players[1]
+    behind_id, _behind_addr = players[3]
+
+    server.eliminate_player(fallen_id)
+    server.handle_goal(protocol.pack_goal(first_id), first_addr)
+    server.eliminate_player(behind_id)
+
+    placements = {player_id: placement for player_id, placement, _name in room_state.standings()}
+    assert placements[first_id] == 1
+    assert placements[fallen_id] == 4
+    assert placements[behind_id] == 3
+
+
+def test_stale_goal_packet_is_ignored():
+    server, room_state, sock, (player_id, addr), (_other_id, _other_addr), (_third_id, _third_addr) = _server_with_started_room()
+    room_state.state = protocol.STATE_IN_GAME
+    room_state.enter_game()
+    server._match_id = 9
+    sock.sent.clear()
+
+    server.handle_goal(protocol.pack_goal(player_id, match_id=8), addr)
+
+    assert room_state.is_alive(player_id)
+    assert not any(protocol.tag_of(payload) == protocol.GOAL for payload, _addr in sock.sent)
+
+
+def test_stale_dead_packet_is_ignored():
+    server, room_state, _sock, (player_id, addr), (_other_id, _other_addr), (_third_id, _third_addr) = _server_with_started_room()
+    room_state.state = protocol.STATE_IN_GAME
+    room_state.enter_game()
+    server._match_id = 11
+
+    server.handle_dead(protocol.pack_dead(player_id, 0, match_id=10), addr)
+
+    assert room_state.is_alive(player_id)
+
+
+def test_eliminated_host_disconnect_closes_room_for_remaining_clients():
+    server, room_state, sock, (host_id, host_addr), (alive_id, alive_addr), (
+        observer_id,
+        observer_addr,
+    ) = _server_with_started_room()
+    server.eliminate_player(host_id)
+    server.eliminate_player(observer_id)
+    sock.sent.clear()
+
+    server.handle_disconnect(protocol.pack_packet(protocol.DISCONNECT, 0.0, 0.0, host_id), host_addr)
+
+    assert not server.running
+    sent_by_addr = {
+        addr: [protocol.tag_of(payload) for payload, sent_addr in sock.sent if sent_addr == addr]
+        for addr in (alive_addr, observer_addr)
+    }
+    assert protocol.KICKED in sent_by_addr[alive_addr]
+    assert protocol.KICKED in sent_by_addr[observer_addr]

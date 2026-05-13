@@ -1,0 +1,413 @@
+"""Round-trip and rejection tests for `network/protocol.py` wire format."""
+
+import struct
+
+import pytest
+
+from network import protocol
+
+
+def test_pack_unpack_round_trip_pos():
+    packet = protocol.pack_packet(protocol.POSITION, 12.5, -3.25, 7)
+    unpacked = protocol.safe_unpack(packet)
+
+    assert unpacked is not None
+    cmd, x, y, player_id = unpacked
+    assert cmd == protocol.POSITION
+    assert x == pytest.approx(12.5)
+    assert y == pytest.approx(-3.25)
+    assert player_id == 7
+
+
+def test_position_packet_remains_position_only_for_avatar_rendering():
+    assert protocol.FRMT_PACKET == "!4sffi"
+
+
+def test_player_state_round_trip_for_remote_animation():
+    packet = protocol.pack_player_state(12.5, -3.25, 7, "jump_left")
+    unpacked = protocol.safe_unpack_player_state(packet)
+
+    assert unpacked is not None
+    tag, x, y, player_id, state_id = unpacked
+    assert tag == protocol.PLAYER_STATE
+    assert x == pytest.approx(12.5)
+    assert y == pytest.approx(-3.25)
+    assert player_id == 7
+    assert protocol.animation_state_name(state_id) == "jump_left"
+
+
+def test_player_state_rejects_malformed_packet():
+    assert protocol.safe_unpack_player_state(b"bad-data") is None
+
+
+def test_avatar_header_round_trip():
+    packet = protocol.pack_avatar_header(
+        player_id=2,
+        avatar_id=123,
+        total_chunks=4,
+        payload_size=protocol.NETWORK_AVATAR_BYTES,
+    )
+    unpacked = protocol.safe_unpack_avatar_header(packet)
+
+    assert unpacked == (
+        protocol.AVATAR_HEADER,
+        2,
+        123,
+        4,
+        protocol.NETWORK_AVATAR_BYTES,
+        protocol.DEFAULT_MODEL_TYPE,
+        protocol.DEFAULT_MODEL_COLOR,
+    )
+
+
+def test_avatar_chunk_round_trip():
+    payload = b"avatar-data"
+    packet = protocol.pack_avatar_chunk(
+        player_id=2,
+        avatar_id=123,
+        chunk_index=1,
+        total_chunks=4,
+        payload=payload,
+    )
+    unpacked = protocol.safe_unpack_avatar_chunk(packet)
+
+    assert unpacked == (protocol.AVATAR_CHUNK, 2, 123, 1, 4, payload)
+
+
+def test_safe_unpack_rejects_malformed_packet():
+    assert protocol.safe_unpack(b"bad-data") is None
+    assert protocol.safe_unpack(b"") is None
+
+
+def test_tag_of():
+    assert protocol.tag_of(b"abcdextra") == b"abcd"
+    assert protocol.tag_of(b"ab") is None
+    assert protocol.tag_of(b"") is None
+
+
+def test_beacon_round_trip():
+    packet = protocol.pack_beacon(
+        protocol.PROTO_VERSION,
+        cur_players=3,
+        max_players=5,
+        room_state=protocol.STATE_LOBBY,
+        game_port=5555,
+        room_name="AlphaRoom",
+    )
+    unpacked = protocol.safe_unpack_beacon(packet)
+
+    assert unpacked is not None
+    tag, version, cur, max_players, state, game_port, room_name = unpacked
+    assert tag == protocol.BEACON
+    assert version == protocol.PROTO_VERSION
+    assert cur == 3
+    assert max_players == 5
+    assert state == protocol.STATE_LOBBY
+    assert game_port == 5555
+    assert room_name == "AlphaRoom"
+
+
+def test_presence_round_trip():
+    packet = protocol.pack_presence(
+        protocol.PROTO_VERSION,
+        instance_id=123456,
+        status=protocol.PRESENCE_STATUS_LOBBY,
+        player_name="PlayerOne",
+    )
+    unpacked = protocol.safe_unpack_presence(packet)
+
+    assert unpacked == (
+        protocol.PRESENCE,
+        protocol.PROTO_VERSION,
+        123456,
+        protocol.PRESENCE_STATUS_LOBBY,
+        "PlayerOne",
+    )
+
+
+def test_safe_unpack_beacon_rejects_malformed_packet():
+    assert protocol.safe_unpack_beacon(b"bad-data") is None
+
+
+def _pad_name(name: str) -> bytes:
+    encoded = name.encode("ascii", errors="ignore")[: protocol.MAX_NAME_LEN]
+    return encoded.ljust(protocol.MAX_NAME_LEN, b"\0")
+
+
+def test_beacon_wrong_tag_rejected():
+    raw = struct.pack(
+        protocol.FRMT_BEACON,
+        b"NOPE",
+        protocol.PROTO_VERSION,
+        1,
+        5,
+        0,
+        5555,
+        _pad_name("X"),
+    )
+    assert protocol.safe_unpack_beacon(raw) is None
+
+
+def test_conn_round_trip():
+    packet = protocol.pack_conn("PlayerOne")
+    unpacked = protocol.safe_unpack_conn(packet)
+    assert unpacked is not None
+    _tag, proto_version, name = unpacked
+    assert proto_version == protocol.PROTO_VERSION
+    assert name == "PlayerOne"
+
+
+def test_conn_wrong_tag():
+    raw = struct.pack(protocol.FRMT_CONN, b"XXXX", protocol.PROTO_VERSION, _pad_name("A"))
+    assert protocol.safe_unpack_conn(raw) is None
+
+
+def test_conok_round_trip():
+    p = protocol.pack_conok(2, "MyRoom")
+    u = protocol.safe_unpack_conok(p)
+    assert u is not None
+    assert u[1] == 2
+    assert u[2] == "MyRoom"
+
+
+def test_conno_round_trip():
+    p = protocol.pack_conno(protocol.CONNO_REASON_FULL, 0)
+    u = protocol.safe_unpack_conno(p)
+    assert u is not None
+    assert u[1] == protocol.CONNO_REASON_FULL
+    assert u[2] == 0
+
+
+def test_session_round_trip_for_reconnect_ticket():
+    p = protocol.pack_session(4, 123456)
+    assert protocol.safe_unpack_session(p) == (protocol.SESSION, 4, 123456)
+
+
+def test_reconnect_round_trip():
+    p = protocol.pack_reconnect(4, 123456, "PlayerOne")
+    u = protocol.safe_unpack_reconnect(p)
+
+    assert u == (protocol.RECONNECT, protocol.PROTO_VERSION, 4, 123456, "PlayerOne")
+
+
+def test_reconnect_response_round_trip():
+    ok = protocol.pack_reconnect_ok(4, 12.5, 80.25, "RoomOne")
+    unpacked_ok = protocol.safe_unpack_reconnect_ok(ok)
+
+    assert unpacked_ok is not None
+    assert unpacked_ok[0] == protocol.RECONNECT_OK
+    assert unpacked_ok[1] == 4
+    assert unpacked_ok[2] == pytest.approx(12.5)
+    assert unpacked_ok[3] == pytest.approx(80.25)
+    assert unpacked_ok[4] == "RoomOne"
+
+    no = protocol.pack_reconnect_no(protocol.RECONNECT_DENY_EXPIRED)
+    assert protocol.safe_unpack_reconnect_no(no) == (protocol.RECONNECT_NO, protocol.RECONNECT_DENY_EXPIRED)
+
+    snapshot = protocol.pack_reconnect_snapshot(
+        player_id=4,
+        x=12.5,
+        y=80.25,
+        room_state=protocol.STATE_PAUSED,
+        selected_level=3,
+        countdown_id=7,
+        match_id=9,
+        level_seed=123456,
+        alive=True,
+        placement=255,
+        room_name="RoomOne",
+        match_start_unix_sec=1700000001,
+    )
+    assert protocol.safe_unpack_reconnect_snapshot(snapshot) == (
+        protocol.RECONNECT_SNAPSHOT,
+        4,
+        pytest.approx(12.5),
+        pytest.approx(80.25),
+        protocol.STATE_PAUSED,
+        3,
+        7,
+        9,
+        123456,
+        1700000001,
+        True,
+        255,
+        "RoomOne",
+    )
+
+
+def test_match_pause_resume_round_trip():
+    pause = protocol.pack_match_pause(3, 29.5)
+    unpacked_pause = protocol.safe_unpack_match_pause(pause)
+
+    assert unpacked_pause is not None
+    assert unpacked_pause[0] == protocol.MATCH_PAUSE
+    assert unpacked_pause[1] == 3
+    assert unpacked_pause[2] == pytest.approx(29.5)
+    assert protocol.safe_unpack_match_resume(protocol.pack_match_resume()) == (protocol.MATCH_RESUME,)
+
+
+def test_list_round_trip_empty_and_multi():
+    assert protocol.safe_unpack_list(protocol.pack_list([])) == []
+    rows = [(0, True, "Host"), (1, False, "Join")]
+    p = protocol.pack_list(rows)
+    u = protocol.safe_unpack_list(p)
+    assert u == rows
+
+
+def test_list_rejects_truncated_body():
+    head = struct.pack(protocol.FRMT_LIST_HEAD, protocol.LIST, 2)
+    assert protocol.safe_unpack_list(head) is None
+
+
+def test_ready_round_trip():
+    p = protocol.pack_ready(3, True)
+    u = protocol.safe_unpack_ready(p)
+    assert u is not None
+    assert u[1] == 3
+    assert u[2] is True
+
+
+def test_start_round_trip():
+    p = protocol.pack_start(0, protocol.START_ACTION_CANCEL)
+    u = protocol.safe_unpack_start(p)
+    assert u is not None
+    assert u[1:] == (0, protocol.START_ACTION_CANCEL)
+
+
+def test_heartbeat_round_trip():
+    p = protocol.pack_heartbeat(3, 1234, protocol.CLIENT_STATE_RESULTS, countdown_id=7, match_id=9)
+    u = protocol.safe_unpack_heartbeat(p)
+    assert u is not None
+    assert u[1:] == (3, 1234, protocol.CLIENT_STATE_RESULTS, 7, 9, 0)
+
+    ack = protocol.pack_heartbeat_ack(protocol.STATE_LOBBY, countdown_id=7, match_id=9, ping_seq=42)
+    ack_u = protocol.safe_unpack_heartbeat_ack(ack)
+    assert ack_u is not None
+    assert ack_u[1:] == (protocol.STATE_LOBBY, 7, 9, 42)
+
+
+def test_cdwn_round_trip():
+    p = protocol.pack_cdwn(4.5, countdown_id=12)
+    u = protocol.safe_unpack_cdwn(p)
+    assert u is not None
+    assert u[1] == 12
+    assert u[2] == pytest.approx(4.5)
+
+
+def test_cdwnx_round_trip():
+    p = protocol.pack_cdwnx(protocol.CDWNX_REASON_HOST_CANCELLED, countdown_id=12)
+    u = protocol.safe_unpack_cdwnx(p)
+    assert u is not None
+    assert u[1:] == (12, protocol.CDWNX_REASON_HOST_CANCELLED)
+
+
+def test_gstart_round_trip():
+    p = protocol.pack_gstart(countdown_id=12, match_id=3)
+    u = protocol.safe_unpack_gstart(p)
+    assert u is not None
+    assert u[:5] == (protocol.GSTART, 12, 3, protocol.DEFAULT_LEVEL_ID, 0)
+    assert u[5] == 0
+
+
+def test_gstart_round_trip_with_level_seed():
+    p = protocol.pack_gstart(countdown_id=12, match_id=3, selected_level=3, level_seed=456)
+    u = protocol.safe_unpack_gstart(p)
+    assert u == (protocol.GSTART, 12, 3, 3, 456, 0)
+
+
+def test_gstart_carry_match_start_unix():
+    p = protocol.pack_gstart(countdown_id=1, match_id=2, match_start_unix_sec=1700000001)
+    assert protocol.safe_unpack_gstart(p)[5] == 1700000001
+
+
+def test_level_select_round_trip():
+    p = protocol.pack_level_select(host_id=2, level_id=99)
+    u = protocol.safe_unpack_level_select(p)
+    assert u == (protocol.LEVEL_SELECT, 2, protocol.DEFAULT_LEVEL_ID)
+    assert protocol.cycle_level_id(1, -1) == protocol.LEVEL_IDS[-1]
+    assert protocol.cycle_level_id(protocol.LEVEL_IDS[-1], 1) == 1
+
+
+def test_dead_elim_round_trip():
+    p = protocol.pack_dead(2, 0, match_id=11)
+    u = protocol.safe_unpack_dead(p)
+    assert u is not None
+    assert u[1] == 2
+    assert u[2] == 11
+    assert u[3] == 0
+    p2 = protocol.pack_elim(2, 3)
+    u2 = protocol.safe_unpack_elim(p2)
+    assert u2 is not None
+    assert u2[1:] == (2, 3)
+
+
+def test_goal_and_platform_progress_round_trip_with_match_id():
+    goal = protocol.pack_goal(7, match_id=13)
+    unpacked_goal = protocol.safe_unpack_goal(goal)
+    assert unpacked_goal == (protocol.GOAL, 7, 13)
+
+    progress = protocol.pack_platform_progress(7, 22, match_id=13)
+    unpacked_progress = protocol.safe_unpack_platform_progress(progress)
+    assert unpacked_progress == (protocol.PLATFORM_PROGRESS, 7, 13, 22)
+
+
+def test_legacy_dead_goal_and_platform_packets_still_unpack():
+    legacy_dead = struct.pack(protocol.FRMT_DEAD_LEGACY, protocol.DEAD, 2, 0)
+    assert protocol.safe_unpack_dead(legacy_dead) == (protocol.DEAD, 2, 0, 0)
+
+    legacy_goal = struct.pack(protocol.FRMT_GOAL_LEGACY, protocol.GOAL, 2)
+    assert protocol.safe_unpack_goal(legacy_goal) == (protocol.GOAL, 2, 0)
+
+    legacy_progress = struct.pack(protocol.FRMT_PLATFORM_PROGRESS_LEGACY, protocol.PLATFORM_PROGRESS, 2, 9)
+    assert protocol.safe_unpack_platform_progress(legacy_progress) == (protocol.PLATFORM_PROGRESS, 2, 0, 9)
+
+
+def test_gend_round_trip():
+    standings = [(0, 1, "W", 12345, 12), (1, 2, "L", 20000, 8)]
+    p = protocol.pack_gend(protocol.GEND_REASON_NORMAL, standings, match_id=4)
+    u = protocol.safe_unpack_gend(p)
+    assert u is not None
+    match_id, reason, back = u
+    assert match_id == 4
+    assert reason == protocol.GEND_REASON_NORMAL
+    assert back == standings
+
+
+def test_gend_rejects_wrong_count():
+    head = struct.pack(protocol.FRMT_GEND_HEAD, protocol.GEND, 1, 0, 1)
+    assert protocol.safe_unpack_gend(head) is None
+
+
+def test_kick_kicked_round_trip():
+    p = protocol.pack_kick(0, 2)
+    u = protocol.safe_unpack_kick(p)
+    assert u is not None
+    assert u[1:] == (0, 2)
+    p2 = protocol.pack_kicked(protocol.KICKED_REASON_KICKED)
+    u2 = protocol.safe_unpack_kicked(p2)
+    assert u2 is not None
+    assert u2[1] == protocol.KICKED_REASON_KICKED
+
+
+def test_room_and_player_name_validation():
+    assert protocol.is_valid_room_name("Room123")
+    assert protocol.is_valid_room_name("Room 123")
+    assert protocol.is_valid_room_name("Room_123-Alpha")
+    assert not protocol.is_valid_room_name("ab")
+    assert not protocol.is_valid_room_name("Room  123")
+    assert not protocol.is_valid_room_name("Room1234567890123")
+    assert not protocol.is_valid_room_name("_Room123")
+    assert not protocol.is_valid_room_name("Room123_")
+    assert protocol.is_valid_player_name("Player123")
+    assert protocol.is_valid_player_name("Player_123")
+    assert protocol.is_valid_player_name("Player-123")
+    assert not protocol.is_valid_player_name("Player123456")
+    assert not protocol.is_valid_player_name("_Player123")
+    assert not protocol.is_valid_player_name("Player123_")
+    assert not protocol.is_valid_player_name("Player 123")
+
+
+def test_name_input_sanitizers_match_validation_limits():
+    assert protocol.sanitize_player_name_input("_Player 123456") == "Player12345"
+    assert protocol.sanitize_room_name_input("_Room  123456789012345") == "Room 12345678901"
+    assert protocol.normalize_player_name("Player_One") == protocol.normalize_player_name("PLAYER_ONE")

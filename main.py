@@ -1,66 +1,186 @@
-import pygame
-import threading
+import argparse
+import logging
+import sys
 
-from player_scripts import player as pl
-from network import network_handler as nw
-from world.level_1 import create_level_1
+from app.version import cli_version_string, log_startup_line
+from network import protocol
 
-server_data = {}
-lock = threading.Lock()
-
-def network_thread(network_obj, hero_obj):
-    global server_data
-    while True:
-        pass
-        # data = network_obj.receive()
-        # print(data)
+LOGGER = logging.getLogger(__name__)
 
 
-pygame.init()
-screen = pygame.display.set_mode((640, 640), pygame.RESIZABLE)
-clock = pygame.time.Clock()
+def parse_args():
+    parser = argparse.ArgumentParser(description="Tower-jumping multiplayer (LAN lobby)")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=cli_version_string(),
+    )
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="Logging verbosity",
+    )
+    parser.add_argument(
+        "--host",
+        action="store_true",
+        help="Skip main menu and go straight to host lobby",
+    )
+    parser.add_argument(
+        "--name",
+        default="",
+        help=f"Player name ({protocol.PLAYER_NAME_MIN_LEN}-{protocol.PLAYER_NAME_MAX_LEN} chars; letters, numbers, _ or -)",
+    )
+    parser.add_argument(
+        "--room",
+        default="GameRoom",
+        help=(
+            f"Room name when using --host ({protocol.ROOM_NAME_MIN_LEN}-{protocol.ROOM_NAME_MAX_LEN} chars; "
+            "letters, numbers, spaces, _ or -)"
+        ),
+    )
+    parser.add_argument(
+        "--server",
+        default="",
+        metavar="HOST:PORT",
+        help="Emergency direct join (bypass discovery), e.g. 192.168.1.10:5555",
+    )
+    parser.add_argument(
+        "--dev",
+        action="store_true",
+        help="Use an auto-assigned DevProfile1-DevProfile5 profile slot for multi-instance testing",
+    )
+    return parser.parse_args()
 
-n = nw.Network()
 
-start_pos = n.get_pos()
-if not start_pos:
-    start_pos = (100, 100)
+def _parse_server_option(value: str) -> tuple[str, int] | None:
+    value = (value or "").strip()
+    if not value:
+        return None
+    if ":" not in value:
+        LOGGER.error("--server must be HOST:PORT")
+        return None
+    host, port_s = value.rsplit(":", 1)
+    host = host.strip()
+    try:
+        port = int(port_s.strip())
+    except ValueError:
+        LOGGER.error("Invalid port in --server")
+        return None
+    if not host or port <= 0 or port > 65535:
+        LOGGER.error("Invalid --server value")
+        return None
+    return host, port
 
-hero = pl.Player(start_pos, "assets/characters/placeholder_AI_Knight.png")
 
-t = threading.Thread(target=network_thread, args=(n, hero), daemon=True)
-t.start()
+def _run_embedded_server_if_requested() -> bool:
+    if len(sys.argv) > 1 and sys.argv[1] == "--run-embedded-server":
+        sys.argv = [sys.argv[0]] + sys.argv[2:]
+        from network.server import main as server_main
 
-running = True
-dt = 0
+        server_main()
+        return True
+    return False
 
-platforms = create_level_1() # CHANGE TO DYNAMICALLY CHANGE LEVELS
 
-while running:
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            running = False
+def main():
+    args = parse_args()
 
-    WIDTH, HEIGHT = screen.get_size()
-    hero.update(dt, WIDTH, HEIGHT, platforms)
+    import os
 
-    screen.fill((0, 0, 0))
+    # SDL reads env at init; improves centering and multi-monitor behavior on Windows.
+    os.environ.setdefault("SDL_VIDEO_CENTERED", "1")
 
-    for platform in platforms:
-        platform.draw(screen)
+    from app.paths import get_resource_root, get_writable_root
 
-    with lock:
-        positions = dict(server_data)
+    get_resource_root()  # Frozen builds: fail before pygame if only the .exe was copied
 
-    for p_id, p_pos in positions.items():
-        if int(p_id) != n.id:
-            pygame.draw.circle(screen, (255, 0, 0), (int(p_pos[0]), int(p_pos[1])), 20)
-    hero.draw(screen)
+    import pygame
 
-    pygame.display.flip()
-    dt = clock.tick(60) / 1000
+    from app.display import DisplayManager
+    from app.logging_setup import configure_logging, create_instance_log_dir
+    from app.profile_store import load_profile_session
+    from app.state_machine import AppContext, StateMachine
+    from network import network_handler as nw
 
-# print("disconnecting...")
-# n.send("disconnect")
+    pygame.init()
+    pygame.key.set_repeat(350, 35)
+    display_manager = DisplayManager.create_default()
+    clock = pygame.time.Clock()
+    ctx = AppContext(
+        screen=display_manager.screen,
+        clock=clock,
+        log_level=args.log_level,
+        display_manager=display_manager,
+    )
 
-pygame.quit()
+    try:
+        ctx.apply_profile_session(load_profile_session(args.dev, ctx.player_name))
+    except RuntimeError as error:
+        print(error)
+        pygame.quit()
+        sys.exit(1)
+
+    if args.name:
+        ctx.player_name = args.name.strip() or ctx.player_name
+        ctx.save_profile()
+
+    ctx.log_dir = create_instance_log_dir(get_writable_root(), ctx.player_name)
+    configure_logging(args.log_level, ctx.log_dir / "client.log")
+    LOGGER.info(
+        "%s (protocol wire v%s); log dir=%s player=%s",
+        log_startup_line(),
+        protocol.PROTO_VERSION,
+        ctx.log_dir,
+        ctx.player_name,
+    )
+
+    if not protocol.is_valid_player_name(ctx.player_name):
+        LOGGER.error(
+            "Player name must be %s-%s chars and may contain letters, numbers, _ or -.",
+            protocol.PLAYER_NAME_MIN_LEN,
+            protocol.PLAYER_NAME_MAX_LEN,
+        )
+        pygame.quit()
+        sys.exit(1)
+
+    initial_state = "menu"
+    machine = StateMachine(ctx)
+
+    if args.host:
+        if not protocol.is_valid_room_name(args.room):
+            LOGGER.error(
+                "Room name must be %s-%s chars and may contain letters, numbers, spaces, _ or -.",
+                protocol.ROOM_NAME_MIN_LEN,
+                protocol.ROOM_NAME_MAX_LEN,
+            )
+            pygame.quit()
+            sys.exit(1)
+        ctx.room_name = args.room
+        initial_state = "host_lobby"
+    elif args.server:
+        parsed = _parse_server_option(args.server)
+        if parsed is None:
+            pygame.quit()
+            sys.exit(1)
+        host, port = parsed
+        net = nw.Network()
+        result = net.connect_to_room(host, port, ctx.player_name)
+        if not result.ok:
+            LOGGER.error("Direct join failed (reason=%s extra=%s)", result.reason_code, result.extra)
+            net.close()
+            pygame.quit()
+            sys.exit(1)
+        ctx.attach_network(net, is_host=False, room_name=result.room_name, start_pos=result.start_pos)
+        initial_state = "joined_lobby"
+
+    try:
+        machine.run(initial_state=initial_state)
+    finally:
+        pygame.quit()
+
+
+if __name__ == "__main__":
+    if _run_embedded_server_if_requested():
+        sys.exit(0)
+    main()

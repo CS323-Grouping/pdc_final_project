@@ -1,0 +1,214 @@
+from typing import Optional
+
+import time
+import pygame
+
+from network import network_handler as nw
+from network import protocol
+from ui.theme import DEFAULT_THEME
+
+
+class ScreenState:
+    render_to_internal = False
+    suppress_internal_global_messages = False
+
+    def __init__(self, machine, context, **kwargs):
+        self.machine = machine
+        self.context = context
+        self.kwargs = kwargs
+
+    def enter(self):
+        pass
+
+    def exit(self):
+        pass
+
+    def handle_event(self, event):
+        if event.type == pygame.QUIT:
+            self.context.running = False
+
+    def update(self, dt: float):
+        pass
+
+    def draw(self, surface: pygame.Surface):
+        surface.fill(DEFAULT_THEME.bg)
+
+    def draw_window_overlay(self, surface: pygame.Surface):
+        pass
+
+    def switch(self, state_name: str, **kwargs):
+        self.machine.change(state_name, **kwargs)
+
+    def _kicked_banner_message(self, reason_code: int) -> str:
+        if reason_code == protocol.KICKED_REASON_KICKED:
+            return "Host removed you from the room."
+        if reason_code == protocol.KICKED_REASON_ROOM_CLOSED:
+            return "Host disconnected. Game closed."
+        if reason_code == protocol.KICKED_REASON_NOT_READY:
+            return "Removed: you were not ready at countdown end."
+        return "Disconnected from room."
+
+    def handle_common_network_event(self, event) -> bool:
+        if isinstance(event, nw.SessionEvent):
+            self.context.remember_reconnect_ticket(persist=not self.context.is_host, reason="session_event")
+            return True
+        if isinstance(event, nw.HeartbeatAckEvent):
+            self.context.last_server_state = event.server_state
+            self.context.last_heartbeat_ack_monotonic = time.monotonic()
+            if event.server_state == protocol.STATE_COUNTDOWN and event.countdown_id != 0:
+                self.context.active_countdown_id = event.countdown_id
+            elif event.server_state == protocol.STATE_LOBBY and event.countdown_id == self.context.active_countdown_id:
+                self.context.active_countdown_id = 0
+                self.context.countdown_remaining = None
+            self.context.last_countdown_id = max(self.context.last_countdown_id, event.countdown_id)
+            self.context.current_match_id = max(self.context.current_match_id, event.match_id)
+            return True
+        if isinstance(event, nw.LevelSelectEvent):
+            self.context.selected_level = protocol.normalize_level_id(event.level_id)
+            return True
+        if isinstance(event, nw.ConnectionLostEvent):
+            message = event.message
+            if "WinError 10054" in message or "forcibly closed" in message:
+                message = "Host disconnected. Game closed."
+            self.context.set_banner(message, duration=5.0)
+            network = self.context.network
+            if network is not None and network.client_state in (
+                protocol.CLIENT_STATE_IN_GAME,
+                protocol.CLIENT_STATE_SPECTATING,
+            ) and self.context.local_player_alive:
+                self.context.remember_reconnect_ticket(persist=True, reason="connection_lost")
+            self.context.detach_network(send_disconnect=False, preserve_reconnect=True)
+            self.switch("browse_lobby" if self.context.reconnect_ticket is not None else "menu")
+            return True
+        if isinstance(event, nw.KickedEvent):
+            self.context.set_banner(self._kicked_banner_message(event.reason_code))
+            self.context.detach_network(send_disconnect=False)
+            self.context.stop_server()
+            self.switch("menu")
+            return True
+        if isinstance(event, nw.ErrorEvent):
+            self.context.set_status(event.message, duration=2.0)
+            return True
+        return False
+
+    def accept_countdown_event(self, event: nw.CountdownEvent) -> bool:
+        countdown_id = event.countdown_id
+        if countdown_id != 0:
+            if countdown_id < self.context.last_countdown_id:
+                return False
+            if self.context.active_countdown_id == 0 and countdown_id <= self.context.last_countdown_id:
+                return False
+        self.context.active_countdown_id = countdown_id
+        self.context.last_countdown_id = max(self.context.last_countdown_id, countdown_id)
+        self.context.countdown_remaining = event.seconds_until_start
+        if self.context.network is not None:
+            self.context.network.set_client_state(protocol.CLIENT_STATE_COUNTDOWN)
+        return True
+
+    def accept_countdown_cancel_event(self, event: nw.CountdownCancelEvent) -> bool:
+        countdown_id = event.countdown_id
+        if countdown_id != 0 and countdown_id != self.context.active_countdown_id:
+            return False
+        self.context.countdown_remaining = None
+        self.context.active_countdown_id = 0
+        self.context.last_countdown_id = max(self.context.last_countdown_id, countdown_id)
+        if self.context.network is not None:
+            self.context.network.set_client_state(protocol.CLIENT_STATE_LOBBY)
+        return True
+
+    def accept_game_start_event(self, event: nw.GameStartEvent) -> bool:
+        countdown_id = event.countdown_id
+        if countdown_id != 0 and countdown_id != self.context.active_countdown_id:
+            return False
+        self.context.countdown_remaining = None
+        self.context.active_countdown_id = 0
+        self.context.current_match_id = event.match_id
+        self.context.local_player_alive = True
+        self.context.selected_level = protocol.normalize_level_id(event.selected_level)
+        self.context.level_seed = int(event.level_seed) & protocol.UINT32_MAX
+        wall = int(event.match_start_unix_sec) & protocol.UINT32_MAX
+        self.context.match_start_unix_sec = wall if wall != 0 else int(time.time())
+        if self.context.network is not None:
+            self.context.network.set_client_state(protocol.CLIENT_STATE_IN_GAME)
+        return True
+
+    def accept_game_end_event(self, event: nw.GameEndEvent) -> bool:
+        match_id = event.match_id
+        if match_id != 0 and match_id <= self.context.last_results_match_id:
+            return False
+        if match_id != 0:
+            self.context.last_results_match_id = match_id
+        self.context.current_match_id = max(self.context.current_match_id, match_id)
+        self.context.active_countdown_id = 0
+        self.context.countdown_remaining = None
+        if self.context.network is not None:
+            self.context.network.set_client_state(protocol.CLIENT_STATE_RESULTS)
+        return True
+
+    def host_and_non_host_ready(self) -> bool:
+        roster = self.context.roster
+        if len(roster) < protocol.MIN_PLAYERS:
+            return False
+        network = self.context.network
+        if network is None:
+            return False
+        for player_id, ready, _name in roster:
+            if player_id == network.id:
+                continue
+            if not ready:
+                return False
+        return True
+
+    def local_player_ready(self) -> Optional[bool]:
+        network = self.context.network
+        if network is None:
+            return None
+        for player_id, ready, _name in self.context.roster:
+            if player_id == network.id:
+                return ready
+        return None
+
+
+def host_player_id(roster: list) -> int | None:
+    """Lowest player_id in the roster owns the host slot."""
+    if not roster:
+        return None
+    return min(entry[0] for entry in roster)
+
+
+def filter_player_name_input(value: str) -> str:
+    return protocol.sanitize_player_name_input(value)
+
+
+def filter_room_name_input(value: str) -> str:
+    return protocol.sanitize_room_name_input(value)
+
+
+def event_has_ctrl_modifier(event) -> bool:
+    return bool(getattr(event, "mod", 0) & pygame.KMOD_CTRL)
+
+
+def get_clipboard_text() -> str:
+    try:
+        get_init = getattr(pygame.scrap, "get_init", None)
+        if get_init is None or not get_init():
+            pygame.scrap.init()
+        raw = pygame.scrap.get(pygame.SCRAP_TEXT)
+    except (AttributeError, pygame.error):
+        return ""
+    if not raw:
+        return ""
+    if isinstance(raw, bytes):
+        text = raw.decode("utf-8", errors="ignore")
+    else:
+        text = str(raw)
+    return text.replace("\x00", "").replace("\r", "").replace("\n", "")
+
+
+def remove_previous_input_token(value: str, separators: str = " _-.") -> str:
+    end = len(value)
+    while end > 0 and value[end - 1] in separators:
+        end -= 1
+    while end > 0 and value[end - 1] not in separators:
+        end -= 1
+    return value[:end]
