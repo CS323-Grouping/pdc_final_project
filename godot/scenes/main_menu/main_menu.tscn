@@ -1,0 +1,160 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scenes/main_menu/main_menu.gd" id="1_script"]
+[ext_resource type="Theme" path="res://themes/placeholder_theme.tres" id="2_theme"]
+
+[node name="MainMenu" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+theme = ExtResource("2_theme")
+script = ExtResource("1_script")
+
+[node name="Background" type="ColorRect" parent="."]
+layout_mode = 0
+offset_right = 320.0
+offset_bottom = 180.0
+color = Color(0.07, 0.09, 0.14, 1)
+
+[node name="AvatarSection" type="Panel" parent="."]
+layout_mode = 0
+offset_left = 10.0
+offset_top = 40.0
+offset_right = 78.0
+offset_bottom = 140.0
+
+[node name="NameLabel" type="Label" parent="AvatarSection"]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 4.0
+offset_top = 8.0
+offset_right = 64.0
+offset_bottom = 18.0
+theme_type_variation = &"BodyTiny"
+horizontal_alignment = 1
+text = "PLAYER"
+
+[node name="AvatarPreview" type="Panel" parent="AvatarSection"]
+layout_mode = 0
+offset_left = 9.0
+offset_top = 20.0
+offset_right = 59.0
+offset_bottom = 70.0
+
+[node name="AvatarButton" type="Button" parent="AvatarSection"]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 7.0
+offset_top = 75.0
+offset_right = 61.0
+offset_bottom = 93.0
+theme_type_variation = &"Small"
+text = "AVATAR"
+
+[node name="Crown" type="Panel" parent="."]
+layout_mode = 0
+offset_left = 145.0
+offset_top = 10.0
+offset_right = 175.0
+offset_bottom = 32.0
+
+[node name="CrownLabel" type="Label" parent="Crown"]
+layout_mode = 0
+offset_right = 30.0
+offset_bottom = 22.0
+theme_type_variation = &"BodyTiny"
+horizontal_alignment = 1
+vertical_alignment = 1
+text = "CROWN"
+
+[node name="Title" type="Panel" parent="."]
+layout_mode = 0
+offset_left = 88.0
+offset_top = 33.0
+offset_right = 232.0
+offset_bottom = 95.0
+
+[node name="TitleLabel" type="Label" parent="Title"]
+layout_mode = 0
+offset_right = 144.0
+offset_bottom = 62.0
+theme_type_variation = &"Title"
+horizontal_alignment = 1
+vertical_alignment = 1
+text = "SKYWARD RACE"
+
+[node name="PlayButton" type="Button" parent="."]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 99.0
+offset_top = 100.0
+offset_right = 221.0
+offset_bottom = 126.0
+theme_type_variation = &"Primary"
+text = "PLAY"
+
+[node name="ExitButton" type="Button" parent="."]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 99.0
+offset_top = 130.0
+offset_right = 191.0
+offset_bottom = 156.0
+theme_type_variation = &"Secondary"
+text = "EXIT"
+
+[node name="SettingsButton" type="Button" parent="."]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 195.0
+offset_top = 130.0
+offset_right = 221.0
+offset_bottom = 156.0
+theme_type_variation = &"Tiny"
+text = "SET"
+
+[node name="OnlineSection" type="Panel" parent="."]
+layout_mode = 0
+offset_left = 242.0
+offset_top = 14.0
+offset_right = 310.0
+offset_bottom = 166.0
+
+[node name="OnlineHeader" type="Label" parent="OnlineSection"]
+layout_mode = 0
+offset_left = 6.0
+offset_top = 6.0
+offset_right = 62.0
+offset_bottom = 17.0
+theme_type_variation = &"BodySmall"
+horizontal_alignment = 1
+text = "ONLINE"
+
+[node name="OnlineCard1" type="Panel" parent="OnlineSection"]
+layout_mode = 0
+offset_left = 7.0
+offset_top = 25.0
+offset_right = 61.0
+offset_bottom = 49.0
+
+[node name="OnlineCard2" type="Panel" parent="OnlineSection"]
+layout_mode = 0
+offset_left = 7.0
+offset_top = 54.0
+offset_right = 61.0
+offset_bottom = 78.0
+
+[node name="OnlineCard3" type="Panel" parent="OnlineSection"]
+layout_mode = 0
+offset_left = 7.0
+offset_top = 83.0
+offset_right = 61.0
+offset_bottom = 107.0
+
+[node name="OnlineCard4" type="Panel" parent="OnlineSection"]
+layout_mode = 0
+offset_left = 7.0
+offset_top = 112.0
+offset_right = 61.0
+offset_bottom = 136.0

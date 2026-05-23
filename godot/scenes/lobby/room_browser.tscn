@@ -1,0 +1,137 @@
+[gd_scene load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://scenes/lobby/room_browser.gd" id="1_script"]
+[ext_resource type="Theme" path="res://themes/placeholder_theme.tres" id="2_theme"]
+[ext_resource type="PackedScene" path="res://scenes/ui/back_button.tscn" id="3_back_button"]
+
+[node name="RoomBrowser" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+theme = ExtResource("2_theme")
+script = ExtResource("1_script")
+
+[node name="Background" type="ColorRect" parent="."]
+layout_mode = 0
+offset_right = 320.0
+offset_bottom = 180.0
+color = Color(0.07, 0.09, 0.14, 1)
+
+[node name="Header" type="Label" parent="."]
+layout_mode = 0
+offset_left = 10.0
+offset_top = 8.0
+offset_right = 310.0
+offset_bottom = 24.0
+theme_type_variation = &"H1"
+horizontal_alignment = 1
+text = "BROWSE ROOMS"
+
+[node name="RoomList" type="Panel" parent="."]
+layout_mode = 0
+offset_left = 10.0
+offset_top = 30.0
+offset_right = 310.0
+offset_bottom = 142.0
+
+[node name="RoomCard1" type="Panel" parent="RoomList"]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 4.0
+offset_top = 4.0
+offset_right = 296.0
+offset_bottom = 28.0
+focus_mode = 2
+mouse_filter = 0
+
+[node name="Card1Label" type="Label" parent="RoomList/RoomCard1"]
+layout_mode = 0
+offset_left = 6.0
+offset_top = 4.0
+offset_right = 286.0
+offset_bottom = 20.0
+theme_type_variation = &"BodySmall"
+text = "Friday night chaos    K7P3MX  3/8  L4"
+
+[node name="RoomCard2" type="Panel" parent="RoomList"]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 4.0
+offset_top = 32.0
+offset_right = 296.0
+offset_bottom = 56.0
+focus_mode = 2
+mouse_filter = 0
+
+[node name="Card2Label" type="Label" parent="RoomList/RoomCard2"]
+layout_mode = 0
+offset_left = 6.0
+offset_top = 4.0
+offset_right = 286.0
+offset_bottom = 20.0
+theme_type_variation = &"BodySmall"
+text = "Quick race           T2RB9D  1/8  L1"
+
+[node name="RoomCard3" type="Panel" parent="RoomList"]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 4.0
+offset_top = 60.0
+offset_right = 296.0
+offset_bottom = 84.0
+focus_mode = 2
+mouse_filter = 0
+
+[node name="Card3Label" type="Label" parent="RoomList/RoomCard3"]
+layout_mode = 0
+offset_left = 6.0
+offset_top = 4.0
+offset_right = 286.0
+offset_bottom = 20.0
+theme_type_variation = &"BodySmall"
+text = "Tournament practice  M9XK4N  6/8  L7"
+
+[node name="RoomCard4" type="Panel" parent="RoomList"]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 4.0
+offset_top = 88.0
+offset_right = 296.0
+offset_bottom = 104.0
+focus_mode = 2
+mouse_filter = 0
+
+[node name="Card4Label" type="Label" parent="RoomList/RoomCard4"]
+layout_mode = 0
+offset_left = 6.0
+offset_top = 2.0
+offset_right = 286.0
+offset_bottom = 14.0
+theme_type_variation = &"BodyTiny"
+text = "(placeholder data — Phase 3)"
+
+[node name="CreateRoomButton" type="Button" parent="."]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 10.0
+offset_top = 148.0
+offset_right = 100.0
+offset_bottom = 164.0
+text = "CREATE"
+
+[node name="JoinByCodeButton" type="Button" parent="."]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 110.0
+offset_top = 148.0
+offset_right = 210.0
+offset_bottom = 164.0
+text = "JOIN BY CODE"
+
+[node name="BackButton" parent="." instance=ExtResource("3_back_button")]
+offset_left = 250.0
+offset_top = 148.0
+offset_right = 310.0
+offset_bottom = 164.0
+fallback_scene_path = "res://scenes/main_menu/main_menu.tscn"

@@ -1,0 +1,76 @@
+[gd_scene load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://scenes/avatar/avatar_editor.gd" id="1_script"]
+[ext_resource type="Theme" path="res://themes/placeholder_theme.tres" id="2_theme"]
+[ext_resource type="PackedScene" path="res://scenes/ui/back_button.tscn" id="3_back_button"]
+
+[node name="AvatarEditor" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+theme = ExtResource("2_theme")
+script = ExtResource("1_script")
+
+[node name="Background" type="ColorRect" parent="."]
+layout_mode = 0
+offset_right = 320.0
+offset_bottom = 180.0
+color = Color(0.07, 0.09, 0.14, 1)
+
+[node name="Header" type="Label" parent="."]
+layout_mode = 0
+offset_left = 60.0
+offset_top = 10.0
+offset_right = 260.0
+offset_bottom = 28.0
+theme_type_variation = &"H1"
+horizontal_alignment = 1
+text = "AVATAR EDITOR"
+
+[node name="PreviewPanel" type="Panel" parent="."]
+layout_mode = 0
+offset_left = 20.0
+offset_top = 38.0
+offset_right = 130.0
+offset_bottom = 144.0
+
+[node name="PreviewLabel" type="Label" parent="PreviewPanel"]
+layout_mode = 0
+offset_left = 8.0
+offset_top = 8.0
+offset_right = 102.0
+offset_bottom = 98.0
+theme_type_variation = &"BodySmall"
+horizontal_alignment = 1
+vertical_alignment = 1
+autowrap_mode = 2
+text = "Avatar
+preview
+placeholder"
+
+[node name="OptionsPanel" type="Panel" parent="."]
+layout_mode = 0
+offset_left = 140.0
+offset_top = 38.0
+offset_right = 300.0
+offset_bottom = 144.0
+
+[node name="OptionsLabel" type="Label" parent="OptionsPanel"]
+layout_mode = 0
+offset_left = 8.0
+offset_top = 8.0
+offset_right = 152.0
+offset_bottom = 98.0
+theme_type_variation = &"BodySmall"
+horizontal_alignment = 1
+vertical_alignment = 1
+autowrap_mode = 2
+text = "Color, head shape, upload — Phase 6"
+
+[node name="BackButton" parent="." instance=ExtResource("3_back_button")]
+offset_left = 10.0
+offset_top = 158.0
+offset_right = 70.0
+offset_bottom = 174.0
+fallback_scene_path = "res://scenes/main_menu/main_menu.tscn"

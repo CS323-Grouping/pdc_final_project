@@ -1,0 +1,35 @@
+# Local-dev infra for the CSSocialGame server.
+#
+# Currently runs only Postgres. The server binary itself runs on the host
+# (via `go run ./cmd/server`) — keeps dev iteration fast (no container
+# rebuild per change). Production compose stack adds the server, caddy,
+# coturn, and livekit; lives in /infra (not yet written).
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: cssocial-postgres
+    environment:
+      POSTGRES_USER: cssocial
+      POSTGRES_PASSWORD: dev
+      POSTGRES_DB: cssocial
+    ports:
+      # Host 5433 → container 5432. Host-side 5432 is commonly occupied by a
+      # native Postgres install (Postgres service, Supabase CLI, pgAdmin's
+      # bundled server, etc.); using 5433 sidesteps the conflict instead of
+      # asking the user to stop their existing install.
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Postgres auto-runs every .sql in this directory on first DB creation.
+      # Re-run by destroying the volume: docker-compose down -v && docker-compose up -d
+      - ./internal/db/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cssocial -d cssocial"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  pgdata:

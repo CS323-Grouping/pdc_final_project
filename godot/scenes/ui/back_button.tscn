@@ -1,0 +1,9 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scenes/ui/back_button.gd" id="1_script"]
+
+[node name="BackButton" type="Button"]
+layout_mode = 0
+focus_mode = 2
+text = "BACK"
+script = ExtResource("1_script")

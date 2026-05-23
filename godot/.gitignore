@@ -1,0 +1,16 @@
+# Godot 4+ specific
+.godot/
+/android/
+/builds/
+
+# Imported translations (auto-generated from CSV)
+export.cfg
+export_presets.cfg
+
+# Mono / .NET specific (unused — GDScript project)
+.mono/
+data_*/
+mono_crash.*.json
+
+# Editor-local cache that some users have
+.import/

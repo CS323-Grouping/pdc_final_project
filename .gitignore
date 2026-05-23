@@ -121,5 +121,8 @@ cython_debug/
 .DS_Store
 Thumbs.db
 
-/docs
+# Keep personal/local docs ignored, but track the shared project vault.
+/docs/*
+!/docs/obsidian/
+!/docs/obsidian/**
 .claude

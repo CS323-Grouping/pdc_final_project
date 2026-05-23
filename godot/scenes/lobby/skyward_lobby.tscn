@@ -1,0 +1,152 @@
+[gd_scene load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://scenes/lobby/skyward_lobby.gd" id="1_script"]
+[ext_resource type="Theme" path="res://themes/placeholder_theme.tres" id="2_theme"]
+[ext_resource type="PackedScene" path="res://scenes/ui/back_button.tscn" id="3_back_button"]
+
+[node name="SkywardLobby" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+theme = ExtResource("2_theme")
+script = ExtResource("1_script")
+
+[node name="Background" type="ColorRect" parent="."]
+layout_mode = 0
+offset_right = 320.0
+offset_bottom = 180.0
+color = Color(0.07, 0.09, 0.14, 1)
+
+[node name="Header" type="Label" parent="."]
+layout_mode = 0
+offset_left = 10.0
+offset_top = 8.0
+offset_right = 200.0
+offset_bottom = 24.0
+theme_type_variation = &"H2"
+text = "LOBBY: K7P3MX"
+
+[node name="HostBadge" type="Label" parent="."]
+layout_mode = 0
+offset_left = 210.0
+offset_top = 8.0
+offset_right = 310.0
+offset_bottom = 22.0
+theme_type_variation = &"BodySmall"
+horizontal_alignment = 2
+text = "host: PLAYER"
+
+[node name="PlayerList" type="Panel" parent="."]
+layout_mode = 0
+offset_left = 10.0
+offset_top = 30.0
+offset_right = 200.0
+offset_bottom = 142.0
+
+[node name="PlayerRow1" type="Label" parent="PlayerList"]
+layout_mode = 0
+offset_left = 6.0
+offset_top = 6.0
+offset_right = 184.0
+offset_bottom = 20.0
+theme_type_variation = &"BodySmall"
+text = "1. PLAYER         [READY]"
+
+[node name="PlayerRow2" type="Label" parent="PlayerList"]
+layout_mode = 0
+offset_left = 6.0
+offset_top = 22.0
+offset_right = 184.0
+offset_bottom = 36.0
+theme_type_variation = &"BodySmall"
+text = "2. KURT           [    ]"
+
+[node name="PlayerRow3" type="Label" parent="PlayerList"]
+layout_mode = 0
+offset_left = 6.0
+offset_top = 38.0
+offset_right = 184.0
+offset_bottom = 52.0
+theme_type_variation = &"BodySmall"
+text = "3. BRANDY         [READY]"
+
+[node name="PlayerRow4" type="Label" parent="PlayerList"]
+layout_mode = 0
+offset_left = 6.0
+offset_top = 54.0
+offset_right = 184.0
+offset_bottom = 68.0
+theme_type_variation = &"BodySmall"
+text = "4. (open slot)"
+
+[node name="PhaseNote" type="Label" parent="PlayerList"]
+layout_mode = 0
+offset_left = 6.0
+offset_top = 92.0
+offset_right = 184.0
+offset_bottom = 104.0
+theme_type_variation = &"BodyTiny"
+horizontal_alignment = 1
+text = "(live sync — Phase 2)"
+
+[node name="SettingsPanel" type="Panel" parent="."]
+layout_mode = 0
+offset_left = 210.0
+offset_top = 30.0
+offset_right = 310.0
+offset_bottom = 142.0
+
+[node name="LevelRow" type="Label" parent="SettingsPanel"]
+layout_mode = 0
+offset_left = 6.0
+offset_top = 6.0
+offset_right = 94.0
+offset_bottom = 20.0
+theme_type_variation = &"BodySmall"
+text = "Level: 4"
+
+[node name="VisibilityRow" type="Label" parent="SettingsPanel"]
+layout_mode = 0
+offset_left = 6.0
+offset_top = 22.0
+offset_right = 94.0
+offset_bottom = 36.0
+theme_type_variation = &"BodySmall"
+text = "Public"
+
+[node name="CountdownRow" type="Label" parent="SettingsPanel"]
+layout_mode = 0
+offset_left = 6.0
+offset_top = 50.0
+offset_right = 94.0
+offset_bottom = 70.0
+theme_type_variation = &"H2"
+horizontal_alignment = 1
+text = "--"
+
+[node name="ReadyButton" type="Button" parent="."]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 10.0
+offset_top = 148.0
+offset_right = 100.0
+offset_bottom = 164.0
+text = "READY"
+
+[node name="StartButton" type="Button" parent="."]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 110.0
+offset_top = 148.0
+offset_right = 210.0
+offset_bottom = 164.0
+text = "START"
+
+[node name="LeaveButton" parent="." instance=ExtResource("3_back_button")]
+offset_left = 250.0
+offset_top = 148.0
+offset_right = 310.0
+offset_bottom = 164.0
+text = "LEAVE"
+fallback_scene_path = "res://scenes/main_menu/main_menu.tscn"

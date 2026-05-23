@@ -1,0 +1,20 @@
+# Built binaries
+/server
+/server.exe
+/bin/
+
+# Local environment
+.env
+
+# Coverage
+*.out
+coverage.*
+
+# IDE
+.vscode/
+.idea/
+
+# Build artifacts
+/dist/
+/tmp/
+.gocache/
