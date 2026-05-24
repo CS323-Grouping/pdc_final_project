@@ -96,9 +96,14 @@ func Recover(next http.Handler) http.Handler {
 type statusRecorder struct {
 	http.ResponseWriter
 	status int
+	wrote  bool
 }
 
 func (sw *statusRecorder) WriteHeader(code int) {
+	if sw.wrote {
+		return
+	}
+	sw.wrote = true
 	sw.status = code
 	sw.ResponseWriter.WriteHeader(code)
 }

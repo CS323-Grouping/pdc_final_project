@@ -1,7 +1,7 @@
 // Command server is the CSSocialGame backend.
 //
 // Phase 1.1: GET /health.
-// Phase 1.2 (this turn): POST /auth/{register,verify,login,refresh,logout}, GET /me.
+// Phase 1.2: POST /auth/{register,verify,login,refresh,logout}, GET /me.
 // Phase 1.3: WebSocket at /ws?token=<jwt> with hello round-trip.
 package main
 
@@ -24,6 +24,7 @@ import (
 	"github.com/CS-StudentGroup/pdc_final_project/server/internal/config"
 	"github.com/CS-StudentGroup/pdc_final_project/server/internal/db"
 	"github.com/CS-StudentGroup/pdc_final_project/server/internal/httpx"
+	"github.com/CS-StudentGroup/pdc_final_project/server/internal/rooms"
 	"github.com/CS-StudentGroup/pdc_final_project/server/internal/ws"
 )
 
@@ -70,7 +71,8 @@ func run() error {
 	bearer := auth.NewBearerMiddleware(cfg.JWTSecret)
 	// 5 burst, then 1 every 12s = ~5 requests/minute sustained per IP. Applied
 	// across all /auth/* endpoints as a single bucket per IP.
-	authRL := auth.NewRateLimiter(rate.Every(12*time.Second), 5)
+	authRL := auth.NewRateLimiter(rate.Every(12*time.Second), 5, cfg.TrustedProxyCIDRs)
+	roomRegistry := rooms.NewRegistry()
 
 	mux := http.NewServeMux()
 
@@ -88,7 +90,7 @@ func run() error {
 	// WebSocket control channel. JWT validated by the handler itself
 	// (from ?token=...) since Godot's WebSocketPeer can't easily set
 	// Authorization headers on connect. Bearer middleware isn't applied.
-	wsHandler := ws.New(cfg.JWTSecret, serverVersion)
+	wsHandler := ws.New(cfg.JWTSecret, serverVersion, cfg.WSOriginPatterns, roomRegistry)
 	mux.Handle("GET /ws", wsHandler)
 
 	handler := httpx.Chain(mux, httpx.RequestID, httpx.AccessLog, httpx.Recover)
@@ -97,6 +99,9 @@ func run() error {
 		Addr:              cfg.Addr,
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	serverErr := make(chan error, 1)
@@ -117,6 +122,7 @@ func run() error {
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	wsHandler.CloseActiveConnections()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("shutdown: %w", err)
 	}

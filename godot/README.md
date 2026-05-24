@@ -36,7 +36,7 @@ godot/
 │   ├── session.gd         # Session — JWT, user_id, current room (empty stub)
 │   ├── settings.gd        # Settings — display/controls, persisted to user://
 │   ├── auth_client.gd     # AuthClient — async HTTP wrappers for /auth/* + /me
-│   └── network_backend.gd # NetworkBackend — control WebSocket + hello handshake
+│   └── network_backend.gd # NetworkBackend — control WebSocket + request/reply helper
 ├── scenes/
 │   ├── boot/              # login/register
 │   ├── main_menu/         # main menu — placeholder boxes + labels
@@ -55,6 +55,8 @@ godot/
 
 - Boot scene is `scenes/boot/login.tscn`
 - Register/login call the Go auth API, then open the control WebSocket and wait for `hello`
+- Control WS requests use envelope ids through `NetworkBackend.send_control_request`
+- Create/join room screens now call `create_room` / `join_room`; lobby consumes `lobby_state` and sends `set_ready`
 - Main menu shows the authenticated display name after login
 - Placeholder destination scenes exist for avatar, settings, room browser, create, join, and lobby
 

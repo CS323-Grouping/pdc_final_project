@@ -21,6 +21,9 @@ Every WS frame is JSON with this shape:
 ```
 
 Server replies set `id` matching the request. Push messages have no `id`.
+Godot's `NetworkBackend.send_control_request(t, d)` generates the request id,
+waits for the matching reply, and normalizes `err` replies into
+`{success=false, error={code,message}}`.
 
 Godot HLM frames are passed through transparently by `WebSocketMultiplayerPeer` — they don't use this envelope.
 
@@ -32,10 +35,10 @@ Godot HLM frames are passed through transparently by `WebSocketMultiplayerPeer` 
 | --- | --- | --- | --- |
 | POST | `/auth/register` | `{email, password, display_name}` | `{user_id}` + verification email |
 | POST | `/auth/verify` | `{token}` | 204 |
-| POST | `/auth/login` | `{email, password}` | `{jwt, refresh}` |
-| POST | `/auth/refresh` | `{refresh}` | `{jwt, refresh}` |
-| POST | `/auth/logout` | `{refresh}` | 204 |
-| GET | `/me` | — | `{user_id, display_name, avatar_id}` |
+| POST | `/auth/login` | `{email, password}` | `{access_token, access_expires_at, refresh_token, refresh_expires_at, user}` |
+| POST | `/auth/refresh` | `{refresh_token}` | `{access_token, access_expires_at, refresh_token, refresh_expires_at, user}` |
+| POST | `/auth/logout` | `{refresh_token}` | 204 |
+| GET | `/me` | Bearer access token | `{id, email, display_name, verified, created_at}` |
 
 ### On WS open
 
@@ -53,6 +56,7 @@ S→C  hello { server_version, your_user_id, your_display_name }
 | `join_ok` | S→C | `{room_id, your_player_id, snapshot}` | reply |
 | `join_err` | S→C | `{reason}` | reply; reason ∈ {not_found, full, in_progress, banned} |
 | `leave_room` | C→S | `{}` | always succeeds |
+| `leave_ok` | S→C | `{}` | reply |
 | `enter_hub` | C→S | `{}` | |
 | `hub_assigned` | S→C | `{instance_id, snapshot}` | |
 | `kick_player` | C→S | `{target_player_id}` | host only |
@@ -71,12 +75,13 @@ S→C  hello { server_version, your_user_id, your_display_name }
 | Type | Direction | Payload |
 | --- | --- | --- |
 | `set_ready` | C→S | `{ready: bool}` |
+| `ready_ok` | S→C | `{ready: bool}` |
 | `set_level` | C→S | `{level: int}` | host only; 1–10 |
 | `set_environment` | C→S | `{environment_id: string}` | host only; server validates against `EnvironmentRegistry`; resets readies |
 | `set_room_name` | C→S | `{name: string}` | host only |
 | `set_visibility` | C→S | `{visibility}` | host only |
 | `start_match` | C→S | `{}` | host only; requires all ready |
-| `lobby_state` | S→C (push) | `{players, ready_set, level, environment_id, state, countdown_until}` |
+| `lobby_state` | S→C (push) | `{room_id, code, players, ready_set, host_user_id, level, environment_id, state, capacity}` |
 
 ### Match (SR) — control only; gameplay sync uses HLM
 

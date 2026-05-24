@@ -13,6 +13,8 @@ extends Control
 
 const MAIN_MENU_PATH := "res://scenes/main_menu/main_menu.tscn"
 
+var _busy := false
+
 func _ready() -> void:
 	%SubmitButton.pressed.connect(_on_submit)
 	%CancelButton.pressed.connect(_on_cancel)
@@ -20,6 +22,8 @@ func _ready() -> void:
 	%EmailField.grab_focus()
 
 func _on_submit() -> void:
+	if _busy:
+		return
 	var email := (%EmailField.text as String).strip_edges()
 	var display_name := (%DisplayNameField.text as String).strip_edges()
 	var password := %PasswordField.text as String
@@ -55,10 +59,13 @@ func _on_submit() -> void:
 	SceneManager.replace(MAIN_MENU_PATH)
 
 func _on_cancel() -> void:
+	if _busy:
+		return
 	if not SceneManager.go_back():
 		SceneManager.go_to("res://scenes/boot/login.tscn")
 
 func _set_busy(busy: bool, status: String) -> void:
+	_busy = busy
 	%SubmitButton.disabled = busy
 	%CancelButton.disabled = busy
 	%StatusLabel.text = status

@@ -65,7 +65,7 @@ The tree below is the eventual target. Items marked ✅ have been scaffolded; th
 res://
 ├── autoloads/
 │   ├── session.gd            ✅ JWT, user_id, current room (empty stub)
-│   ├── network_backend.gd    ✅ MultiplayerPeer wrapper (Phase 1 stub)
+│   ├── network_backend.gd    ✅ control WebSocket client + request/reply helper
 │   ├── profile.gd            # local profile cache (folded into Settings for now)
 │   ├── settings.gd           ✅ display, controls, metrics toggle
 │   └── scene_manager.gd      ✅ transitions + back stack + global ESC=back
@@ -79,10 +79,10 @@ res://
 │   ├── avatar/
 │   │   └── avatar_editor.tscn  ✅ placeholder (real editor Phase 6)
 │   ├── lobby/
-│   │   ├── room_browser.tscn   ✅ placeholder (live list Phase 3; cards lead to lobby)
-│   │   ├── create_room.tscn    ✅ placeholder (real form + create_room WS Phase 2)
-│   │   ├── join_by_code.tscn   ✅ placeholder (real 6-char input + join_room WS Phase 2)
-│   │   └── skyward_lobby.tscn  ✅ placeholder (real player sync Phase 2)
+│   │   ├── room_browser.tscn   ✅ placeholder (live list Phase 3; cards are inert until server data)
+│   │   ├── create_room.tscn    ✅ Phase 2 private-room create flow
+│   │   ├── join_by_code.tscn   ✅ Phase 2 6-char code input + join_room flow
+│   │   └── skyward_lobby.tscn  ✅ Phase 2 player list + ready sync
 │   ├── match/
 │   │   ├── match.tscn        # server-authoritative root
 │   │   ├── player.tscn

@@ -31,11 +31,11 @@ After install, run from PowerShell:
 
 ```powershell
 & "C:\Program Files (x86)\Godot\Godot_v4.6.2-stable_win64_console.exe" `
-    --headless `
-    --path godot `
-    -s addons/gut/gut_cmdln.gd `
-    -gdir=res://tests `
-    -gexit
+	--headless `
+	--path godot `
+	-s addons/gut/gut_cmdln.gd `
+	-gdir=res://tests `
+	-gexit
 ```
 
 Add this as a `scripts/test.ps1` once we have real tests.
@@ -54,13 +54,13 @@ Example for the future generator:
 extends GutTest
 
 func test_generator_is_deterministic() -> void:
-    var env := preload("res://resources/environments/sky.tres")
-    var a := LevelGenerator.generate(env, 5, 12345)
-    var b := LevelGenerator.generate(env, 5, 12345)
-    assert_eq(a.slots.size(), b.slots.size())
-    for i in a.slots.size():
-        assert_eq(a.slots[i].position, b.slots[i].position)
-        assert_eq(a.slots[i].chosen_element_id, b.slots[i].chosen_element_id)
+	var env := preload("res://resources/environments/sky.tres")
+	var a := LevelGenerator.generate(env, 5, 12345)
+	var b := LevelGenerator.generate(env, 5, 12345)
+	assert_eq(a.slots.size(), b.slots.size())
+	for i in a.slots.size():
+		assert_eq(a.slots[i].position, b.slots[i].position)
+		assert_eq(a.slots[i].chosen_element_id, b.slots[i].chosen_element_id)
 ```
 
 ## Vault link

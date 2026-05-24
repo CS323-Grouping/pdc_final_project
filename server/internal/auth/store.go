@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -43,8 +44,8 @@ type RefreshToken struct {
 	RevokedAt *time.Time
 }
 
-// CreateUser inserts. Caller must validate uniqueness first; a DB unique
-// violation here surfaces as a generic pgx error (we don't translate it).
+// CreateUser inserts. The service probes uniqueness first for friendly errors,
+// but database constraints are the source of truth for race safety.
 func (s *Store) CreateUser(ctx context.Context, u *User) error {
 	const q = `
 		INSERT INTO users (id, email, display_name, password_hash, verification_token, verification_token_expires_at)
@@ -53,7 +54,25 @@ func (s *Store) CreateUser(ctx context.Context, u *User) error {
 	_, err := s.pool.Exec(ctx, q,
 		u.ID, u.Email, u.DisplayName, u.PasswordHash, u.VerificationToken, u.VerificationTokenExpiresAt,
 	)
+	if err != nil {
+		return translateUniqueViolation(err)
+	}
 	return err
+}
+
+func translateUniqueViolation(err error) error {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
+		return err
+	}
+	switch pgErr.ConstraintName {
+	case "users_email_key", "users_email_lower_unique_idx":
+		return ErrEmailTaken
+	case "users_display_name_key", "users_display_name_lower_unique_idx":
+		return ErrDisplayNameTaken
+	default:
+		return err
+	}
 }
 
 // GetUserByEmail returns (nil, nil) when no row matches — callers must

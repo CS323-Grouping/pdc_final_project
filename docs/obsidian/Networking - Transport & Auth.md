@@ -60,10 +60,10 @@ sequenceDiagram
     Go->>DB: SELECT user WHERE email=?
     DB-->>Go: row (with bcrypt hash)
     Go->>Go: bcrypt.Compare
-    Go->>Go: mint JWT (15min) + refresh (30d)
-    Go-->>C: {jwt, refresh}
-    C->>C: store refresh in user:// (OS keychain later)
-    C->>Go: WSS upgrade with ?token=<jwt>
+    Go->>Go: mint access token (15min) + refresh token (30d)
+    Go-->>C: {access_token, refresh_token, user}
+    C->>C: keep refresh in memory for Phase 1; persist in Phase 7
+    C->>Go: WSS upgrade with ?token=<access_token>
     Go->>Go: validate JWT, attach session
     Go-->>C: WS open → connected to multiplayer
 ```
@@ -94,7 +94,11 @@ Upgrade: websocket
 ```
 
 > [!warning] Token-in-URL caveat
-> Tokens in query strings can leak to access logs. Mitigations: log only `?token=REDACTED`, keep access token TTL short (15 min), use refresh for re-issuance.
+> Tokens in query strings can leak to access logs. Mitigations: the Go access log records only `r.URL.Path` (not the raw query), keep access token TTL short (15 min), use refresh for re-issuance.
+
+`coder/websocket` origin verification is enabled. Native Godot clients send no
+Origin and are allowed; same-host browser clients are allowed; cross-origin web
+clients require `WS_ALLOWED_ORIGINS`.
 
 ## Connection lifecycle
 
@@ -110,7 +114,11 @@ stateDiagram-v2
     Reconnecting --> Disconnected: 5 fails → surface to UI
 ```
 
-Server-side, a brief disconnect (< 30 s) keeps the user's session and room membership warm — reconnect re-attaches without rejoining. Longer than 30 s and the room may have moved on; client returns to hub.
+Phase 1 permits one active control WS per `user_id`; a second game instance is
+accepted then closed with policy violation reason `account_already_connected`.
+Active WS connections are tracked so server shutdown can close them with
+`server_shutdown` before waiting for handlers to return. Reconnect/reattach
+semantics are still Phase 7.
 
 ## Performance budget
 

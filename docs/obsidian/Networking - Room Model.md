@@ -69,7 +69,11 @@ type Room struct {
 }
 ```
 
-Each room runs as its own goroutine consuming from `inbox`. Single-writer model — no locks on `Players` inside the goroutine. Other goroutines (HTTP handlers, other rooms) send via channel.
+Phase 2 implementation note: active lobby state currently lives in
+`server/internal/rooms.Registry` behind one short-held mutex, with sends
+performed after unlocking. This keeps the MVP simple while preserving a single
+state owner. The schema has `rooms` / `room_players` tables ready for
+restart/reconnect persistence work as Phase 7 matures.
 
 ## Browser API
 

@@ -1,0 +1,23 @@
+[gd_scene format=3 uid="uid://b70a2bbnvha2r"]
+
+[ext_resource type="Script" uid="uid://biw2ogfn45rqx" path="res://scenes/match/match.gd" id="1_script"]
+
+[node name="Match" type="Node2D" unique_id=1690500433]
+script = ExtResource("1_script")
+
+[node name="LevelRoot" type="Node2D" parent="." unique_id=1250162011]
+unique_name_in_owner = true
+
+[node name="Camera" type="Camera2D" parent="." unique_id=1704602100]
+unique_name_in_owner = true
+position = Vector2(160, 90)
+
+[node name="DebugHUD" type="CanvasLayer" parent="." unique_id=1487359799]
+
+[node name="DebugLabel" type="Label" parent="DebugHUD" unique_id=1629902513]
+unique_name_in_owner = true
+offset_left = 4.0
+offset_top = 4.0
+offset_right = 316.0
+offset_bottom = 16.0
+text = "loading..."

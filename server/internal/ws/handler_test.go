@@ -25,7 +25,7 @@ func TestHandlerThroughHTTPXMiddlewareSendsHello(t *testing.T) {
 	}
 
 	handler := httpx.Chain(
-		ws.New(secret, "test-version"),
+		ws.New(secret, "test-version", nil, nil),
 		httpx.RequestID,
 		httpx.AccessLog,
 		httpx.Recover,
@@ -84,7 +84,7 @@ func TestHandlerRejectsDuplicateActiveSession(t *testing.T) {
 	}
 
 	handler := httpx.Chain(
-		ws.New(secret, "test-version"),
+		ws.New(secret, "test-version", nil, nil),
 		httpx.RequestID,
 		httpx.AccessLog,
 		httpx.Recover,

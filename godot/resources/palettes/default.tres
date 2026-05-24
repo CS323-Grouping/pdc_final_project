@@ -1,0 +1,8 @@
+[gd_resource type="Resource" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://world/palette_preset.gd" id="1_script"]
+
+[resource]
+script = ExtResource("1_script")
+background_color = Color(0.07, 0.09, 0.14, 1)
+accent_color = Color(0.7, 0.85, 1.0, 1)

@@ -1,7 +1,7 @@
-[gd_resource type="Theme" load_steps=7 format=3]
+[gd_resource type="Theme" format=3 uid="uid://b06ykuwogkc6m"]
 
-[ext_resource type="FontFile" path="res://assets/fonts/PixelCode.ttf" id="1_font_regular"]
-[ext_resource type="FontFile" path="res://assets/fonts/PixelCode-Bold.ttf" id="2_font_bold"]
+[ext_resource type="FontFile" uid="uid://dp3c324rpmcmy" path="res://assets/fonts/PixelCode.ttf" id="1_font_regular"]
+[ext_resource type="FontFile" uid="uid://c5fllptijy0a2" path="res://assets/fonts/PixelCode-Bold.ttf" id="2_font_bold"]
 
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_button_normal"]
 bg_color = Color(0.18, 0.22, 0.32, 1)
@@ -17,7 +17,7 @@ border_width_left = 1
 border_width_top = 1
 border_width_right = 1
 border_width_bottom = 1
-border_color = Color(0.7, 0.85, 1.0, 1)
+border_color = Color(0.7, 0.85, 1, 1)
 
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_button_pressed"]
 bg_color = Color(0.12, 0.16, 0.24, 1)
@@ -25,7 +25,7 @@ border_width_left = 1
 border_width_top = 1
 border_width_right = 1
 border_width_bottom = 1
-border_color = Color(0.7, 0.85, 1.0, 1)
+border_color = Color(0.7, 0.85, 1, 1)
 
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_panel"]
 bg_color = Color(0.13, 0.16, 0.24, 1)
@@ -38,28 +38,26 @@ border_color = Color(0.3, 0.38, 0.55, 1)
 [resource]
 default_font = ExtResource("1_font_regular")
 default_font_size = 8
-Button/colors/font_color = Color(0.95, 0.97, 1, 1)
-Button/colors/font_hover_color = Color(1, 1, 1, 1)
-Button/colors/font_pressed_color = Color(0.8, 0.9, 1, 1)
-Button/colors/font_disabled_color = Color(0.5, 0.55, 0.65, 1)
-Button/fonts/font = ExtResource("2_font_bold")
-Button/font_sizes/font_size = 8
-Button/styles/normal = SubResource("StyleBoxFlat_button_normal")
-Button/styles/hover = SubResource("StyleBoxFlat_button_hover")
-Button/styles/pressed = SubResource("StyleBoxFlat_button_pressed")
-Button/styles/disabled = SubResource("StyleBoxFlat_button_normal")
-Label/colors/font_color = Color(0.92, 0.95, 1, 1)
-Panel/styles/panel = SubResource("StyleBoxFlat_panel")
-Title/base_type = &"Label"
-Title/font_sizes/font_size = 14
-H1/base_type = &"Label"
-H1/font_sizes/font_size = 12
-H2/base_type = &"Label"
-H2/font_sizes/font_size = 11
 BodySmall/base_type = &"Label"
 BodySmall/font_sizes/font_size = 7
 BodyTiny/base_type = &"Label"
 BodyTiny/font_sizes/font_size = 6
+Button/colors/font_color = Color(0.95, 0.97, 1, 1)
+Button/colors/font_disabled_color = Color(0.5, 0.55, 0.65, 1)
+Button/colors/font_hover_color = Color(1, 1, 1, 1)
+Button/colors/font_pressed_color = Color(0.8, 0.9, 1, 1)
+Button/font_sizes/font_size = 8
+Button/fonts/font = ExtResource("2_font_bold")
+Button/styles/disabled = SubResource("StyleBoxFlat_button_normal")
+Button/styles/hover = SubResource("StyleBoxFlat_button_hover")
+Button/styles/normal = SubResource("StyleBoxFlat_button_normal")
+Button/styles/pressed = SubResource("StyleBoxFlat_button_pressed")
+H1/base_type = &"Label"
+H1/font_sizes/font_size = 12
+H2/base_type = &"Label"
+H2/font_sizes/font_size = 11
+Label/colors/font_color = Color(0.92, 0.95, 1, 1)
+Panel/styles/panel = SubResource("StyleBoxFlat_panel")
 Primary/base_type = &"Button"
 Primary/font_sizes/font_size = 13
 Secondary/base_type = &"Button"
@@ -68,3 +66,5 @@ Small/base_type = &"Button"
 Small/font_sizes/font_size = 7
 Tiny/base_type = &"Button"
 Tiny/font_sizes/font_size = 6
+Title/base_type = &"Label"
+Title/font_sizes/font_size = 14

@@ -1,0 +1,17 @@
+[gd_resource type="Resource" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://world/element.gd" id="1_script"]
+[ext_resource type="PackedScene" path="res://scenes/elements/pickups/orb.tscn" id="2_scene"]
+
+[resource]
+script = ExtResource("1_script")
+id = &"orb"
+display_name = "Score Orb"
+category = 2
+scene = ExtResource("2_scene")
+base_weight = 1.0
+min_difficulty = 1
+max_difficulty = 10
+tags = []
+min_horizontal_clearance = 0
+min_vertical_clearance = 0

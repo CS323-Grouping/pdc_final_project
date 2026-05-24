@@ -47,7 +47,7 @@ Things not yet decided. Resolve before they become blockers.
 ## Code & repo discipline
 
 - [x] ~~Single repo or split server out?~~ → **single repo for now** — server lives in `/server` subfolder on `port/godot` branch alongside `/godot`. Decision 2026-05-23. Module path `github.com/CS-StudentGroup/pdc_final_project/server`. Revisit splitting after coursework grade lands; one-line `go.mod` change + import-rewrite when we do.
-- [x] ~~Mirror this vault into a `/docs` in one of the repos?~~ → **yes** — copied into `docs/obsidian` in `pdc_final_project`; root `.gitignore` keeps other personal `docs/*` ignored while allowing this shared vault.
+- [ ] **Mirror this vault into a `/docs` in one of the repos?** So planning travels with code. Probably yes, but as a one-way export from Obsidian.
 - [ ] **GDScript or C# for Godot?** GDScript chosen (fast iteration, native to Godot). Revisit only if a performance hot spot demands it (unlikely at this scope).
 
 ## Legal / process

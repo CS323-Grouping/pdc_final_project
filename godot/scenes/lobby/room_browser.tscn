@@ -28,88 +28,51 @@ theme_type_variation = &"H1"
 horizontal_alignment = 1
 text = "BROWSE ROOMS"
 
+[node name="StatusLabel" type="Label" parent="."]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 10.0
+offset_top = 26.0
+offset_right = 310.0
+offset_bottom = 34.0
+theme_type_variation = &"BodyTiny"
+horizontal_alignment = 1
+text = ""
+
 [node name="RoomList" type="Panel" parent="."]
 layout_mode = 0
 offset_left = 10.0
-offset_top = 30.0
+offset_top = 36.0
 offset_right = 310.0
 offset_bottom = 142.0
 
-[node name="RoomCard1" type="Panel" parent="RoomList"]
-unique_name_in_owner = true
-layout_mode = 0
+[node name="ScrollContainer" type="ScrollContainer" parent="RoomList"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
 offset_left = 4.0
 offset_top = 4.0
-offset_right = 296.0
-offset_bottom = 28.0
-focus_mode = 2
-mouse_filter = 0
+offset_right = -4.0
+offset_bottom = -4.0
+horizontal_scroll_mode = 0
 
-[node name="Card1Label" type="Label" parent="RoomList/RoomCard1"]
-layout_mode = 0
-offset_left = 6.0
-offset_top = 4.0
-offset_right = 286.0
-offset_bottom = 20.0
+[node name="ListBox" type="VBoxContainer" parent="RoomList/ScrollContainer"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 4
+
+[node name="EmptyLabel" type="Label" parent="RoomList"]
+unique_name_in_owner = true
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
 theme_type_variation = &"BodySmall"
-text = "Friday night chaos    K7P3MX  3/8  L4"
-
-[node name="RoomCard2" type="Panel" parent="RoomList"]
-unique_name_in_owner = true
-layout_mode = 0
-offset_left = 4.0
-offset_top = 32.0
-offset_right = 296.0
-offset_bottom = 56.0
-focus_mode = 2
-mouse_filter = 0
-
-[node name="Card2Label" type="Label" parent="RoomList/RoomCard2"]
-layout_mode = 0
-offset_left = 6.0
-offset_top = 4.0
-offset_right = 286.0
-offset_bottom = 20.0
-theme_type_variation = &"BodySmall"
-text = "Quick race           T2RB9D  1/8  L1"
-
-[node name="RoomCard3" type="Panel" parent="RoomList"]
-unique_name_in_owner = true
-layout_mode = 0
-offset_left = 4.0
-offset_top = 60.0
-offset_right = 296.0
-offset_bottom = 84.0
-focus_mode = 2
-mouse_filter = 0
-
-[node name="Card3Label" type="Label" parent="RoomList/RoomCard3"]
-layout_mode = 0
-offset_left = 6.0
-offset_top = 4.0
-offset_right = 286.0
-offset_bottom = 20.0
-theme_type_variation = &"BodySmall"
-text = "Tournament practice  M9XK4N  6/8  L7"
-
-[node name="RoomCard4" type="Panel" parent="RoomList"]
-unique_name_in_owner = true
-layout_mode = 0
-offset_left = 4.0
-offset_top = 88.0
-offset_right = 296.0
-offset_bottom = 104.0
-focus_mode = 2
-mouse_filter = 0
-
-[node name="Card4Label" type="Label" parent="RoomList/RoomCard4"]
-layout_mode = 0
-offset_left = 6.0
-offset_top = 2.0
-offset_right = 286.0
-offset_bottom = 14.0
-theme_type_variation = &"BodyTiny"
-text = "(placeholder data — Phase 3)"
+horizontal_alignment = 1
+vertical_alignment = 1
+text = "No public rooms — be the first!"
 
 [node name="CreateRoomButton" type="Button" parent="."]
 unique_name_in_owner = true

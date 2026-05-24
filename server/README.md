@@ -10,7 +10,8 @@ Go backend for the CSSocialGame Godot client. Single binary serving auth, room r
 | --- | --- | --- |
 | 1.1 — Bootstrap | Go module, `/health`, Postgres via docker-compose, schema, middleware | ✅ |
 | 1.2 — Auth | `POST /auth/register|verify|login|refresh|logout`, `GET /me`, JWT, bcrypt, refresh-token rotation, per-IP rate limit | ✅ |
-| 1.3 — WebSocket + Godot integration | `GET /ws?token=<jwt>`, `hello` round-trip, Godot login scene, `NetworkBackend` real impl, duplicate active account sessions rejected | ✅ |
+| 1.3 — WebSocket + Godot integration | `GET /ws?token=<jwt>`, origin-checked `hello` round-trip, Godot login scene, `NetworkBackend` real impl, duplicate active account sessions rejected, active WS shutdown | ✅ |
+| 2 — Private SR rooms | `create_room`, `join_room`, `leave_room`, `set_ready`, `lobby_state`, host promotion | ✅ |
 
 ## Prerequisites
 
@@ -63,6 +64,7 @@ server/
 │   │   └── migrations/
 │   │       └── 001_init.sql        # users + refresh_tokens
 │   ├── httpx/middleware.go         # request id, access log, panic recover
+│   ├── rooms/                      # private SR lobby registry
 │   └── ws/                         # control WebSocket + active-session registry
 ├── docker-compose.yml              # Postgres only; server runs on host for fast iteration
 ├── go.mod
@@ -196,6 +198,12 @@ Codes returned by /auth/*: `bad_request`, `validation_failed` (with `details` ar
 ### Rate limit
 
 5 requests instantly, then ~5/minute sustained per source IP, across all `/auth/*` endpoints combined. Returns 429 with `rate_limited` when exceeded. Bucket lives in process memory — restarts reset the counts (fine at our scale).
+
+`X-Forwarded-For` is ignored unless the direct peer is inside `TRUSTED_PROXY_CIDRS`. Leave that env var empty for local dev; set it only when Caddy or another trusted reverse proxy is in front of the server.
+
+### WebSocket origins
+
+`coder/websocket` origin verification is enabled. Native Godot clients send no Origin header and are allowed; same-host browser clients are allowed. For cross-origin web builds, set `WS_ALLOWED_ORIGINS` to comma-separated host patterns such as `game.example.com,localhost:3000`.
 
 ## Database
 

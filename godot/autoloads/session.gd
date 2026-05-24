@@ -14,10 +14,13 @@ var jwt: String = ""
 var refresh_token: String = ""
 var current_room_id: String = ""
 var current_room_code: String = ""
+var current_room_snapshot: Dictionary = {}
+var match_params: Dictionary = {}   # populated by server match_started; consumed by Match scene
 
 signal logged_in
 signal logged_out
 signal room_changed(new_room_id: String)
+signal lobby_state_changed(snapshot: Dictionary)
 
 func is_authenticated() -> bool:
 	return jwt != ""
@@ -46,7 +49,24 @@ func set_room(room_id: String, room_code: String = "") -> void:
 	current_room_code = room_code
 	room_changed.emit(current_room_id)
 
+func set_lobby_snapshot(snapshot: Dictionary) -> void:
+	current_room_snapshot = snapshot
+	current_room_id = String(snapshot.get("room_id", current_room_id))
+	current_room_code = String(snapshot.get("code", current_room_code))
+	room_changed.emit(current_room_id)
+	lobby_state_changed.emit(current_room_snapshot)
+
+func clear_room() -> void:
+	current_room_id = ""
+	current_room_code = ""
+	current_room_snapshot = {}
+	room_changed.emit(current_room_id)
+	lobby_state_changed.emit(current_room_snapshot)
+
 func clear() -> void:
+	var had_room := not current_room_id.is_empty() or not current_room_code.is_empty()
+	if NetworkBackend.is_control_connected():
+		NetworkBackend.disconnect_from_server()
 	user_id = ""
 	display_name = ""
 	email = ""
@@ -55,4 +75,8 @@ func clear() -> void:
 	refresh_token = ""
 	current_room_id = ""
 	current_room_code = ""
+	current_room_snapshot = {}
+	if had_room:
+		room_changed.emit(current_room_id)
+		lobby_state_changed.emit(current_room_snapshot)
 	logged_out.emit()

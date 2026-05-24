@@ -53,10 +53,14 @@ enum Category { PLATFORM, HAZARD, PICKUP, MECHANISM }
 @export var min_vertical_clearance: int = 0
 ```
 
-### `Environment` — a theme + element bag
+### `LevelEnvironment` — a theme + element bag
+
+> [!warning] Class rename
+> The original spec used `class_name Environment`, which **shadows Godot's built-in `Environment`** (3D rendering settings). At implementation time (Phase 4a.1, 2026-05-24) we renamed the class to `LevelEnvironment`. The wire-protocol field `environment_id` is unchanged — the rename is purely the Godot class symbol.
+
 
 ```gdscript
-class_name Environment extends Resource
+class_name LevelEnvironment extends Resource
 
 @export var id: StringName                  # "ice"
 @export var display_name: String            # "Frostpeak"
@@ -179,7 +183,7 @@ func populate(data: LevelData, parent: Node) -> void:
 
 Strong typing, parse-time validation, IDE autocomplete — no `"method" in instance` Python-style hasattr checks. Element scenes failing to extend `LevelElement` fail loudly at populate-time rather than silently skipping.
 
-## EnvironmentRegistry autoload
+## EnvironmentRegistry autoload (autoload name: `Environments`)
 
 ```gdscript
 extends Node  # autoload as "Environments"

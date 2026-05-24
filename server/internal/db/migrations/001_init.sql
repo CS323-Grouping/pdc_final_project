@@ -21,11 +21,13 @@ CREATE TABLE IF NOT EXISTS users (
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 
--- Case-insensitive email lookup
-CREATE INDEX IF NOT EXISTS users_email_lower_idx ON users (lower(email));
+-- Case-insensitive email uniqueness + lookup. The plain UNIQUE constraints
+-- above catch exact duplicates; these expression indexes are the race-safe
+-- source of truth for case-insensitive identity.
+CREATE UNIQUE INDEX IF NOT EXISTS users_email_lower_unique_idx ON users (lower(email));
 
 -- Case-insensitive display_name lookup (when validating uniqueness on register)
-CREATE INDEX IF NOT EXISTS users_display_name_lower_idx ON users (lower(display_name));
+CREATE UNIQUE INDEX IF NOT EXISTS users_display_name_lower_unique_idx ON users (lower(display_name));
 
 -- ---------------------------------------------------------------------------
 -- refresh_tokens
@@ -49,6 +51,42 @@ CREATE INDEX IF NOT EXISTS refresh_tokens_user_id_idx ON refresh_tokens (user_id
 CREATE INDEX IF NOT EXISTS refresh_tokens_active_idx
     ON refresh_tokens (token_hash)
     WHERE revoked_at IS NULL;
+
+-- ---------------------------------------------------------------------------
+-- rooms
+-- ---------------------------------------------------------------------------
+-- Phase 2 room metadata. Active room membership is held in process memory while
+-- WebSocket clients are connected; these tables keep the shape ready for
+-- restart/reconnect persistence as Phase 7 matures.
+CREATE TABLE IF NOT EXISTS rooms (
+    id text PRIMARY KEY,
+    code text UNIQUE NOT NULL,
+    room_type text NOT NULL,
+    visibility text NOT NULL,
+    name text NOT NULL,
+    host_user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    state text NOT NULL,
+    level integer NOT NULL,
+    environment_id text NOT NULL,
+    capacity integer NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    last_activity timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS rooms_code_idx ON rooms (code);
+CREATE INDEX IF NOT EXISTS rooms_visibility_state_idx ON rooms (visibility, state);
+
+CREATE TABLE IF NOT EXISTS room_players (
+    room_id text NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+    user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    display_name text NOT NULL,
+    ready boolean NOT NULL DEFAULT false,
+    is_host boolean NOT NULL DEFAULT false,
+    joined_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (room_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS room_players_user_id_idx ON room_players (user_id);
 
 -- ---------------------------------------------------------------------------
 -- updated_at trigger

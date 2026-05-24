@@ -1,0 +1,25 @@
+[gd_resource type="Resource" load_steps=6 format=3]
+
+[ext_resource type="Script" path="res://world/level_environment.gd" id="1_env"]
+[ext_resource type="Script" path="res://world/env_element_entry.gd" id="2_entry"]
+[ext_resource type="Resource" path="res://resources/palettes/default.tres" id="3_palette"]
+[ext_resource type="Resource" path="res://resources/elements/regular_platform.tres" id="4_platform"]
+[ext_resource type="Resource" path="res://resources/elements/orb.tres" id="5_orb"]
+
+[sub_resource type="Resource" id="entry_platform"]
+script = ExtResource("2_entry")
+element = ExtResource("4_platform")
+weight_override = -1.0
+
+[sub_resource type="Resource" id="entry_orb"]
+script = ExtResource("2_entry")
+element = ExtResource("5_orb")
+weight_override = -1.0
+
+[resource]
+script = ExtResource("1_env")
+id = &"default"
+display_name = "Default"
+description = "Phase 4a.1 baseline — universal elements only"
+palette = ExtResource("3_palette")
+element_set = [SubResource("entry_platform"), SubResource("entry_orb")]

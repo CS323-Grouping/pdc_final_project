@@ -77,6 +77,8 @@ func _handle_response(result: Array) -> Dictionary:
 	var parsed: Variant = null
 	if not body_str.is_empty():
 		parsed = JSON.parse_string(body_str)
+		if parsed == null:
+			return _synthetic_error("invalid_json", "server returned invalid JSON", status)
 
 	if status >= 200 and status < 300:
 		return {"success": true, "data": parsed, "status": status}

@@ -17,6 +17,8 @@ extends Control
 const REGISTER_PATH := "res://scenes/boot/register.tscn"
 const MAIN_MENU_PATH := "res://scenes/main_menu/main_menu.tscn"
 
+var _busy := false
+
 func _ready() -> void:
 	%SubmitButton.pressed.connect(_on_submit)
 	%RegisterLink.pressed.connect(_on_register_link)
@@ -29,6 +31,8 @@ func _on_text_submitted(_text: String) -> void:
 	_on_submit()
 
 func _on_submit() -> void:
+	if _busy:
+		return
 	var email := (%EmailField.text as String).strip_edges()
 	var password := %PasswordField.text as String
 	if email.is_empty() or password.is_empty():
@@ -57,9 +61,12 @@ func _on_submit() -> void:
 	SceneManager.replace(MAIN_MENU_PATH)
 
 func _on_register_link() -> void:
+	if _busy:
+		return
 	SceneManager.go_to(REGISTER_PATH)
 
 func _set_busy(busy: bool, status: String) -> void:
+	_busy = busy
 	%SubmitButton.disabled = busy
 	%RegisterLink.disabled = busy
 	%StatusLabel.text = status
