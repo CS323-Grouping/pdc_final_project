@@ -32,13 +32,25 @@ func _load_all() -> void:
 				push_warning("EnvironmentRegistry: %s is not a LevelEnvironment" % path)
 		name = dir.get_next()
 
-## Returns all loaded environments (order not guaranteed).
+## Returns all loaded environments, sorted by id for stable UI order.
 func all() -> Array[LevelEnvironment]:
 	var out: Array[LevelEnvironment] = []
 	for v in _by_id.values():
 		var env := v as LevelEnvironment
 		if env != null:
 			out.append(env)
+	out.sort_custom(func(a: LevelEnvironment, b: LevelEnvironment) -> bool: return String(a.id) < String(b.id))
+	return out
+
+## Environments shown in player-facing selectors. `default` remains loadable
+## for compatibility, but Phase 4b presents Sky/Ice as the launch choices.
+func playable() -> Array[LevelEnvironment]:
+	var out: Array[LevelEnvironment] = []
+	for env: LevelEnvironment in all():
+		if env.id != &"default":
+			out.append(env)
+	if out.is_empty():
+		return all()
 	return out
 
 func by_id(id: StringName) -> LevelEnvironment:

@@ -44,8 +44,8 @@ func _on_create_pressed() -> void:
 		"name": name,
 		"visibility": visibility,
 		"level": level,
-		"environment_id": "default",
-		"capacity": 8,
+		"environment_id": _default_environment_id(),
+		"capacity": 5,
 	})
 	if not result.success:
 		_set_busy(false, _error_message(result.error, "Could not create room"))
@@ -61,6 +61,12 @@ func _default_room_name() -> String:
 	if Session.display_name.is_empty():
 		return "Skyward Room"
 	return "%s's room" % Session.display_name
+
+func _default_environment_id() -> String:
+	var env := Environments.by_id(&"sky")
+	if env != null:
+		return "sky"
+	return "default"
 
 func _set_busy(busy: bool, status: String) -> void:
 	_busy = busy

@@ -399,8 +399,12 @@ godot/
 The original Phase 4 lumps "level generation" into one item. Splitting:
 
 - **4a — Universal-only baseline.** `Element`, `Environment`, `LevelData`, `LevelGenerator`, `LevelPopulator`, single `default` environment with `regular_platform` + `orb`. Server ships seed; clients regenerate; players can climb a level. No env selector in lobby yet.
-- **4b — Environment system.** `EnvironmentRegistry` autoload, Sky + Ice env resources, env selector in lobby, env icon in room browser, `set_environment` message.
-- **4c — Stateful + exclusive elements.** `StatefulElement` base + fragile/slippery/icicle elements, synchronizer wiring.
+- **4b — Environment system.** `EnvironmentRegistry` autoload, Sky + Ice env resources, env selector in lobby, env indicator in room browser, `set_environment` message. Current implementation uses placeholder palettes and shared universal elements until environment art/audio/exclusive assets are ready.
+- **4c — Stateful + exclusive elements.** `StatefulElement` base + placeholder fragile/slippery/icicle, spike, moving platform, and spring elements. Generator now places optional hazard/mechanism slots from the environment pool. Full server-authoritative state replication is deferred to the authority pass because the current match transport uses raw WS relay rather than Godot HLM synchronizers.
+
+## Room capacity note
+
+Regular Skyward Race rooms are capped at 5 players. A 10-player room is planned as a separate future mode, not a higher capacity for the regular room type.
 
 Update Phase 4 in `Roadmap.md` to reflect 4a/4b/4c.
 

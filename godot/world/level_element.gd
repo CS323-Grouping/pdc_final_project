@@ -9,5 +9,9 @@ class_name LevelElement extends Node2D
 ## (visual variant, slight jitter, etc.). Default is a no-op so most elements
 ## don't need to implement it.
 
+var element_id: StringName = &""
+var slot_index: int = -1
+var network_id: String = ""
+
 func init_with_seed(_seed: int) -> void:
 	pass

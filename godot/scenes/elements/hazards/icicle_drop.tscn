@@ -1,0 +1,23 @@
+[gd_scene load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://scenes/elements/hazards/icicle_drop.gd" id="1_script"]
+
+[sub_resource type="RectangleShape2D" id="trigger_shape"]
+size = Vector2(34, 72)
+
+[sub_resource type="RectangleShape2D" id="hit_shape"]
+size = Vector2(10, 18)
+
+[node name="IcicleDrop" type="Node2D"]
+script = ExtResource("1_script")
+
+[node name="TriggerArea" type="Area2D" parent="."]
+
+[node name="TriggerShape" type="CollisionShape2D" parent="TriggerArea"]
+position = Vector2(0, 38)
+shape = SubResource("trigger_shape")
+
+[node name="HitArea" type="Area2D" parent="."]
+
+[node name="HitShape" type="CollisionShape2D" parent="HitArea"]
+shape = SubResource("hit_shape")

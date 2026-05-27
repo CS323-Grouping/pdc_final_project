@@ -1,0 +1,14 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scenes/elements/hazards/spike_strip.gd" id="1_script"]
+
+[sub_resource type="RectangleShape2D" id="hit_shape"]
+size = Vector2(46, 12)
+
+[node name="SpikeStrip" type="Node2D"]
+script = ExtResource("1_script")
+
+[node name="HitArea" type="Area2D" parent="."]
+
+[node name="HitShape" type="CollisionShape2D" parent="HitArea"]
+shape = SubResource("hit_shape")

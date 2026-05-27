@@ -1,0 +1,17 @@
+[gd_resource type="Resource" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://world/element.gd" id="1_script"]
+[ext_resource type="PackedScene" path="res://scenes/elements/hazards/spike_strip.tscn" id="2_scene"]
+
+[resource]
+script = ExtResource("1_script")
+id = &"spike_strip"
+display_name = "Spike Strip"
+category = 1
+scene = ExtResource("2_scene")
+base_weight = 1.0
+min_difficulty = 2
+max_difficulty = 10
+tags = [&"hazard"]
+min_horizontal_clearance = 0
+min_vertical_clearance = 18

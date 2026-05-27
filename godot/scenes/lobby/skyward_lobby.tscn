@@ -118,12 +118,62 @@ text = "Public"
 [node name="CountdownRow" type="Label" parent="SettingsPanel"]
 layout_mode = 0
 offset_left = 6.0
-offset_top = 50.0
+offset_top = 96.0
 offset_right = 94.0
-offset_bottom = 70.0
-theme_type_variation = &"H2"
+offset_bottom = 108.0
+theme_type_variation = &"BodyTiny"
 horizontal_alignment = 1
 text = "--"
+
+[node name="EnvironmentLabel" type="Label" parent="SettingsPanel"]
+layout_mode = 0
+offset_left = 6.0
+offset_top = 40.0
+offset_right = 94.0
+offset_bottom = 52.0
+theme_type_variation = &"BodyTiny"
+text = "Environment"
+
+[node name="EnvPrevButton" type="Button" parent="SettingsPanel"]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 6.0
+offset_top = 56.0
+offset_right = 28.0
+offset_bottom = 72.0
+text = "<"
+
+[node name="EnvName" type="Label" parent="SettingsPanel"]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 31.0
+offset_top = 57.0
+offset_right = 69.0
+offset_bottom = 71.0
+theme_type_variation = &"BodySmall"
+horizontal_alignment = 1
+text = "Sky"
+
+[node name="EnvNextButton" type="Button" parent="SettingsPanel"]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 72.0
+offset_top = 56.0
+offset_right = 94.0
+offset_bottom = 72.0
+text = ">"
+
+[node name="EnvDescription" type="Label" parent="SettingsPanel"]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 6.0
+offset_top = 76.0
+offset_right = 94.0
+offset_bottom = 94.0
+theme_type_variation = &"BodyTiny"
+horizontal_alignment = 1
+autowrap_mode = 3
+text = "Placeholder sky"
 
 [node name="ReadyButton" type="Button" parent="."]
 unique_name_in_owner = true

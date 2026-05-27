@@ -143,7 +143,7 @@ Replaces the pygame chunked-avatar-transfer protocol with one round trip per ava
 | 2 | Create/join SR private room (no gameplay) | Two clients can see each other in `skyward_lobby.tscn` |
 | 3 | Public room browser | Third client can find and join a public room via list |
 | 4 | Match start + level gen + free movement | Players can move on the generated level, see each other |
-| 5 | Full gameplay parity (orbs, elimination, results) | A 4-player match plays start to finish with results |
+| 5 | Full gameplay parity (orbs, elimination, results) | A regular 5-player match plays start to finish with results + rematch |
 | 6 | Avatar editor + persistence | Avatars round-trip through DB and show in lobby/match |
 | 7 | Reconnect handling + spectator | Client can drop and rejoin mid-match |
 | 8 | Polish: settings, metrics overlay, sound | Feature parity declared |

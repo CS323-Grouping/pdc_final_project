@@ -35,7 +35,7 @@ func TestRegistryCreateJoinReadyAndHostPromotion(t *testing.T) {
 		"name":       "Test Room",
 		"visibility": VisibilityPrivate,
 		"level":      4,
-		"capacity":   8,
+		"capacity":   5,
 	}))
 
 	created := findMessage(t, hostSender.messages, "room_created")
@@ -58,6 +58,12 @@ func TestRegistryCreateJoinReadyAndHostPromotion(t *testing.T) {
 	if len(hostSnapshot.Players) != 2 {
 		t.Fatalf("host lobby players = %d, want 2", len(hostSnapshot.Players))
 	}
+	if hostSnapshot.EnvironmentID != DefaultEnvironment {
+		t.Fatalf("environment = %q, want %q", hostSnapshot.EnvironmentID, DefaultEnvironment)
+	}
+	if hostSnapshot.Capacity != DefaultCapacity {
+		t.Fatalf("capacity = %d, want %d", hostSnapshot.Capacity, DefaultCapacity)
+	}
 
 	reg.Handle(context.Background(), joiner, "set_ready", "req-3", mustJSON(t, map[string]bool{"ready": true}))
 	ready := findMessage(t, joinerSender.messages, "ready_ok")
@@ -78,6 +84,251 @@ func TestRegistryCreateJoinReadyAndHostPromotion(t *testing.T) {
 	promotedSnapshot := lastMessage(t, joinerSender.messages, "lobby_state").D.(Snapshot)
 	if promotedSnapshot.HostUserID != "join_user" {
 		t.Fatalf("snapshot host = %q, want join_user", promotedSnapshot.HostUserID)
+	}
+}
+
+func TestRegistryHostCanSetEnvironmentAndResetReady(t *testing.T) {
+	reg := NewRegistry()
+	hostSender := &fakeSender{}
+	joinerSender := &fakeSender{}
+	host := &Client{UserID: "host_user", DisplayName: "host", Sender: hostSender}
+	joiner := &Client{UserID: "join_user", DisplayName: "joiner", Sender: joinerSender}
+	reg.RegisterClient(host)
+	reg.RegisterClient(joiner)
+
+	reg.Handle(context.Background(), host, "create_room", "create", mustJSON(t, map[string]any{
+		"type":       TypeSkywardLobby,
+		"name":       "Test Room",
+		"visibility": VisibilityPublic,
+		"level":      4,
+		"capacity":   5,
+	}))
+	code := findMessage(t, hostSender.messages, "room_created").D.(map[string]any)["code"].(string)
+	reg.Handle(context.Background(), joiner, "join_room", "join", mustJSON(t, map[string]string{"code": code}))
+	reg.Handle(context.Background(), joiner, "set_ready", "ready", mustJSON(t, map[string]bool{"ready": true}))
+
+	hostSender.messages = nil
+	joinerSender.messages = nil
+	reg.Handle(context.Background(), host, "set_environment", "env", mustJSON(t, map[string]string{"environment_id": "ice"}))
+
+	ok := findMessage(t, hostSender.messages, "environment_ok")
+	payload := ok.D.(map[string]string)
+	if payload["environment_id"] != "ice" {
+		t.Fatalf("environment_ok = %#v, want ice", payload)
+	}
+	snapshot := lastMessage(t, joinerSender.messages, "lobby_state").D.(Snapshot)
+	if snapshot.EnvironmentID != "ice" {
+		t.Fatalf("snapshot environment = %q, want ice", snapshot.EnvironmentID)
+	}
+	if len(snapshot.ReadySet) != 0 {
+		t.Fatalf("ready_set = %#v, want empty after environment change", snapshot.ReadySet)
+	}
+}
+
+func TestRegistryRegularRoomCapsCapacityAtFive(t *testing.T) {
+	reg := NewRegistry()
+	hostSender := &fakeSender{}
+	host := &Client{UserID: "host_user", DisplayName: "host", Sender: hostSender}
+	reg.RegisterClient(host)
+
+	reg.Handle(context.Background(), host, "create_room", "create", mustJSON(t, map[string]any{
+		"type":       TypeSkywardLobby,
+		"name":       "Oversized Room",
+		"visibility": VisibilityPrivate,
+		"level":      1,
+		"capacity":   MaxLargeRoomCapacity,
+	}))
+
+	created := findMessage(t, hostSender.messages, "room_created")
+	snapshot := created.D.(map[string]any)["snapshot"].(Snapshot)
+	if snapshot.Capacity != DefaultCapacity {
+		t.Fatalf("capacity = %d, want regular room cap %d", snapshot.Capacity, DefaultCapacity)
+	}
+}
+
+func TestRegistryRejectsInvalidEnvironmentChanges(t *testing.T) {
+	reg := NewRegistry()
+	hostSender := &fakeSender{}
+	joinerSender := &fakeSender{}
+	host := &Client{UserID: "host_user", DisplayName: "host", Sender: hostSender}
+	joiner := &Client{UserID: "join_user", DisplayName: "joiner", Sender: joinerSender}
+	reg.RegisterClient(host)
+	reg.RegisterClient(joiner)
+
+	reg.Handle(context.Background(), host, "create_room", "create", mustJSON(t, map[string]any{
+		"type":       TypeSkywardLobby,
+		"name":       "Test Room",
+		"visibility": VisibilityPrivate,
+		"level":      4,
+		"capacity":   5,
+	}))
+	code := findMessage(t, hostSender.messages, "room_created").D.(map[string]any)["code"].(string)
+	reg.Handle(context.Background(), joiner, "join_room", "join", mustJSON(t, map[string]string{"code": code}))
+
+	reg.Handle(context.Background(), joiner, "set_environment", "non-host", mustJSON(t, map[string]string{"environment_id": "ice"}))
+	nonHostErr := lastMessage(t, joinerSender.messages, "err").D.(map[string]string)
+	if nonHostErr["code"] != "forbidden" {
+		t.Fatalf("non-host err = %#v, want forbidden", nonHostErr)
+	}
+
+	reg.Handle(context.Background(), host, "set_environment", "unknown", mustJSON(t, map[string]string{"environment_id": "lava"}))
+	unknownErr := lastMessage(t, hostSender.messages, "err").D.(map[string]string)
+	if unknownErr["code"] != "unknown_environment" {
+		t.Fatalf("unknown err = %#v, want unknown_environment", unknownErr)
+	}
+}
+
+func TestRegistryMatchStateRelayOrbAndCleanup(t *testing.T) {
+	reg := NewRegistry()
+	hostSender := &fakeSender{}
+	joinerSender := &fakeSender{}
+	host := &Client{UserID: "host_user", DisplayName: "host", Sender: hostSender}
+	joiner := &Client{UserID: "join_user", DisplayName: "joiner", Sender: joinerSender}
+	reg.RegisterClient(host)
+	reg.RegisterClient(joiner)
+
+	reg.Handle(context.Background(), host, "create_room", "create", mustJSON(t, map[string]any{
+		"type":       TypeSkywardLobby,
+		"name":       "Test Room",
+		"visibility": VisibilityPrivate,
+		"level":      4,
+		"capacity":   5,
+	}))
+	code := findMessage(t, hostSender.messages, "room_created").D.(map[string]any)["code"].(string)
+	reg.Handle(context.Background(), joiner, "join_room", "join", mustJSON(t, map[string]string{"code": code}))
+	reg.Handle(context.Background(), joiner, "set_ready", "ready", mustJSON(t, map[string]bool{"ready": true}))
+	reg.Handle(context.Background(), host, "start_match", "start", mustJSON(t, map[string]any{}))
+
+	hostSender.messages = nil
+	joinerSender.messages = nil
+	reg.Handle(context.Background(), joiner, "player_state", "", mustJSON(t, map[string]any{
+		"tick":     7,
+		"x":        120.5,
+		"y":        340.0,
+		"vx":       20.0,
+		"vy":       -5.0,
+		"grounded": false,
+		"facing":   -1,
+	}))
+
+	relay := findMessage(t, hostSender.messages, "peer_state_update")
+	state := relay.D.(MatchPlayerState)
+	if state.UserID != "join_user" || state.Tick != 7 || state.Facing != -1 {
+		t.Fatalf("relay state = %#v, want join_user tick 7 facing -1", state)
+	}
+	if optionalMessage(joinerSender.messages, "peer_state_update") != nil {
+		t.Fatalf("sender received its own peer_state_update: %#v", joinerSender.messages)
+	}
+
+	reg.Handle(context.Background(), joiner, "orb_collected", "", mustJSON(t, map[string]string{"orb_id": "orb:2"}))
+	collected := findMessage(t, hostSender.messages, "orb_collected")
+	orbPayload := collected.D.(OrbCollectedPayload)
+	if orbPayload.OrbID != "orb:2" || orbPayload.UserID != "join_user" {
+		t.Fatalf("orb payload = %#v, want orb:2 by join_user", orbPayload)
+	}
+
+	reg.UnregisterClient(joiner.UserID)
+	left := findMessage(t, hostSender.messages, "peer_left")
+	leftPayload := left.D.(map[string]string)
+	if leftPayload["user_id"] != "join_user" {
+		t.Fatalf("peer_left = %#v, want join_user", leftPayload)
+	}
+}
+
+func TestRegistryMatchFinishBroadcastsResults(t *testing.T) {
+	reg := NewRegistry()
+	hostSender := &fakeSender{}
+	host := &Client{UserID: "host_user", DisplayName: "host", Sender: hostSender}
+	reg.RegisterClient(host)
+
+	reg.Handle(context.Background(), host, "create_room", "create", mustJSON(t, map[string]any{
+		"type":       TypeSkywardLobby,
+		"name":       "Solo Test",
+		"visibility": VisibilityPrivate,
+		"level":      1,
+		"capacity":   5,
+	}))
+	reg.Handle(context.Background(), host, "start_match", "start", mustJSON(t, map[string]any{}))
+
+	hostSender.messages = nil
+	reg.Handle(context.Background(), host, "player_state", "", mustJSON(t, map[string]any{
+		"tick":     2,
+		"x":        160.0,
+		"y":        10.0,
+		"vx":       0.0,
+		"vy":       0.0,
+		"grounded": true,
+		"facing":   1,
+	}))
+
+	results := findMessage(t, hostSender.messages, "match_results")
+	payload := results.D.(MatchResultsPayload)
+	if !payload.Final {
+		t.Fatalf("final = false, want true for solo finish")
+	}
+	if len(payload.Placements) != 1 {
+		t.Fatalf("placements = %#v, want one winner", payload.Placements)
+	}
+	winner := payload.Placements[0]
+	if winner.UserID != "host_user" || winner.Place != 1 || winner.Result != "finished" {
+		t.Fatalf("winner = %#v, want host_user place 1 finished", winner)
+	}
+}
+
+func TestRegistryMatchResultsWaitForAllPlayersAndRematch(t *testing.T) {
+	reg := NewRegistry()
+	hostSender := &fakeSender{}
+	joinerSender := &fakeSender{}
+	host := &Client{UserID: "host_user", DisplayName: "host", Sender: hostSender}
+	joiner := &Client{UserID: "join_user", DisplayName: "joiner", Sender: joinerSender}
+	reg.RegisterClient(host)
+	reg.RegisterClient(joiner)
+
+	reg.Handle(context.Background(), host, "create_room", "create", mustJSON(t, map[string]any{
+		"type":       TypeSkywardLobby,
+		"name":       "Two Player",
+		"visibility": VisibilityPrivate,
+		"level":      1,
+		"capacity":   5,
+	}))
+	code := findMessage(t, hostSender.messages, "room_created").D.(map[string]any)["code"].(string)
+	reg.Handle(context.Background(), joiner, "join_room", "join", mustJSON(t, map[string]string{"code": code}))
+	reg.Handle(context.Background(), joiner, "set_ready", "ready", mustJSON(t, map[string]bool{"ready": true}))
+	reg.Handle(context.Background(), host, "start_match", "start", mustJSON(t, map[string]any{}))
+
+	hostSender.messages = nil
+	joinerSender.messages = nil
+	reg.Handle(context.Background(), host, "player_state", "", mustJSON(t, map[string]any{
+		"tick":     1,
+		"x":        160.0,
+		"y":        10.0,
+		"vx":       0.0,
+		"vy":       0.0,
+		"grounded": true,
+		"facing":   1,
+	}))
+	partial := findMessage(t, joinerSender.messages, "match_results").D.(MatchResultsPayload)
+	if partial.Final {
+		t.Fatalf("partial final = true, want false until every player is placed")
+	}
+	if len(partial.Placements) != 1 || partial.Placements[0].UserID != "host_user" {
+		t.Fatalf("partial placements = %#v, want host only", partial.Placements)
+	}
+
+	reg.Handle(context.Background(), joiner, "player_eliminated", "elim", mustJSON(t, map[string]string{"reason": "fell"}))
+	final := lastMessage(t, hostSender.messages, "match_results").D.(MatchResultsPayload)
+	if !final.Final {
+		t.Fatalf("final = false, want true after all players placed")
+	}
+	if len(final.Placements) != 2 || final.Placements[1].Result != "eliminated" {
+		t.Fatalf("final placements = %#v, want joiner eliminated second", final.Placements)
+	}
+
+	reg.Handle(context.Background(), host, "request_rematch", "rematch", mustJSON(t, map[string]any{}))
+	rematch := findMessage(t, hostSender.messages, "rematch_ok")
+	snapshot := rematch.D.(map[string]any)["snapshot"].(Snapshot)
+	if snapshot.State != StateWaiting || len(snapshot.ReadySet) != 0 {
+		t.Fatalf("rematch snapshot = %#v, want waiting with no ready players", snapshot)
 	}
 }
 
@@ -110,4 +361,13 @@ func lastMessage(t *testing.T, messages []sentEnvelope, msgType string) sentEnve
 	}
 	t.Fatalf("message %q not found in %#v", msgType, messages)
 	return sentEnvelope{}
+}
+
+func optionalMessage(messages []sentEnvelope, msgType string) *sentEnvelope {
+	for _, msg := range messages {
+		if msg.T == msgType {
+			return &msg
+		}
+	}
+	return nil
 }

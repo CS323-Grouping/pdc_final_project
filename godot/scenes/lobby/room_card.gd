@@ -23,9 +23,9 @@ func set_room(data: Dictionary) -> void:
 	var raw_name := String(data.get("name", ""))
 	var display_name := raw_name if raw_name.length() <= 18 else raw_name.substr(0, 17) + "…"
 	var players := int(data.get("players", 0))
-	var capacity := int(data.get("capacity", 8))
+	var capacity := int(data.get("capacity", 5))
 	var level := int(data.get("level", 1))
-	var env := String(data.get("environment_id", "default"))
+	var env := _environment_label(String(data.get("environment_id", "default")))
 	%CardLabel.text = "%s    %s    %d/%d  L%d  %s" % [
 		display_name,
 		room_code,
@@ -34,6 +34,12 @@ func set_room(data: Dictionary) -> void:
 		level,
 		env,
 	]
+
+func _environment_label(environment_id: String) -> String:
+	var env := Environments.by_id(StringName(environment_id))
+	if env != null:
+		return env.display_name
+	return environment_id.capitalize()
 
 func _on_gui_input(event: InputEvent) -> void:
 	var activate := false

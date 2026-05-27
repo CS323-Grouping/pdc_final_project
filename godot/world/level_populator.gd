@@ -23,7 +23,8 @@ func populate(data: LevelData, parent: Node) -> int:
 			element_lookup[entry.element.id] = entry.element
 
 	var added := 0
-	for slot in data.slots:
+	for slot_index in data.slots.size():
+		var slot: SlotInfo = data.slots[slot_index]
 		var element := element_lookup.get(slot.chosen_element_id) as Element
 		if element == null or element.scene == null:
 			push_warning("LevelPopulator: missing element/scene for %s" % slot.chosen_element_id)
@@ -32,6 +33,9 @@ func populate(data: LevelData, parent: Node) -> int:
 		if instance == null:
 			push_error("LevelPopulator: element %s scene root does not extend LevelElement" % slot.chosen_element_id)
 			continue
+		instance.element_id = slot.chosen_element_id
+		instance.slot_index = slot_index
+		instance.network_id = "%s:%d" % [String(slot.chosen_element_id), slot_index]
 		instance.position = Vector2(slot.position.x, slot.position.y)
 		instance.init_with_seed(slot.instance_seed)
 		parent.add_child(instance)

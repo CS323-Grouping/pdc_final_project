@@ -1,9 +1,10 @@
 # Networking — Message Contract
 
-The wire shape between the Godot client and the Go backend. Two layers:
+The wire shape between the Godot client and the Go backend. Current layers:
 
 1. **Control messages** — explicit request/response or push, JSON over WS.
-2. **HLM traffic** — Godot's `MultiplayerSynchronizer` + RPCs, framed by the engine.
+2. **MVP gameplay relay** — client-authoritative Skyward Race state, also JSON over the control WS.
+3. **Deferred HLM traffic** — Godot's `MultiplayerSynchronizer` + RPCs, framed by the engine, kept as a possible future route.
 
 > [!note] Why two layers
 > Godot HLM is fantastic for "this Node's properties are replicated" and "call this method on the authority." It's awkward for auth handshakes, room browsing, and account management. So control messages ride alongside HLM on the same WS, distinguished by frame type.
@@ -25,7 +26,7 @@ Godot's `NetworkBackend.send_control_request(t, d)` generates the request id,
 waits for the matching reply, and normalizes `err` replies into
 `{success=false, error={code,message}}`.
 
-Godot HLM frames are passed through transparently by `WebSocketMultiplayerPeer` — they don't use this envelope.
+Phase 4a.4 does not use Godot HLM. Gameplay relay messages use this same envelope; future HLM frames would be passed through by `WebSocketMultiplayerPeer` and would not use this envelope.
 
 ## Control message catalog
 
@@ -50,7 +51,7 @@ S→C  hello { server_version, your_user_id, your_display_name }
 
 | Type | Direction | Payload | Notes |
 | --- | --- | --- | --- |
-| `create_room` | C→S | `{type, name, visibility, level, environment_id, capacity}` | SR only; `environment_id` see [[Levels & Environments]] |
+| `create_room` | C→S | `{type, name, visibility, level, environment_id, capacity}` | SR only; `environment_id` see [[Levels & Environments]]. Regular rooms cap at 5 players; planned 10-player rooms are a separate future mode. |
 | `room_created` | S→C | `{code, room_id, snapshot}` | reply; snapshot includes `environment_id` |
 | `join_room` | C→S | `{code}` | |
 | `join_ok` | S→C | `{room_id, your_player_id, snapshot}` | reply |
@@ -83,13 +84,18 @@ S→C  hello { server_version, your_user_id, your_display_name }
 | `start_match` | C→S | `{}` | host only; requires all ready |
 | `lobby_state` | S→C (push) | `{room_id, code, players, ready_set, host_user_id, level, environment_id, state, capacity}` |
 
-### Match (SR) — control only; gameplay sync uses HLM
+### Match (SR) — control + MVP gameplay relay
 
 | Type | Direction | Payload |
 | --- | --- | --- |
 | `match_started` | S→C | `{level, environment_id, seed, start_at_server_ts, your_player_id}` | clients run `LevelGenerator.generate(env, level, seed)` to reproduce geometry — see [[Levels & Environments]] |
-| `match_results` | S→C | `{placements: [...]}` |
-| `request_rematch` | C→S | `{}` |
+| `player_state` | C→S | `{tick, x, y, vx, vy, grounded, facing}` | sent by the local Match scene at ~20 Hz while the room is `in_match` |
+| `peer_state_update` | S→C | `{user_id, display_name, tick, x, y, vx, vy, grounded, facing, server_ts}` | fanout to other players only; clients interpolate remote `MatchPlayer`s |
+| `peer_left` | S→C | `{user_id, display_name}` | removes remote player on disconnect / leave |
+| `orb_collected` | C→S, S→C | C→S `{orb_id}`; S→C `{orb_id, user_id, display_name, server_ts}` | server de-dupes by `orb_id` and broadcasts collection |
+| `player_eliminated` | C→S | `{reason}` | MVP client-reported elimination; server records placement |
+| `match_results` | S→C | `{placements: [...], final}` | partial placement updates while match continues; `final=true` transitions clients to results |
+| `request_rematch` | C→S | `{}` | host only; valid from results; returns `rematch_ok {snapshot}` and broadcasts `lobby_state` |
 
 ### Avatar
 
@@ -104,7 +110,7 @@ S→C  hello { server_version, your_user_id, your_display_name }
 S→C  err { code, message, ref_id }    // ref_id matches the request id if any
 ```
 
-## HLM contract (gameplay)
+## Deferred HLM contract (gameplay)
 
 ### Skyward Race match scene
 

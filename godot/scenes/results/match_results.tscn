@@ -1,0 +1,135 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scenes/results/match_results.gd" id="1_script"]
+[ext_resource type="Theme" path="res://themes/placeholder_theme.tres" id="2_theme"]
+
+[node name="MatchResults" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+theme = ExtResource("2_theme")
+script = ExtResource("1_script")
+
+[node name="Background" type="ColorRect" parent="."]
+layout_mode = 0
+offset_right = 320.0
+offset_bottom = 180.0
+color = Color(0.06, 0.08, 0.12, 1)
+
+[node name="TitleLabel" type="Label" parent="."]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 20.0
+offset_top = 12.0
+offset_right = 300.0
+offset_bottom = 28.0
+theme_type_variation = &"Title"
+horizontal_alignment = 1
+text = "MATCH RESULTS"
+
+[node name="SubtitleLabel" type="Label" parent="."]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 20.0
+offset_top = 31.0
+offset_right = 300.0
+offset_bottom = 43.0
+theme_type_variation = &"BodyTiny"
+horizontal_alignment = 1
+text = "Room ------"
+
+[node name="ResultsPanel" type="Panel" parent="."]
+layout_mode = 0
+offset_left = 55.0
+offset_top = 50.0
+offset_right = 265.0
+offset_bottom = 122.0
+
+[node name="Row1" type="Label" parent="ResultsPanel"]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 8.0
+offset_top = 6.0
+offset_right = 202.0
+offset_bottom = 18.0
+theme_type_variation = &"BodySmall"
+text = "1. --"
+
+[node name="Row2" type="Label" parent="ResultsPanel"]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 8.0
+offset_top = 19.0
+offset_right = 202.0
+offset_bottom = 31.0
+theme_type_variation = &"BodySmall"
+text = "2. --"
+
+[node name="Row3" type="Label" parent="ResultsPanel"]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 8.0
+offset_top = 32.0
+offset_right = 202.0
+offset_bottom = 44.0
+theme_type_variation = &"BodySmall"
+text = "3. --"
+
+[node name="Row4" type="Label" parent="ResultsPanel"]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 8.0
+offset_top = 45.0
+offset_right = 202.0
+offset_bottom = 57.0
+theme_type_variation = &"BodySmall"
+text = "4. --"
+
+[node name="Row5" type="Label" parent="ResultsPanel"]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 8.0
+offset_top = 58.0
+offset_right = 202.0
+offset_bottom = 70.0
+theme_type_variation = &"BodySmall"
+text = "5. --"
+
+[node name="StatusLabel" type="Label" parent="."]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 20.0
+offset_top = 128.0
+offset_right = 300.0
+offset_bottom = 140.0
+theme_type_variation = &"BodyTiny"
+horizontal_alignment = 1
+text = "Waiting for host"
+
+[node name="RematchButton" type="Button" parent="."]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 20.0
+offset_top = 148.0
+offset_right = 108.0
+offset_bottom = 164.0
+text = "REMATCH"
+
+[node name="LobbyButton" type="Button" parent="."]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 116.0
+offset_top = 148.0
+offset_right = 204.0
+offset_bottom = 164.0
+text = "LOBBY"
+
+[node name="RoomsButton" type="Button" parent="."]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 212.0
+offset_top = 148.0
+offset_right = 300.0
+offset_bottom = 164.0
+text = "ROOMS"

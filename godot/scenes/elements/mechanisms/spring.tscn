@@ -1,0 +1,15 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scenes/elements/mechanisms/spring.gd" id="1_script"]
+
+[sub_resource type="RectangleShape2D" id="boost_shape"]
+size = Vector2(24, 18)
+
+[node name="Spring" type="Node2D"]
+script = ExtResource("1_script")
+
+[node name="BoostArea" type="Area2D" parent="."]
+
+[node name="BoostShape" type="CollisionShape2D" parent="BoostArea"]
+position = Vector2(0, -5)
+shape = SubResource("boost_shape")

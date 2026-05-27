@@ -24,11 +24,15 @@ const (
 
 	StateWaiting = "waiting"
 	StateInMatch = "in_match"
+	StateResults = "results"
 
-	DefaultCapacity    = 8
-	MaxCapacity        = 8
-	DefaultLevel       = 1
-	DefaultEnvironment = "default"
+	DefaultCapacity      = 5
+	MaxCapacity          = 5
+	MaxLargeRoomCapacity = 10
+	DefaultLevel         = 1
+	DefaultEnvironment   = "sky"
+
+	MatchFinishY = 24.0
 )
 
 const codeAlphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
@@ -39,6 +43,12 @@ var (
 	ErrFull       = errors.New("full")
 	ErrForbidden  = errors.New("forbidden")
 )
+
+var knownEnvironmentIDs = map[string]struct{}{
+	"default": {},
+	"sky":     {},
+	"ice":     {},
+}
 
 type Sender interface {
 	SendEnvelope(ctx context.Context, msgType, id string, payload any) error
@@ -60,20 +70,24 @@ type Registry struct {
 }
 
 type Room struct {
-	ID            string
-	Code          string
-	Type          string
-	Visibility    string
-	Name          string
-	HostUserID    string
-	Players       map[string]*Player
-	JoinOrder     []string
-	State         string
-	Level         int
-	EnvironmentID string
-	Capacity      int
-	CreatedAt     time.Time
-	LastActivity  time.Time
+	ID             string
+	Code           string
+	Type           string
+	Visibility     string
+	Name           string
+	HostUserID     string
+	Players        map[string]*Player
+	JoinOrder      []string
+	State          string
+	Level          int
+	EnvironmentID  string
+	Capacity       int
+	CreatedAt      time.Time
+	LastActivity   time.Time
+	MatchSeed      int64
+	MatchPositions map[string]MatchPlayerState
+	CollectedOrbs  map[string]string
+	Placements     []MatchPlacement
 }
 
 type Player struct {
@@ -114,6 +128,61 @@ type JoinRoomRequest struct {
 
 type SetReadyRequest struct {
 	Ready bool `json:"ready"`
+}
+
+type SetEnvironmentRequest struct {
+	EnvironmentID string `json:"environment_id"`
+}
+
+type PlayerStateRequest struct {
+	Tick     int64   `json:"tick"`
+	X        float64 `json:"x"`
+	Y        float64 `json:"y"`
+	VX       float64 `json:"vx"`
+	VY       float64 `json:"vy"`
+	Grounded bool    `json:"grounded"`
+	Facing   int     `json:"facing"`
+}
+
+type MatchPlayerState struct {
+	UserID      string  `json:"user_id"`
+	DisplayName string  `json:"display_name"`
+	Tick        int64   `json:"tick"`
+	X           float64 `json:"x"`
+	Y           float64 `json:"y"`
+	VX          float64 `json:"vx"`
+	VY          float64 `json:"vy"`
+	Grounded    bool    `json:"grounded"`
+	Facing      int     `json:"facing"`
+	ServerTS    int64   `json:"server_ts"`
+}
+
+type OrbCollectedRequest struct {
+	OrbID string `json:"orb_id"`
+}
+
+type PlayerEliminatedRequest struct {
+	Reason string `json:"reason"`
+}
+
+type OrbCollectedPayload struct {
+	OrbID       string `json:"orb_id"`
+	UserID      string `json:"user_id"`
+	DisplayName string `json:"display_name"`
+	ServerTS    int64  `json:"server_ts"`
+}
+
+type MatchPlacement struct {
+	UserID             string `json:"user_id"`
+	DisplayName        string `json:"display_name"`
+	Place              int    `json:"place"`
+	Result             string `json:"result"`
+	FinishedAtServerTS int64  `json:"finished_at_server_ts"`
+}
+
+type MatchResultsPayload struct {
+	Placements []MatchPlacement `json:"placements"`
+	Final      bool             `json:"final"`
 }
 
 // BrowserEntry is the per-room shape pushed in room_list_update. Stays small
@@ -171,8 +240,18 @@ func (r *Registry) Handle(ctx context.Context, client *Client, msgType, requestI
 		sends = r.handleLeaveLocked(client, requestID)
 	case "set_ready":
 		sends = r.handleSetReadyLocked(client, requestID, raw)
+	case "set_environment":
+		sends = r.handleSetEnvironmentLocked(client, requestID, raw)
 	case "start_match":
 		sends = r.handleStartMatchLocked(client, requestID)
+	case "player_state":
+		sends = r.handlePlayerStateLocked(client, requestID, raw)
+	case "orb_collected":
+		sends = r.handleOrbCollectedLocked(client, requestID, raw)
+	case "player_eliminated":
+		sends = r.handlePlayerEliminatedLocked(client, requestID, raw)
+	case "request_rematch":
+		sends = r.handleRequestRematchLocked(client, requestID)
 	case "subscribe_room_list":
 		sends = r.handleSubscribeRoomListLocked(client, requestID)
 	case "unsubscribe_room_list":
@@ -196,6 +275,9 @@ func (r *Registry) handleCreateLocked(client *Client, requestID string, raw json
 	}
 	if req.Visibility != VisibilityPrivate && req.Visibility != VisibilityPublic {
 		return []sendOp{reply(client, "err", requestID, errorPayload("bad_request", "visibility must be private or public"))}
+	}
+	if !isKnownEnvironmentID(req.EnvironmentID) {
+		return []sendOp{reply(client, "err", requestID, errorPayload("unknown_environment", "environment is not available"))}
 	}
 
 	sends := r.leaveLocked(client.UserID)
@@ -308,6 +390,10 @@ func (r *Registry) handleStartMatchLocked(client *Client, requestID string) []se
 	room.State = StateInMatch
 	room.LastActivity = time.Now().UTC()
 	seed := generateMatchSeed()
+	room.MatchSeed = seed
+	room.MatchPositions = make(map[string]MatchPlayerState, len(room.Players))
+	room.CollectedOrbs = make(map[string]string)
+	room.Placements = nil
 	startAt := time.Now().UnixMilli() + 1500 // 1.5s countdown until match logic begins
 
 	sends := []sendOp{}
@@ -336,6 +422,168 @@ func (r *Registry) handleStartMatchLocked(client *Client, requestID string) []se
 	// Browser entries care about state — re-broadcast so public rooms move
 	// from "waiting" → "in_match" in subscribers' views.
 	sends = append(sends, r.broadcastRoomListUpdateLocked()...)
+	return sends
+}
+
+func (r *Registry) handlePlayerStateLocked(client *Client, requestID string, raw json.RawMessage) []sendOp {
+	var req PlayerStateRequest
+	if err := decodePayload(raw, &req); err != nil {
+		return []sendOp{reply(client, "err", requestID, errorPayload("bad_request", err.Error()))}
+	}
+	room := r.rooms[r.userRoom[client.UserID]]
+	if room == nil || room.Players[client.UserID] == nil {
+		return []sendOp{reply(client, "err", requestID, errorPayload("not_in_room", "user is not in a room"))}
+	}
+	if room.State != StateInMatch {
+		return []sendOp{reply(client, "err", requestID, errorPayload("not_in_match", "room is not in an active match"))}
+	}
+
+	now := time.Now().UTC()
+	player := room.Players[client.UserID]
+	state := MatchPlayerState{
+		UserID:      client.UserID,
+		DisplayName: player.DisplayName,
+		Tick:        req.Tick,
+		X:           req.X,
+		Y:           req.Y,
+		VX:          req.VX,
+		VY:          req.VY,
+		Grounded:    req.Grounded,
+		Facing:      normalizeFacing(req.Facing),
+		ServerTS:    now.UnixMilli(),
+	}
+	if room.MatchPositions == nil {
+		room.MatchPositions = make(map[string]MatchPlayerState, len(room.Players))
+	}
+	room.MatchPositions[client.UserID] = state
+	room.LastActivity = now
+
+	sends := r.broadcastLockedExcept(room, "peer_state_update", "", state, client.UserID)
+	if state.Y <= MatchFinishY {
+		sends = append(sends, r.recordPlacementLocked(room, player, "finished", now)...)
+	}
+	return sends
+}
+
+func (r *Registry) handleOrbCollectedLocked(client *Client, requestID string, raw json.RawMessage) []sendOp {
+	var req OrbCollectedRequest
+	if err := decodePayload(raw, &req); err != nil {
+		return []sendOp{reply(client, "err", requestID, errorPayload("bad_request", err.Error()))}
+	}
+	req.OrbID = strings.TrimSpace(req.OrbID)
+	if req.OrbID == "" || len(req.OrbID) > 80 {
+		return []sendOp{reply(client, "err", requestID, errorPayload("bad_request", "orb_id is required"))}
+	}
+	room := r.rooms[r.userRoom[client.UserID]]
+	if room == nil || room.Players[client.UserID] == nil {
+		return []sendOp{reply(client, "err", requestID, errorPayload("not_in_room", "user is not in a room"))}
+	}
+	if room.State != StateInMatch {
+		return []sendOp{reply(client, "err", requestID, errorPayload("not_in_match", "room is not in an active match"))}
+	}
+	if room.CollectedOrbs == nil {
+		room.CollectedOrbs = make(map[string]string)
+	}
+	if collectorID := room.CollectedOrbs[req.OrbID]; collectorID != "" {
+		if requestID != "" {
+			return []sendOp{reply(client, "orb_collect_ok", requestID, map[string]string{"orb_id": req.OrbID})}
+		}
+		return nil
+	}
+
+	now := time.Now().UTC()
+	player := room.Players[client.UserID]
+	room.CollectedOrbs[req.OrbID] = client.UserID
+	room.LastActivity = now
+
+	payload := OrbCollectedPayload{
+		OrbID:       req.OrbID,
+		UserID:      client.UserID,
+		DisplayName: player.DisplayName,
+		ServerTS:    now.UnixMilli(),
+	}
+	sends := r.broadcastLocked(room, "orb_collected", "", payload)
+	if requestID != "" {
+		sends = append(sends, reply(client, "orb_collect_ok", requestID, map[string]string{"orb_id": req.OrbID}))
+	}
+	return sends
+}
+
+func (r *Registry) handlePlayerEliminatedLocked(client *Client, requestID string, raw json.RawMessage) []sendOp {
+	var req PlayerEliminatedRequest
+	if err := decodePayload(raw, &req); err != nil {
+		return []sendOp{reply(client, "err", requestID, errorPayload("bad_request", err.Error()))}
+	}
+	room := r.rooms[r.userRoom[client.UserID]]
+	if room == nil || room.Players[client.UserID] == nil {
+		return []sendOp{reply(client, "err", requestID, errorPayload("not_in_room", "user is not in a room"))}
+	}
+	if room.State != StateInMatch {
+		return []sendOp{reply(client, "err", requestID, errorPayload("not_in_match", "room is not in an active match"))}
+	}
+	now := time.Now().UTC()
+	player := room.Players[client.UserID]
+	sends := r.recordPlacementLocked(room, player, "eliminated", now)
+	if requestID != "" {
+		sends = append(sends, reply(client, "eliminated_ok", requestID, map[string]any{}))
+	}
+	return sends
+}
+
+func (r *Registry) handleRequestRematchLocked(client *Client, requestID string) []sendOp {
+	room := r.rooms[r.userRoom[client.UserID]]
+	if room == nil {
+		return []sendOp{reply(client, "err", requestID, errorPayload("not_in_room", "user is not in a room"))}
+	}
+	if room.HostUserID != client.UserID {
+		return []sendOp{reply(client, "err", requestID, errorPayload("forbidden", "only the host can request a rematch"))}
+	}
+	if room.State != StateResults {
+		return []sendOp{reply(client, "err", requestID, errorPayload("not_in_results", "rematch is only available after results"))}
+	}
+
+	room.State = StateWaiting
+	room.MatchSeed = 0
+	room.MatchPositions = nil
+	room.CollectedOrbs = nil
+	room.Placements = nil
+	for _, player := range room.Players {
+		player.Ready = false
+	}
+	room.LastActivity = time.Now().UTC()
+	snapshot := room.snapshot()
+
+	sends := []sendOp{reply(client, "rematch_ok", requestID, map[string]any{"snapshot": snapshot})}
+	sends = append(sends, r.broadcastLobbyStateLocked(room)...)
+	sends = append(sends, r.broadcastRoomListUpdateLocked()...)
+	return sends
+}
+
+func (r *Registry) recordPlacementLocked(room *Room, player *Player, result string, finishedAt time.Time) []sendOp {
+	for _, placement := range room.Placements {
+		if placement.UserID == player.UserID {
+			return nil
+		}
+	}
+	room.Placements = append(room.Placements, MatchPlacement{
+		UserID:             player.UserID,
+		DisplayName:        player.DisplayName,
+		Place:              len(room.Placements) + 1,
+		Result:             result,
+		FinishedAtServerTS: finishedAt.UnixMilli(),
+	})
+	room.LastActivity = finishedAt
+	final := len(room.Placements) >= len(room.Players)
+	if final {
+		room.State = StateResults
+	}
+	sends := r.broadcastLocked(room, "match_results", "", MatchResultsPayload{
+		Placements: append([]MatchPlacement(nil), room.Placements...),
+		Final:      final,
+	})
+	if final {
+		sends = append(sends, r.broadcastRoomListUpdateLocked()...)
+	}
 	return sends
 }
 
@@ -399,6 +647,39 @@ func (r *Registry) handleSetReadyLocked(client *Client, requestID string, raw js
 	return sends
 }
 
+func (r *Registry) handleSetEnvironmentLocked(client *Client, requestID string, raw json.RawMessage) []sendOp {
+	var req SetEnvironmentRequest
+	if err := decodePayload(raw, &req); err != nil {
+		return []sendOp{reply(client, "err", requestID, errorPayload("bad_request", err.Error()))}
+	}
+	environmentID := normalizeEnvironmentID(req.EnvironmentID)
+	if !isKnownEnvironmentID(environmentID) {
+		return []sendOp{reply(client, "err", requestID, errorPayload("unknown_environment", "environment is not available"))}
+	}
+
+	room := r.rooms[r.userRoom[client.UserID]]
+	if room == nil {
+		return []sendOp{reply(client, "err", requestID, errorPayload("not_in_room", "user is not in a room"))}
+	}
+	if room.HostUserID != client.UserID {
+		return []sendOp{reply(client, "err", requestID, errorPayload("forbidden", "only the host can change the environment"))}
+	}
+	if room.State != StateWaiting {
+		return []sendOp{reply(client, "err", requestID, errorPayload("already_started", "environment cannot change after the match starts"))}
+	}
+
+	room.EnvironmentID = environmentID
+	for _, player := range room.Players {
+		player.Ready = false
+	}
+	room.LastActivity = time.Now().UTC()
+
+	sends := []sendOp{reply(client, "environment_ok", requestID, map[string]string{"environment_id": environmentID})}
+	sends = append(sends, r.broadcastLobbyStateLocked(room)...)
+	sends = append(sends, r.broadcastRoomListUpdateLocked()...)
+	return sends
+}
+
 func (r *Registry) addPlayerLocked(room *Room, client *Client) {
 	if existing := room.Players[client.UserID]; existing != nil {
 		existing.DisplayName = client.DisplayName
@@ -429,8 +710,16 @@ func (r *Registry) leaveLocked(userID string) []sendOp {
 	if room == nil {
 		return nil
 	}
+	wasMatch := room.State == StateInMatch || room.State == StateResults
+	displayName := ""
+	if player := room.Players[userID]; player != nil {
+		displayName = player.DisplayName
+	}
 	delete(room.Players, userID)
 	room.JoinOrder = removeUser(room.JoinOrder, userID)
+	if room.MatchPositions != nil {
+		delete(room.MatchPositions, userID)
+	}
 	room.LastActivity = time.Now().UTC()
 
 	var sends []sendOp
@@ -448,6 +737,12 @@ func (r *Registry) leaveLocked(userID string) []sendOp {
 			"new_host_player_id": room.HostUserID,
 		})...)
 	}
+	if wasMatch {
+		sends = append(sends, r.broadcastLocked(room, "peer_left", "", map[string]string{
+			"user_id":      userID,
+			"display_name": displayName,
+		})...)
+	}
 	sends = append(sends, r.broadcastLobbyStateLocked(room)...)
 	return sends
 }
@@ -458,8 +753,8 @@ func (r *Registry) broadcastLobbyStateLocked(room *Room) []sendOp {
 
 // broadcastRoomListUpdateLocked fans the current public-room list out to every
 // subscriber. Called after any state change that could affect what the browser
-// shows (create / join / leave). set_ready and host_changed don't fire it —
-// those don't change browser-visible fields.
+// shows (create / join / leave / environment / match state). set_ready and
+// host_changed don't fire it — those don't change browser-visible fields.
 func (r *Registry) broadcastRoomListUpdateLocked() []sendOp {
 	if len(r.subscribers) == 0 {
 		return nil
@@ -506,6 +801,20 @@ func (r *Registry) publicRoomListLocked() []BrowserEntry {
 func (r *Registry) broadcastLocked(room *Room, msgType, id string, payload any) []sendOp {
 	out := make([]sendOp, 0, len(room.Players))
 	for userID := range room.Players {
+		client := r.clients[userID]
+		if client != nil {
+			out = append(out, sendOp{client: client, msgType: msgType, id: id, payload: payload})
+		}
+	}
+	return out
+}
+
+func (r *Registry) broadcastLockedExcept(room *Room, msgType, id string, payload any, excludedUserID string) []sendOp {
+	out := make([]sendOp, 0, len(room.Players))
+	for userID := range room.Players {
+		if userID == excludedUserID {
+			continue
+		}
 		client := r.clients[userID]
 		if client != nil {
 			out = append(out, sendOp{client: client, msgType: msgType, id: id, payload: payload})
@@ -578,7 +887,7 @@ func normalizeCreateRequest(req CreateRoomRequest, client *Client) CreateRoomReq
 	if req.Level < 1 || req.Level > 10 {
 		req.Level = DefaultLevel
 	}
-	req.EnvironmentID = strings.TrimSpace(req.EnvironmentID)
+	req.EnvironmentID = normalizeEnvironmentID(req.EnvironmentID)
 	if req.EnvironmentID == "" {
 		req.EnvironmentID = DefaultEnvironment
 	}
@@ -597,6 +906,15 @@ func normalizeCode(code string) string {
 		}
 	}
 	return b.String()
+}
+
+func normalizeEnvironmentID(environmentID string) string {
+	return strings.TrimSpace(strings.ToLower(environmentID))
+}
+
+func isKnownEnvironmentID(environmentID string) bool {
+	_, ok := knownEnvironmentIDs[environmentID]
+	return ok
 }
 
 func generateCode() (string, error) {
@@ -630,6 +948,13 @@ func removeUser(ids []string, userID string) []string {
 		}
 	}
 	return out
+}
+
+func normalizeFacing(facing int) int {
+	if facing < 0 {
+		return -1
+	}
+	return 1
 }
 
 type sendOp struct {

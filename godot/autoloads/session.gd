@@ -16,6 +16,7 @@ var current_room_id: String = ""
 var current_room_code: String = ""
 var current_room_snapshot: Dictionary = {}
 var match_params: Dictionary = {}   # populated by server match_started; consumed by Match scene
+var match_results: Dictionary = {}  # populated by final match_results; consumed by results scene
 
 signal logged_in
 signal logged_out
@@ -60,6 +61,8 @@ func clear_room() -> void:
 	current_room_id = ""
 	current_room_code = ""
 	current_room_snapshot = {}
+	match_params = {}
+	match_results = {}
 	room_changed.emit(current_room_id)
 	lobby_state_changed.emit(current_room_snapshot)
 
@@ -76,6 +79,8 @@ func clear() -> void:
 	current_room_id = ""
 	current_room_code = ""
 	current_room_snapshot = {}
+	match_params = {}
+	match_results = {}
 	if had_room:
 		room_changed.emit(current_room_id)
 		lobby_state_changed.emit(current_room_snapshot)

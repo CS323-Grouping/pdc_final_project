@@ -1,0 +1,24 @@
+[gd_scene load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://scenes/elements/platforms/slippery_platform.gd" id="1_script"]
+
+[sub_resource type="RectangleShape2D" id="platform_shape"]
+size = Vector2(50, 8)
+
+[sub_resource type="RectangleShape2D" id="surface_shape"]
+size = Vector2(52, 12)
+
+[node name="SlipperyPlatform" type="Node2D"]
+script = ExtResource("1_script")
+
+[node name="Body" type="StaticBody2D" parent="."]
+
+[node name="Shape" type="CollisionShape2D" parent="Body"]
+shape = SubResource("platform_shape")
+one_way_collision = true
+
+[node name="SurfaceArea" type="Area2D" parent="."]
+
+[node name="SurfaceShape" type="CollisionShape2D" parent="SurfaceArea"]
+position = Vector2(0, -8)
+shape = SubResource("surface_shape")

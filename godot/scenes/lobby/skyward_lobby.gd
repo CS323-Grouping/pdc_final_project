@@ -14,10 +14,15 @@ const MATCH_SCENE: PackedScene = preload("res://scenes/match/match.tscn")
 
 var _snapshot: Dictionary = {}
 var _busy := false
+var _environments: Array[LevelEnvironment] = []
+var _selected_env_index := -1
 
 func _ready() -> void:
+	_load_environments()
 	%ReadyButton.pressed.connect(_on_ready_pressed)
 	%StartButton.pressed.connect(_on_start_pressed)
+	%EnvPrevButton.pressed.connect(_on_env_prev_pressed)
+	%EnvNextButton.pressed.connect(_on_env_next_pressed)
 	var back_callable := Callable($LeaveButton, "_on_pressed")
 	if $LeaveButton.pressed.is_connected(back_callable):
 		$LeaveButton.pressed.disconnect(back_callable)
@@ -86,6 +91,31 @@ func _on_start_pressed() -> void:
 		# nothing more to do here.
 		$PlayerList/PhaseNote.text = _error_message(result.error, "Could not start match")
 
+func _on_env_prev_pressed() -> void:
+	_request_environment(-1)
+
+func _on_env_next_pressed() -> void:
+	_request_environment(1)
+
+func _request_environment(delta: int) -> void:
+	if _busy or _environments.is_empty():
+		return
+	if String(_snapshot.get("host_user_id", "")) != Session.user_id:
+		$PlayerList/PhaseNote.text = "Only the host can change environment"
+		return
+	if _selected_env_index < 0:
+		_selected_env_index = 0
+	var next_index := (_selected_env_index + delta + _environments.size()) % _environments.size()
+	var env: LevelEnvironment = _environments[next_index]
+	var environment_id := String(env.id)
+	if environment_id == String(_snapshot.get("environment_id", "")):
+		return
+	_set_busy(true)
+	var result := await NetworkBackend.send_control_request("set_environment", {"environment_id": environment_id})
+	_set_busy(false)
+	if not result.success:
+		$PlayerList/PhaseNote.text = _error_message(result.error, "Could not change environment")
+
 func _on_leave_pressed() -> void:
 	if _busy:
 		return
@@ -105,6 +135,7 @@ func _apply_snapshot(snapshot: Dictionary) -> void:
 		$PlayerList/PhaseNote.text = "No server room joined"
 		%ReadyButton.disabled = true
 		%StartButton.disabled = true
+		_set_environment_controls_enabled(false)
 		return
 
 	$Header.text = "LOBBY: %s" % String(snapshot.get("code", "------"))
@@ -112,14 +143,38 @@ func _apply_snapshot(snapshot: Dictionary) -> void:
 	$SettingsPanel/LevelRow.text = "Level: %d" % int(snapshot.get("level", 1))
 	$SettingsPanel/VisibilityRow.text = String(snapshot.get("visibility", "private")).capitalize()
 	$SettingsPanel/CountdownRow.text = "--"
+	_apply_environment(snapshot)
 	_render_players(snapshot.get("players", []))
 	var player_count := 0
 	if snapshot.get("players") is Array:
 		player_count = (snapshot.get("players") as Array).size()
-	$PlayerList/PhaseNote.text = "%d/%d players" % [player_count, int(snapshot.get("capacity", 8))]
+	$PlayerList/PhaseNote.text = "%d/%d players" % [player_count, int(snapshot.get("capacity", 5))]
 	%ReadyButton.disabled = false
 	%ReadyButton.text = "UNREADY" if _is_me_ready() else "READY"
 	%StartButton.disabled = String(snapshot.get("host_user_id", "")) != Session.user_id
+	_set_environment_controls_enabled(String(snapshot.get("host_user_id", "")) == Session.user_id)
+
+func _load_environments() -> void:
+	_environments = Environments.playable()
+
+func _apply_environment(snapshot: Dictionary) -> void:
+	var environment_id := String(snapshot.get("environment_id", "sky"))
+	_selected_env_index = _environment_index(environment_id)
+	var env := Environments.by_id(StringName(environment_id))
+	if env == null and _selected_env_index >= 0:
+		env = _environments[_selected_env_index]
+	if env != null:
+		%EnvName.text = env.display_name
+		%EnvDescription.text = env.description
+	else:
+		%EnvName.text = environment_id.capitalize()
+		%EnvDescription.text = "Unavailable environment"
+
+func _environment_index(environment_id: String) -> int:
+	for i in range(_environments.size()):
+		if String(_environments[i].id) == environment_id:
+			return i
+	return 0 if not _environments.is_empty() else -1
 
 func _render_players(players_value: Variant) -> void:
 	var rows := [$PlayerList/PlayerRow1, $PlayerList/PlayerRow2, $PlayerList/PlayerRow3, $PlayerList/PlayerRow4]
@@ -157,7 +212,20 @@ func _is_me_ready() -> bool:
 func _set_busy(busy: bool) -> void:
 	_busy = busy
 	%ReadyButton.disabled = busy or Session.current_room_id.is_empty()
+	%StartButton.disabled = busy or String(_snapshot.get("host_user_id", "")) != Session.user_id
+	_set_environment_controls_enabled(String(_snapshot.get("host_user_id", "")) == Session.user_id)
 	$LeaveButton.disabled = busy
+
+func _set_environment_controls_enabled(enabled: bool) -> void:
+	var controls_enabled := (
+		enabled
+		and not _busy
+		and not Session.current_room_id.is_empty()
+		and String(_snapshot.get("state", "waiting")) == "waiting"
+		and _environments.size() > 1
+	)
+	%EnvPrevButton.disabled = not controls_enabled
+	%EnvNextButton.disabled = not controls_enabled
 
 func _error_message(err: Dictionary, fallback: String) -> String:
 	return String(err.get("message", fallback))

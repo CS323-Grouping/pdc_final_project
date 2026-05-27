@@ -1,0 +1,61 @@
+[gd_resource type="Resource" load_steps=6 format=3]
+
+[ext_resource type="Script" path="res://world/level_environment.gd" id="1_env"]
+[ext_resource type="Script" path="res://world/env_element_entry.gd" id="2_entry"]
+[ext_resource type="Resource" path="res://resources/palettes/ice.tres" id="3_palette"]
+[ext_resource type="Resource" path="res://resources/elements/regular_platform.tres" id="4_platform"]
+[ext_resource type="Resource" path="res://resources/elements/orb.tres" id="5_orb"]
+[ext_resource type="Resource" path="res://resources/elements/moving_platform.tres" id="6_moving"]
+[ext_resource type="Resource" path="res://resources/elements/slippery_platform.tres" id="7_slippery"]
+[ext_resource type="Resource" path="res://resources/elements/fragile_ice_platform.tres" id="8_fragile"]
+[ext_resource type="Resource" path="res://resources/elements/spike_strip.tres" id="9_spike"]
+[ext_resource type="Resource" path="res://resources/elements/icicle_drop.tres" id="10_icicle"]
+[ext_resource type="Resource" path="res://resources/elements/spring.tres" id="11_spring"]
+
+[sub_resource type="Resource" id="entry_platform"]
+script = ExtResource("2_entry")
+element = ExtResource("4_platform")
+weight_override = -1.0
+
+[sub_resource type="Resource" id="entry_orb"]
+script = ExtResource("2_entry")
+element = ExtResource("5_orb")
+weight_override = -1.0
+
+[sub_resource type="Resource" id="entry_moving"]
+script = ExtResource("2_entry")
+element = ExtResource("6_moving")
+weight_override = -1.0
+
+[sub_resource type="Resource" id="entry_slippery"]
+script = ExtResource("2_entry")
+element = ExtResource("7_slippery")
+weight_override = -1.0
+
+[sub_resource type="Resource" id="entry_fragile"]
+script = ExtResource("2_entry")
+element = ExtResource("8_fragile")
+weight_override = -1.0
+
+[sub_resource type="Resource" id="entry_spike"]
+script = ExtResource("2_entry")
+element = ExtResource("9_spike")
+weight_override = -1.0
+
+[sub_resource type="Resource" id="entry_icicle"]
+script = ExtResource("2_entry")
+element = ExtResource("10_icicle")
+weight_override = -1.0
+
+[sub_resource type="Resource" id="entry_spring"]
+script = ExtResource("2_entry")
+element = ExtResource("11_spring")
+weight_override = -1.0
+
+[resource]
+script = ExtResource("1_env")
+id = &"ice"
+display_name = "Ice"
+description = "Placeholder ice environment"
+palette = ExtResource("3_palette")
+element_set = [SubResource("entry_platform"), SubResource("entry_moving"), SubResource("entry_slippery"), SubResource("entry_fragile"), SubResource("entry_spike"), SubResource("entry_icicle"), SubResource("entry_orb"), SubResource("entry_spring")]

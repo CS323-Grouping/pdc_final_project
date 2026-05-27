@@ -173,60 +173,63 @@ Originally bundled with HLM multiplayer sync; split into 4a.3 (this — solo) an
 
 Done = a single client can climb the generated tower end-to-end. Reachability of platforms validates the generator's spacing tuning.
 
-#### Phase 4a.4 — Multiplayer sync (next turn)
+#### Phase 4a.4 — Multiplayer sync (implemented 2026-05-27)
 
-> [!info] Architecture decision pending
-> Vault contract originally specified Godot HLM (WebSocketMultiplayerPeer + MultiplayerSynchronizer). At implementation time this needs to be re-evaluated against the actual reality of running a Go backend (not Godot) as authority. Three options under consideration:
+> [!info] Architecture decision
+> Vault contract originally specified Godot HLM (WebSocketMultiplayerPeer + MultiplayerSynchronizer), but the current backend authority is Go, not Godot. Decision for the MVP:
 > - **A.** Client-authoritative position relay over the existing control WS — cheapest, weak anti-cheat, fine for friend group
 > - **B.** Server-authoritative without Godot HLM — Go reimplements physics, clients predict + reconcile (the "real" multiplayer pattern; more work)
 > - **C.** Godot HLM with one player elected as host — host runs simulation, others are pure clients; would require either WebSocketMultiplayerPeer routing through Go OR a separate peer-to-peer connection
 >
-> Lean toward **A** for Phase 4a.4 (school-friend audience, MVP), with the architectural seam abstracted so we can upgrade to B later if cheating becomes a problem. Lock the decision at the start of 4a.4.
+> **Locked:** use **A** for Phase 4a.4. The message names and `MatchPlayer.snapshot_state/apply_remote_state` seam keep an upgrade path to B later.
 
-- [ ] Position broadcast protocol (likely C→S `player_state` at 20 Hz, S→C `peer_state_update` fanout to others in the match)
-- [ ] Server-side per-match player position tracking (in `internal/rooms` or new `internal/match` package)
-- [ ] Client sends position updates while in Match scene
-- [ ] Remote player rendering — Match scene tracks `peers: Dictionary[user_id, MatchPlayer]`, applies received positions with interpolation
-- [ ] Match cleanup on player disconnect / leave
+- [x] Position broadcast protocol: C→S `player_state` at 20 Hz, S→C `peer_state_update` fanout to the other players in the match
+- [x] Server-side per-match player position tracking in `server/internal/rooms.Registry`
+- [x] Client sends position updates while in Match scene over `NetworkBackend.send_envelope`
+- [x] Remote player rendering — Match scene tracks `peers: Dictionary[user_id, MatchPlayer]`, spawns remote `MatchPlayer`s, applies received positions with interpolation
+- [x] Match cleanup on player disconnect / leave via `peer_left`
+- [x] Minimal top-finish hook: server broadcasts `match_results` when a player reaches the top threshold
+- [x] Minimal orb pickup collision: local player overlap sends `orb_collected`; server de-dupes and fans out collection
 
-Done = players can move on a generated level and see each other smoothly; no env selector yet.
+Done = players can move on a generated level and see each other smoothly; top finish and orb disappearance have the MVP wire path; no env selector yet.
 
 ### Phase 4b — environment system (~3–4 days)
 
-- [ ] `EnvironmentRegistry` autoload — discovers `resources/environments/*.tres`
-- [ ] Sky and Ice `Environment` resources + backgrounds + palettes + music
-- [ ] Sky-exclusive: `cloud_platform`, `wind_gust`
-- [ ] Ice baseline: ice-textured `regular_platform` variant
-- [ ] Env selector carousel in `skyward_lobby.tscn`; host-only
-- [ ] Env icon on `room_browser.tscn` cards
-- [ ] `set_environment` WS message + server validation
-- [ ] `match_started` env_id flows through to populator
+- [x] `EnvironmentRegistry` autoload — discovers `resources/environments/*.tres`; exposes sorted `all()` and player-facing `playable()` lists.
+- [x] Sky and Ice `Environment` resources + placeholder palettes. Backgrounds, icons, and music are intentionally deferred until assets land.
+- [ ] Sky-exclusive: `cloud_platform`, `wind_gust` (deferred to asset/exclusive-element pass)
+- [ ] Ice baseline: ice-textured `regular_platform` variant (deferred to asset pass)
+- [x] Env selector carousel in `skyward_lobby.tscn`; host-only, disabled after match start.
+- [x] Env label on `room_browser.tscn` cards. Icon art deferred until assets land.
+- [x] `set_environment` WS message + server validation (`sky`, `ice`, legacy `default`).
+- [x] `match_started` env_id flows through to populator.
 
-Done = host can pick Sky or Ice; lobbies and matches render with the chosen env.
+Done = host can pick Sky or Ice; lobbies and matches render with the chosen placeholder env palette.
 
 ### Phase 4c — stateful + exclusive elements (~1 week)
 
-- [ ] `StatefulElement` base script (server-owned state + sync to clients)
-- [ ] `fragile_ice_platform` (Ice exclusive)
-- [ ] `slippery_platform` (Ice exclusive)
-- [ ] `icicle_drop` (Ice exclusive)
-- [ ] `spike_strip` (universal hazard)
-- [ ] `moving_platform` (universal, diff ≥ 3)
-- [ ] `spring` (universal, diff ≥ 4)
-- [ ] `MultiplayerSynchronizer` config per stateful element
+- [x] `StatefulElement` base script with explicit state payload surface for later authority/sync.
+- [x] `fragile_ice_platform` (Ice exclusive placeholder; local break timer)
+- [x] `slippery_platform` (Ice exclusive placeholder; local low-friction contact)
+- [x] `icicle_drop` (Ice exclusive placeholder; local trigger/drop hazard)
+- [x] `spike_strip` (universal hazard placeholder)
+- [x] `moving_platform` (universal, diff >= 3 placeholder)
+- [x] `spring` (universal, diff >= 4 placeholder)
+- [x] `LevelGenerator` places optional hazard/mechanism slots from environment pools.
+- [ ] Server-owned state replication / `MultiplayerSynchronizer` equivalent for stateful elements. Current match transport is raw WS, so this is deferred to the authority pass.
 
-Done = Ice levels actually feel different to play, not just look different.
+Done = Ice levels actually feel different to play, not just look different, using placeholder art/behavior.
 
 ## Phase 5 — Gameplay parity (2 weeks)
 
-- [ ] Orb collection
-- [ ] Elimination
-- [ ] Win condition
-- [ ] `match_results` + results scene
-- [ ] Rematch flow
-- [ ] Spectator after elimination
+- [x] Orb collection — local overlap sends `orb_collected`; server de-dupes and broadcasts disappearance.
+- [x] Elimination — local fall/out-of-bounds sends `player_eliminated`; server records eliminated placement.
+- [x] Win condition — top threshold records finished placement.
+- [x] `match_results` + results scene — server broadcasts partial placements, then final results once every player has finished/eliminated.
+- [x] Rematch flow — host `request_rematch` resets room to waiting and returns all clients to lobby.
+- [x] Spectator after finish/elimination — local controls stop while remaining players continue.
 
-Done = 4-player match plays start to finish.
+Done = regular 5-player match can play start to finish with results and rematch.
 
 **CS323 deliverable satisfied here.** Writeup of new architecture vs pygame can be drafted.
 

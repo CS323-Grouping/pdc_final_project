@@ -16,6 +16,10 @@ extends Node
 const SERVER_WS_URL := "ws://localhost:8080/ws"
 const HELLO_TIMEOUT_SEC := 10.0
 const REQUEST_TIMEOUT_SEC := 10.0
+const LOG_HIGH_FREQUENCY_MESSAGES := false
+const HIGH_FREQUENCY_MESSAGE_TYPES := {
+	"peer_state_update": true,
+}
 
 signal control_connected
 signal control_disconnected
@@ -162,7 +166,8 @@ func _process(_delta: float) -> void:
 			continue
 		var envelope: Dictionary = parsed
 		var msg_type: String = String(envelope.get("t", ""))
-		print("[NetworkBackend] recv %s" % msg_type)
+		if _should_log_message(msg_type):
+			print("[NetworkBackend] recv %s" % msg_type)
 		control_message.emit(envelope)
 		if envelope.has("id"):
 			_pending_replies[String(envelope.get("id"))] = envelope
@@ -187,6 +192,11 @@ func _capture_close_state() -> void:
 		last_error_message = last_close_reason
 	elif last_close_code != 0:
 		last_error_message = "server closed connection (code %d)" % last_close_code
+
+func _should_log_message(msg_type: String) -> bool:
+	if LOG_HIGH_FREQUENCY_MESSAGES:
+		return true
+	return not HIGH_FREQUENCY_MESSAGE_TYPES.has(msg_type)
 
 func _make_request_id() -> String:
 	_next_request_id += 1

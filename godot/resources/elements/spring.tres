@@ -1,0 +1,17 @@
+[gd_resource type="Resource" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://world/element.gd" id="1_script"]
+[ext_resource type="PackedScene" path="res://scenes/elements/mechanisms/spring.tscn" id="2_scene"]
+
+[resource]
+script = ExtResource("1_script")
+id = &"spring"
+display_name = "Spring"
+category = 3
+scene = ExtResource("2_scene")
+base_weight = 1.0
+min_difficulty = 4
+max_difficulty = 10
+tags = [&"boost"]
+min_horizontal_clearance = 0
+min_vertical_clearance = 18

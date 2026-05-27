@@ -1,0 +1,17 @@
+[gd_resource type="Resource" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://world/element.gd" id="1_script"]
+[ext_resource type="PackedScene" path="res://scenes/elements/platforms/moving_platform.tscn" id="2_scene"]
+
+[resource]
+script = ExtResource("1_script")
+id = &"moving_platform"
+display_name = "Moving Platform"
+category = 0
+scene = ExtResource("2_scene")
+base_weight = 0.35
+min_difficulty = 3
+max_difficulty = 10
+tags = [&"moving"]
+min_horizontal_clearance = 42
+min_vertical_clearance = 0

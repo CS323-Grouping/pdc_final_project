@@ -1,0 +1,17 @@
+[gd_resource type="Resource" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://world/element.gd" id="1_script"]
+[ext_resource type="PackedScene" path="res://scenes/elements/hazards/icicle_drop.tscn" id="2_scene"]
+
+[resource]
+script = ExtResource("1_script")
+id = &"icicle_drop"
+display_name = "Icicle Drop"
+category = 1
+scene = ExtResource("2_scene")
+base_weight = 0.9
+min_difficulty = 3
+max_difficulty = 10
+tags = [&"ice", &"stateful", &"hazard"]
+min_horizontal_clearance = 0
+min_vertical_clearance = 36

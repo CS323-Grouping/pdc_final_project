@@ -12,9 +12,8 @@ class_name LevelGenerator extends RefCounted
 ## orb. The number of platforms per band thins out at higher difficulty
 ## (longer jumps required).
 ##
-## Phase 4a.1: universal elements only (regular_platform + orb). Phase 4a.2-4c
-## add hazards, mechanisms, and env-exclusive elements without touching this
-## file — they all flow through the env's element_set pool.
+## Phase 4c adds hazards, mechanisms, and env-exclusive platform variants.
+## Concrete element choice still flows through the env's element_set pool.
 ##
 ## DETERMINISM RULES (non-negotiable):
 ##   - All randomness goes through the seeded `rng`. No `randi()`,
@@ -29,6 +28,8 @@ const PLATFORM_WIDTH := 50
 const SPAWN_PADDING := 30   # px at bottom reserved for spawn
 const GOAL_PADDING := 30    # px at top reserved for goal
 const ORB_CHANCE := 0.35
+const BASE_HAZARD_CHANCE := 0.12
+const BASE_MECHANISM_CHANCE := 0.10
 
 static func generate(env: LevelEnvironment, difficulty: int, seed: int) -> LevelData:
 	var rng := RandomNumberGenerator.new()
@@ -70,6 +71,18 @@ static func generate(env: LevelEnvironment, difficulty: int, seed: int) -> Level
 			if orb_slot.chosen_element_id != StringName(""):
 				slots.append(orb_slot)
 
+		# Optional gameplay modifiers. These stay data-driven: the env's
+		# element_set decides which concrete hazard/mechanism is available.
+		if not xs.is_empty() and rng.randf() < _hazard_chance(data.difficulty):
+			var hazard_slot := _make_side_slot(env, Element.Category.HAZARD, rng, data.difficulty, xs, band_top_y)
+			if hazard_slot.chosen_element_id != StringName(""):
+				slots.append(hazard_slot)
+
+		if not xs.is_empty() and rng.randf() < _mechanism_chance(data.difficulty):
+			var mechanism_slot := _make_side_slot(env, Element.Category.MECHANISM, rng, data.difficulty, xs, band_top_y)
+			if mechanism_slot.chosen_element_id != StringName(""):
+				slots.append(mechanism_slot)
+
 	data.slots = slots
 	return data
 
@@ -101,6 +114,31 @@ static func _platform_x_positions(rng: RandomNumberGenerator, count: int) -> Arr
 		var jitter := rng.randi_range(0, maxi(1, slot_w - 1))
 		out.append(base + jitter)
 	return out
+
+static func _hazard_chance(difficulty: int) -> float:
+	return clampf(BASE_HAZARD_CHANCE + float(difficulty - 1) * 0.035, 0.0, 0.42)
+
+static func _mechanism_chance(difficulty: int) -> float:
+	return clampf(BASE_MECHANISM_CHANCE + float(difficulty - 1) * 0.015, 0.0, 0.24)
+
+static func _make_side_slot(
+	env: LevelEnvironment,
+	category: Element.Category,
+	rng: RandomNumberGenerator,
+	difficulty: int,
+	xs: Array[int],
+	band_top_y: int
+) -> SlotInfo:
+	var slot := SlotInfo.new()
+	var platform_x := xs[rng.randi_range(0, xs.size() - 1)]
+	var center_x := platform_x + PLATFORM_WIDTH / 2
+	slot.category = category
+	slot.chosen_element_id = _pick_element(env, category, rng, difficulty)
+	slot.instance_seed = rng.randi()
+	slot.position = Vector2i(center_x, band_top_y + 10)
+	if slot.chosen_element_id == &"icicle_drop":
+		slot.position = Vector2i(center_x, band_top_y - 10)
+	return slot
 
 # Weighted pick from the env's element_set, filtered by category + difficulty.
 # Returns StringName("") if no element matches — caller skips the slot.
