@@ -68,7 +68,7 @@ res://
 │   ├── network_backend.gd    ✅ control WebSocket client + request/reply helper
 │   ├── profile.gd            # local profile cache (folded into Settings for now)
 │   ├── settings.gd           ✅ display, controls, metrics toggle
-│   └── scene_manager.gd      ✅ transitions + back stack + global ESC=back
+│   └── scene_manager.gd      ✅ back stack + global ESC=back (no screen transition overlay)
 ├── scenes/
 │   ├── boot/
 │   │   ├── boot.tscn         # load → login
@@ -99,6 +99,15 @@ res://
 │   └── audio/
 └── shared/                   # any plain-data resources
 ```
+
+## Main menu / UI direction
+
+- Main menu is the front door after login/register for now.
+- `main_menu.tscn` is art-backed, not a flat screenshot: exported PNG layers are placed at manifest coordinates so buttons remain real Godot controls.
+- `main_menu_background.tscn` animates clouds and floating islands directly in Godot. Avoid 60 FPS sprite sheets for ambient menu motion.
+- `play_options.tscn` is the Play submenu: avatar/profile preview, Singleplayer, Multiplayer. Singleplayer currently starts local endless mode directly; Multiplayer enters the room browser.
+- `scenes/ui/animated_button.gd` is the reusable hover/press behavior. Attach it as a child of any `Button`/`TextureButton` so existing button scripts remain free.
+- Full-screen scene transitions are intentionally removed for now. Keep `SceneManager` simple unless a future transition style clearly fits the art direction.
 
 ## Gameplay sync strategy
 

@@ -1,0 +1,154 @@
+[gd_scene load_steps=7 format=3]
+
+[ext_resource type="Script" path="res://scenes/main_menu/play_options.gd" id="1_script"]
+[ext_resource type="Theme" uid="uid://b06ykuwogkc6m" path="res://themes/placeholder_theme.tres" id="2_theme"]
+[ext_resource type="PackedScene" uid="uid://g0wqs7v86yad" path="res://scenes/main_menu/main_menu_background.tscn" id="3_background"]
+[ext_resource type="PackedScene" path="res://scenes/ui/back_button.tscn" id="4_back_button"]
+[ext_resource type="Texture2D" path="res://assets/ui/mainMenuScreen/gameBorder.png" id="5_border"]
+[ext_resource type="Script" path="res://scenes/ui/animated_button.gd" id="6_button_anim"]
+
+[node name="PlayOptions" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme = ExtResource("2_theme")
+script = ExtResource("1_script")
+
+[node name="MainMenuBackground" parent="." instance=ExtResource("3_background")]
+
+[node name="GameBorder" type="TextureRect" parent="."]
+layout_mode = 0
+offset_right = 320.0
+offset_bottom = 180.0
+mouse_filter = 2
+texture = ExtResource("5_border")
+
+[node name="Header" type="Label" parent="."]
+layout_mode = 0
+offset_left = 82.0
+offset_top = 14.0
+offset_right = 238.0
+offset_bottom = 30.0
+theme_type_variation = &"H1"
+horizontal_alignment = 1
+text = "PLAY"
+
+[node name="AvatarPanel" type="Panel" parent="."]
+layout_mode = 0
+offset_left = 24.0
+offset_top = 42.0
+offset_right = 104.0
+offset_bottom = 132.0
+
+[node name="AvatarPreview" type="Panel" parent="AvatarPanel"]
+layout_mode = 0
+offset_left = 15.0
+offset_top = 10.0
+offset_right = 65.0
+offset_bottom = 60.0
+
+[node name="AvatarLabel" type="Label" parent="AvatarPanel/AvatarPreview"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+theme_type_variation = &"BodyTiny"
+horizontal_alignment = 1
+vertical_alignment = 1
+autowrap_mode = 2
+text = "AVATAR"
+
+[node name="AvatarButton" type="Button" parent="AvatarPanel"]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 10.0
+offset_top = 66.0
+offset_right = 70.0
+offset_bottom = 82.0
+theme_type_variation = &"Tiny"
+text = "CUSTOMIZE"
+
+[node name="AnimatedButton" type="Node" parent="AvatarPanel/AvatarButton"]
+script = ExtResource("6_button_anim")
+
+[node name="ProfilePanel" type="Panel" parent="."]
+layout_mode = 0
+offset_left = 116.0
+offset_top = 42.0
+offset_right = 296.0
+offset_bottom = 84.0
+
+[node name="ProfileTitleLabel" type="Label" parent="ProfilePanel"]
+layout_mode = 0
+offset_left = 8.0
+offset_top = 6.0
+offset_right = 172.0
+offset_bottom = 16.0
+theme_type_variation = &"BodyTiny"
+text = "PROFILE"
+
+[node name="ProfileNameLabel" type="Label" parent="ProfilePanel"]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 8.0
+offset_top = 18.0
+offset_right = 172.0
+offset_bottom = 28.0
+theme_type_variation = &"BodySmall"
+text = "Guest"
+
+[node name="ProfileEmailLabel" type="Label" parent="ProfilePanel"]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 8.0
+offset_top = 30.0
+offset_right = 172.0
+offset_bottom = 38.0
+theme_type_variation = &"BodyTiny"
+text = "Local profile"
+
+[node name="ModePanel" type="Panel" parent="."]
+layout_mode = 0
+offset_left = 116.0
+offset_top = 92.0
+offset_right = 296.0
+offset_bottom = 132.0
+
+[node name="SingleplayerButton" type="Button" parent="ModePanel"]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 8.0
+offset_top = 10.0
+offset_right = 88.0
+offset_bottom = 30.0
+theme_type_variation = &"Tiny"
+text = "SINGLEPLAYER"
+
+[node name="AnimatedButton" type="Node" parent="ModePanel/SingleplayerButton"]
+script = ExtResource("6_button_anim")
+
+[node name="MultiplayerButton" type="Button" parent="ModePanel"]
+unique_name_in_owner = true
+layout_mode = 0
+offset_left = 96.0
+offset_top = 10.0
+offset_right = 172.0
+offset_bottom = 30.0
+theme_type_variation = &"Tiny"
+text = "MULTIPLAYER"
+
+[node name="AnimatedButton" type="Node" parent="ModePanel/MultiplayerButton"]
+script = ExtResource("6_button_anim")
+
+[node name="BackButton" parent="." instance=ExtResource("4_back_button")]
+offset_left = 24.0
+offset_top = 144.0
+offset_right = 84.0
+offset_bottom = 162.0
+fallback_scene_path = "res://scenes/main_menu/main_menu.tscn"
+
+[node name="AnimatedButton" type="Node" parent="BackButton"]
+script = ExtResource("6_button_anim")

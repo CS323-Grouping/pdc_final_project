@@ -14,7 +14,7 @@ config/name="CSSocialGame"
 config/description="Godot port of Skyward Race + Pixel Social Hub"
 run/main_scene="res://scenes/boot/login.tscn"
 config/features=PackedStringArray("4.6", "GL Compatibility")
-config/icon="res://icon.svg"
+config/icon="res://assets/ui/gameIcon.png"
 
 [autoload]
 

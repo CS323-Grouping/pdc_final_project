@@ -30,7 +30,7 @@ Author assets at the 320×180 scale and place nodes at those coordinates. Godot 
 ```
 godot/
 ├── project.godot          # locked-in display + autoload config
-├── icon.svg               # placeholder icon
+├── assets/ui/gameIcon.png # app/game icon
 ├── autoloads/             # AutoLoad singletons
 │   ├── scene_manager.gd   # SceneManager — switch scenes
 │   ├── session.gd         # Session — JWT, user_id, current room (empty stub)

@@ -1,0 +1,171 @@
+[gd_scene format=3 uid="uid://g0wqs7v86yad"]
+
+[ext_resource type="Texture2D" uid="uid://1m47wlrwqf53" path="res://assets/ui/mainMenuBackground/skyBackground.png" id="1_veu13"]
+[ext_resource type="Script" uid="uid://b4ab54co75tkl" path="res://scenes/main_menu/menu_background_motion.gd" id="2_8q03x"]
+[ext_resource type="Texture2D" uid="uid://ca5feqiqnx2eo" path="res://assets/ui/mainMenuBackground/mediumCloud.png" id="3_d7er0"]
+[ext_resource type="Texture2D" uid="uid://bd761kbc10cqr" path="res://assets/ui/mainMenuBackground/smallCloud2.png" id="4_34gkk"]
+[ext_resource type="Texture2D" uid="uid://cx2coqt3aaco8" path="res://assets/ui/mainMenuBackground/largeCloud2.png" id="5_pnpy0"]
+[ext_resource type="Texture2D" uid="uid://dfxt78auymi2p" path="res://assets/ui/mainMenuBackground/mediumCloud2.png" id="6_qiy2v"]
+[ext_resource type="Texture2D" uid="uid://bfdhkoly8ucl7" path="res://assets/ui/mainMenuBackground/smallCloud.png" id="7_yjneq"]
+[ext_resource type="Texture2D" uid="uid://b1xng6stpwkn1" path="res://assets/ui/mainMenuBackground/rightFloatingIsland.png" id="8_5hyt3"]
+[ext_resource type="Texture2D" uid="uid://dth8fj41bywjs" path="res://assets/ui/mainMenuBackground/smallIsland3.png" id="9_fnwpg"]
+[ext_resource type="Texture2D" uid="uid://dr0l1u1wpnmgk" path="res://assets/ui/mainMenuBackground/smallIsland2.png" id="10_xbgad"]
+[ext_resource type="Texture2D" uid="uid://crqegp04b5iuy" path="res://assets/ui/mainMenuBackground/smallIsland1.png" id="11_i6s5q"]
+[ext_resource type="Texture2D" uid="uid://kc0dhmftlr0j" path="res://assets/ui/mainMenuBackground/mediumIsland.png" id="12_xum8r"]
+[ext_resource type="Texture2D" uid="uid://bjx4fmg6ynrly" path="res://assets/ui/mainMenuBackground/mediumIsland5.png" id="13_gbu7c"]
+[ext_resource type="Texture2D" uid="uid://dyfyy65q248w4" path="res://assets/ui/mainMenuBackground/mediumIsland4.png" id="14_myhtr"]
+[ext_resource type="Texture2D" uid="uid://bp46uhony0x4n" path="res://assets/ui/mainMenuBackground/mediumIsland3.png" id="15_a4e2k"]
+[ext_resource type="Texture2D" uid="uid://ct3l5vg0t6pjg" path="res://assets/ui/mainMenuBackground/mediumIsland2.png" id="16_5jl4u"]
+[ext_resource type="Texture2D" uid="uid://dhw0ns52rh1f6" path="res://assets/ui/mainMenuBackground/largeCloud.png" id="17_56c23"]
+[ext_resource type="Texture2D" uid="uid://dbldrrhqtup16" path="res://assets/ui/mainMenuBackground/rightIsland.png" id="18_4ycfy"]
+[ext_resource type="Texture2D" uid="uid://c4swec5mgv8eq" path="res://assets/ui/mainMenuBackground/leftIsland.png" id="19_f8r7f"]
+
+[sub_resource type="Animation" id="Animation_8q03x"]
+length = 0.001
+tracks/0/type = "value"
+tracks/0/imported = false
+tracks/0/enabled = true
+tracks/0/path = NodePath("RightFloatingIslandAnchor:position")
+tracks/0/interp = 1
+tracks/0/loop_wrap = true
+tracks/0/keys = {
+"times": PackedFloat32Array(0),
+"transitions": PackedFloat32Array(1),
+"update": 0,
+"values": [Vector2(0, 0)]
+}
+
+[sub_resource type="Animation" id="Animation_d7er0"]
+resource_name = "island_bob"
+length = 8.0
+loop_mode = 1
+tracks/0/type = "value"
+tracks/0/imported = false
+tracks/0/enabled = true
+tracks/0/path = NodePath("RightFloatingIslandAnchor:position")
+tracks/0/interp = 1
+tracks/0/loop_wrap = true
+tracks/0/keys = {
+"times": PackedFloat32Array(0, 0.2, 0.4, 0.6, 0.8, 1, 1.2, 1.4, 1.6, 1.8, 2, 2.2333333, 2.4, 2.6, 2.8333333, 3, 4, 5.0666666, 6.0333333, 7, 8),
+"transitions": PackedFloat32Array(1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1.0000001, 1, 1, 1, 1),
+"update": 0,
+"values": [Vector2(0, 0), Vector2(0, 0.20436694), Vector2(0, 0.20436694), Vector2(0, 0.20436694), Vector2(0, 0.20436694), Vector2(0, 1), Vector2(0, 0.20436694), Vector2(0, 0.20436694), Vector2(0, 0.20436694), Vector2(0, 0.20436694), Vector2(0, 2), Vector2(0, 0.20436694), Vector2(0, 0.20436694), Vector2(0, 0.20436694), Vector2(0, 0.20436694), Vector2(0, 3), Vector2(0, 4), Vector2(0, 5), Vector2(0, 6), Vector2(0, 2.8983045), Vector2(0, 0)]
+}
+
+[sub_resource type="AnimationLibrary" id="AnimationLibrary_34gkk"]
+_data = {
+&"RESET": SubResource("Animation_8q03x"),
+&"island_bob": SubResource("Animation_d7er0")
+}
+
+[node name="MainMenuBackground" type="Node2D" unique_id=2027275936]
+script = ExtResource("2_8q03x")
+
+[node name="base" type="Node2D" parent="." unique_id=259617581]
+
+[node name="SkyBackground" type="Sprite2D" parent="base" unique_id=219023149]
+position = Vector2(160, 90)
+texture = ExtResource("1_veu13")
+
+[node name="cloudsBack" type="Node2D" parent="." unique_id=315539790]
+
+[node name="MediumCloud" type="Sprite2D" parent="cloudsBack" unique_id=361317699]
+position = Vector2(292, 111)
+texture = ExtResource("3_d7er0")
+
+[node name="SmallCloud3" type="Sprite2D" parent="cloudsBack" unique_id=1050737171]
+position = Vector2(311, 21)
+texture = ExtResource("4_34gkk")
+
+[node name="LargeCloud2" type="Sprite2D" parent="cloudsBack" unique_id=1349738778]
+position = Vector2(92, 32)
+texture = ExtResource("5_pnpy0")
+
+[node name="MediumCloud2" type="Sprite2D" parent="cloudsBack" unique_id=1913065513]
+position = Vector2(217, 48)
+texture = ExtResource("6_qiy2v")
+
+[node name="SmallCloud" type="Sprite2D" parent="cloudsBack" unique_id=1929213980]
+position = Vector2(183, 113)
+texture = ExtResource("7_yjneq")
+
+[node name="floatingIslands" type="Node2D" parent="." unique_id=1970427278]
+
+[node name="RightFloatingIslandAnchor" type="Node2D" parent="floatingIslands" unique_id=1587291190]
+
+[node name="RightFloatingIsland" type="Sprite2D" parent="floatingIslands/RightFloatingIslandAnchor" unique_id=841901607]
+position = Vector2(267, 100)
+texture = ExtResource("8_5hyt3")
+
+[node name="SmallIslandAnchor" type="Node2D" parent="floatingIslands" unique_id=1721989573]
+position = Vector2(90, 120)
+
+[node name="SmallIsland1" type="Sprite2D" parent="floatingIslands/SmallIslandAnchor" unique_id=360905321]
+texture = ExtResource("11_i6s5q")
+
+[node name="SmallIslandAnchor2" type="Node2D" parent="floatingIslands" unique_id=2140484401]
+position = Vector2(120, 60)
+
+[node name="SmallIsland2" type="Sprite2D" parent="floatingIslands/SmallIslandAnchor2" unique_id=1028990105]
+texture = ExtResource("10_xbgad")
+
+[node name="SmallIslandAnchor3" type="Node2D" parent="floatingIslands" unique_id=539862922]
+position = Vector2(180, 160)
+
+[node name="SmallIsland3" type="Sprite2D" parent="floatingIslands/SmallIslandAnchor3" unique_id=1883005791]
+texture = ExtResource("9_fnwpg")
+
+[node name="MediumIslandAnchor" type="Node2D" parent="floatingIslands" unique_id=1011890593]
+position = Vector2(192, 112)
+
+[node name="MediumIsland" type="Sprite2D" parent="floatingIslands/MediumIslandAnchor" unique_id=564473725]
+texture = ExtResource("12_xum8r")
+
+[node name="MediumIslandAnchor2" type="Node2D" parent="floatingIslands" unique_id=1000245265]
+position = Vector2(150, 140)
+
+[node name="MediumIsland2" type="Sprite2D" parent="floatingIslands/MediumIslandAnchor2" unique_id=538416788]
+texture = ExtResource("16_5jl4u")
+
+[node name="MediumIslandAnchor3" type="Node2D" parent="floatingIslands" unique_id=1026316134]
+position = Vector2(155, 100)
+
+[node name="MediumIsland3" type="Sprite2D" parent="floatingIslands/MediumIslandAnchor3" unique_id=1266725353]
+texture = ExtResource("15_a4e2k")
+
+[node name="MediumIslandAnchor4" type="Node2D" parent="floatingIslands" unique_id=1760913757]
+position = Vector2(305, 35)
+
+[node name="MediumIsland4" type="Sprite2D" parent="floatingIslands/MediumIslandAnchor4" unique_id=697555912]
+texture = ExtResource("14_myhtr")
+
+[node name="MediumIslandAnchor5" type="Node2D" parent="floatingIslands" unique_id=220644534]
+position = Vector2(210, 140)
+
+[node name="MediumIsland5" type="Sprite2D" parent="floatingIslands/MediumIslandAnchor5" unique_id=2080451819]
+texture = ExtResource("13_gbu7c")
+
+[node name="AnimationPlayer" type="AnimationPlayer" parent="floatingIslands" unique_id=1410433469]
+libraries/ = SubResource("AnimationLibrary_34gkk")
+
+[node name="cloudsFront" type="Node2D" parent="." unique_id=1243025899]
+
+[node name="LargeCloud" type="Sprite2D" parent="cloudsFront" unique_id=469983538]
+position = Vector2(283, 159)
+texture = ExtResource("17_56c23")
+
+[node name="LargeCloud3" type="Sprite2D" parent="cloudsFront" unique_id=455916452]
+position = Vector2(175, 159)
+texture = ExtResource("5_pnpy0")
+
+[node name="SmallCloud2" type="Sprite2D" parent="cloudsFront" unique_id=1854120939]
+position = Vector2(106, 93)
+texture = ExtResource("4_34gkk")
+
+[node name="RightIsland" type="Sprite2D" parent="." unique_id=770769635]
+position = Vector2(294, 159)
+texture = ExtResource("18_4ycfy")
+
+[node name="LeftIsland" type="Sprite2D" parent="." unique_id=2107050145]
+position = Vector2(54, 90)
+texture = ExtResource("19_f8r7f")

@@ -6,13 +6,13 @@ Phased delivery. Each phase ends with something playable or demoable. No "platfo
 
 - [x] Fresh `port/godot` branch on `pdc_final_project` (local-only, user-created 2026-05-23)
 - [x] Empty Godot 4.6.2 project in `/godot` with locked pixel config (scaffolded 2026-05-23; audit fix explicitly sets `stretch/aspect="keep"` and `window/size/resizable=true`)
-- [x] Main menu screen ported with placeholder boxes/labels (no sprites yet) — earlier than originally planned, in place of the "pixel test card" which would have been thrown away
+- [x] Main menu screen ported; later replaced with layered exported Aseprite assets, animated sky background, game icon, and real image buttons
 - [x] AutoLoad skeletons for `SceneManager`, `Session`, `Settings`, `NetworkBackend` (Network is a stub)
 - [x] Placeholder Theme resource so all Buttons/Panels render as visible boxes without sprites
 - [x] PixelCode font imported with pixel-perfect params + applied as theme default
 - [x] Window-resizability nailed (resizable + keep aspect + integer scale + 320×180 min + F11 toggle)
-- [x] Placeholder destination scenes scaffolded so MainMenu buttons go somewhere:
-      `settings`, `avatar_editor`, `room_browser`, `create_room`, `join_by_code`, `skyward_lobby`
+- [x] Destination scenes scaffolded so MainMenu buttons go somewhere:
+      `settings`, `play_options`, `avatar_editor`, `room_browser`, `create_room`, `join_by_code`, `skyward_lobby`
 - [x] `SceneManager` upgraded with back-stack + global `ui_cancel` = back
 - [x] Audit pass: Input Map actions (replaces raw keycodes), theme type variations (replaces per-node font_size overrides), reusable `BackButton` scene, focusable RoomCards, `PackedScene` preloads in scripts (replaces path strings), `tests/` folder + GUT install docs
 - [ ] Open the project in Godot 4.6.2 and confirm the menu + every destination renders + every BACK works
@@ -20,15 +20,22 @@ Phased delivery. Each phase ends with something playable or demoable. No "platfo
 - [ ] New repo `cssocialgame-server` initialized
 - [ ] Hello-world Go server with `/health` endpoint
 - [ ] Docker-compose with go-server + postgres locally
-- [ ] This vault committed (or mirrored) into a `/docs` somewhere
+- [x] This vault mirrored into `docs/obsidian` with `.obsidian` included for team sync
 
 Done = both projects open, repo discipline established, no code written yet that we'll throw away.
 
 > [!note] Scaffold notes (2026-05-23)
-> - Project starts directly at `scenes/main_menu/main_menu.tscn`. A boot/login scene will land in Phase 1 and the main scene will be re-pointed at that.
-> - Main menu mirrors the pygame `MENU_ASSET_RECTS` coordinates exactly (320×180 logical) so sprites authored at those rects drop in without re-positioning.
-> - Only EXIT is wired. PLAY / SETTINGS / AVATAR log placeholder messages pointing at their delivery phase.
-> - The `placeholder_theme.tres` will be replaced/extended once Cozette + sprites arrive. Theme replacement should not require touching scene files.
+> - Initial scaffold started directly at `scenes/main_menu/main_menu.tscn`; Phase 1 later moved the app entry to `scenes/boot/login.tscn`.
+> - Original menu placement mirrored the pygame `MENU_ASSET_RECTS` coordinates exactly (320x180 logical) so exported sprites could drop in without re-positioning.
+
+> [!note] Menu/UI update (2026-05-28)
+> - Project starts at `scenes/boot/login.tscn`; successful login/register enters `scenes/main_menu/main_menu.tscn`.
+> - Main menu uses the exported Aseprite layer positions from `mainMenuScreen_export/manifest.json` at 320x180 logical resolution.
+> - Main menu buttons are `TextureButton`s over exported art: Play, Help, Settings, Exit. Help opens a paginated how-to-play panel.
+> - Play opens `scenes/main_menu/play_options.tscn`: avatar/profile preview, Singleplayer, Multiplayer. Singleplayer currently starts local endless mode directly; Multiplayer goes to the room browser.
+> - Main menu background is animated in-scene using separate cloud/island sprites instead of a 60 FPS sprite sheet. Global gameplay pixel snap remains enabled; the menu background handles its own smooth/subpixel motion.
+> - Reusable `scenes/ui/animated_button.gd` is attached as a child behavior for hover/press scale animations on `Button` and `TextureButton` parents.
+> - A cloud-wipe screen transition was prototyped and removed; `SceneManager` is back-stack only, with direct deferred scene changes.
 
 ## Phase 1 — Auth + WS (split into 1.1 / 1.2 / 1.3)
 
@@ -253,6 +260,11 @@ Done = network blip doesn't drop you from a match.
 
 ## Phase 8 — Polish (1 week)
 
+- [x] Main menu visual pass: exported Aseprite PNG layers, bottom button platform, game title, and `gameIcon.png` as the project icon
+- [x] Animated main menu background: clouds loop horizontally, floating islands bob with size-based timing, no sprite-sheet dependency
+- [x] Play options screen: avatar/profile area, Singleplayer direct endless mode, Multiplayer redirects to room browser
+- [x] Reusable `scenes/ui/animated_button.gd` behavior for hover/press scale animation on `Button` and `TextureButton` parents
+- [x] Screen transition experiment removed after cloud-wipe prototypes did not fit the visual direction
 - [ ] Settings screen (display, controls, metrics)
 - [ ] Debug HUD with FPS/RTT/loss
 - [ ] Sound effects (ported from pygame)

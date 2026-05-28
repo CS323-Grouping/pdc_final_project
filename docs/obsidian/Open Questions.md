@@ -6,7 +6,7 @@ Things not yet decided. Resolve before they become blockers.
 
 - [ ] **Final project name.** Using "CSSocialGame" as the working name for now (decided 2026-05-23). Need something brandable before any public-facing release, but no hurry — internal/friend-group builds can stay under the working name.
 - [ ] **Rename the game repo** from `pdc_final_project` to something tied to the project name. **Blocked until coursework grade is received** — renaming the repo before grading risks confusing the instructor / breaking submitted links.
-- [ ] **Should the hub or Skyward Race be the front door** when launching the binary? Current assumption: hub. Alternative: a main menu with both options, hub being the default after first launch.
+- [ ] **Should the hub or Skyward Race be the front door after the hub ships?** Current implementation is login/register → main menu → Play Options. Future question: after Phase 9, should Play default to hub or keep Skyward Race mode selection first?
 - [ ] **Text chat in hub?** Proximity voice is the headline feature. Text chat is easy to add but invites moderation work. Probably MVP-skip, post-MVP add as proximity bubbles only (no global chat).
 
 ## Identity & accounts
@@ -47,7 +47,7 @@ Things not yet decided. Resolve before they become blockers.
 ## Code & repo discipline
 
 - [x] ~~Single repo or split server out?~~ → **single repo for now** — server lives in `/server` subfolder on `port/godot` branch alongside `/godot`. Decision 2026-05-23. Module path `github.com/CS-StudentGroup/pdc_final_project/server`. Revisit splitting after coursework grade lands; one-line `go.mod` change + import-rewrite when we do.
-- [ ] **Mirror this vault into a `/docs` in one of the repos?** So planning travels with code. Probably yes, but as a one-way export from Obsidian.
+- [x] ~~Mirror this vault into a `/docs` in one of the repos?~~ → **yes**. Source of truth remains `C:\Users\andot\Documents\CSSocialGame`; repo mirror lives at `docs/obsidian` and includes `.obsidian` for team sync.
 - [ ] **GDScript or C# for Godot?** GDScript chosen (fast iteration, native to Godot). Revisit only if a performance hot spot demands it (unlikely at this scope).
 
 ## Legal / process
@@ -79,6 +79,7 @@ Things not yet decided. Resolve before they become blockers.
 - ~~Audit fix 6: back-button boilerplate~~ → **reusable `BackButton` scene** at `scenes/ui/back_button.tscn` (handles `go_back` + fallback in one place; `text` overridable for "LEAVE" / "CANCEL")
 - ~~Audit fix 7: keyboard/controller focus~~ → `focus_mode = 2` on RoomCard Panels so Tab/`ui_accept` work; Button defaults already FOCUS_ALL
 - ~~Audit fix 8: back stack assumption~~ → documented in `scene_manager.gd` (history tracks `scene_file_path` of main scene; revisit if we ever go to a persistent-root model)
+- ~~Scene transition style~~ → cloud-wipe prototypes were removed. Keep direct scene changes until a transition fits the final UI art direction.
 
 ## Related
 
