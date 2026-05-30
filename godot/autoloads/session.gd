@@ -52,6 +52,7 @@ func set_room(room_id: String, room_code: String = "") -> void:
 
 func set_lobby_snapshot(snapshot: Dictionary) -> void:
 	current_room_snapshot = snapshot
+	AvatarCache.cache_players(snapshot.get("players", []))
 	current_room_id = String(snapshot.get("room_id", current_room_id))
 	current_room_code = String(snapshot.get("code", current_room_code))
 	room_changed.emit(current_room_id)
@@ -81,6 +82,7 @@ func clear() -> void:
 	current_room_snapshot = {}
 	match_params = {}
 	match_results = {}
+	AvatarCache.clear()
 	if had_room:
 		room_changed.emit(current_room_id)
 		lobby_state_changed.emit(current_room_snapshot)

@@ -31,6 +31,14 @@ var _has_remote_target: bool = false
 var _slippery_until_msec: int = 0
 var _hazard_cooldown_until_msec: int = 0
 
+func _ready() -> void:
+	if not AvatarCache.avatar_changed.is_connected(_on_avatar_changed):
+		AvatarCache.avatar_changed.connect(_on_avatar_changed)
+
+func _exit_tree() -> void:
+	if AvatarCache.avatar_changed.is_connected(_on_avatar_changed):
+		AvatarCache.avatar_changed.disconnect(_on_avatar_changed)
+
 func _physics_process(delta: float) -> void:
 	if not is_local_player:
 		_physics_process_remote(delta)
@@ -129,10 +137,23 @@ func _physics_process_remote(delta: float) -> void:
 func _is_slippery() -> bool:
 	return Time.get_ticks_msec() <= _slippery_until_msec
 
+func _on_avatar_changed(changed_user_id: String, _avatar: Dictionary) -> void:
+	if changed_user_id == owner_user_id:
+		queue_redraw()
+
 func _draw() -> void:
-	# 8×12 placeholder body, centered on origin so position == body center.
-	# Sprite swap comes later when art arrives.
-	var body_color: Color = Color(1.0, 0.55, 0.55, 1.0) if is_local_player else Color(0.35, 0.68, 1.0, 0.9)
-	draw_rect(Rect2(-4.0, -6.0, 8.0, 12.0), body_color)
+	var avatar := AvatarCache.get_avatar(owner_user_id)
+	var model: Dictionary = avatar.get("model", {}) if avatar.get("model") is Dictionary else {}
+	var body_color: Color = AvatarCache.model_color(String(model.get("model_color", AvatarCache.DEFAULT_MODEL_COLOR)))
+	if not is_local_player:
+		body_color.a = 0.85
+	draw_rect(Rect2(-4.0, -1.0, 8.0, 7.0), body_color)
+	draw_rect(Rect2(-3.0, 4.0, 6.0, 2.0), body_color.darkened(0.25))
+	var head_rect := Rect2(-4.0, -6.0, 8.0, 8.0)
+	var head_texture := AvatarCache.head_texture(owner_user_id)
+	if head_texture != null:
+		draw_texture_rect(head_texture, head_rect, false)
+	else:
+		draw_rect(head_rect, body_color.lerp(Color.WHITE, 0.32))
 	var eye_x: float = 1.0 if facing >= 0 else -3.0
 	draw_rect(Rect2(eye_x, -3.0, 2.0, 2.0), Color(0.1, 0.1, 0.15, 1.0))

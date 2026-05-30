@@ -44,7 +44,14 @@ Phase 4a.4 does not use Godot HLM. Gameplay relay messages use this same envelop
 ### On WS open
 
 ```
-S→C  hello { server_version, your_user_id, your_display_name }
+S→C  hello { server_version, your_user_id, your_display_name, your_avatar }
+```
+
+If the account still has a retained room session from a transient disconnect,
+the server immediately follows hello with:
+
+```
+S→C  session_rejoined { room_id, state, snapshot }
 ```
 
 ### Room lifecycle
@@ -62,6 +69,7 @@ S→C  hello { server_version, your_user_id, your_display_name }
 | `hub_assigned` | S→C | `{instance_id, snapshot}` | |
 | `kick_player` | C→S | `{target_player_id}` | host only |
 | `host_changed` | S→C (push) | `{new_host_player_id}` | |
+| `session_rejoined` | S→C (push) | `{room_id, state, snapshot}` | sent after hello when reconnecting inside the 30 s grace window |
 
 ### Room browser (SR public rooms)
 
@@ -82,16 +90,17 @@ S→C  hello { server_version, your_user_id, your_display_name }
 | `set_room_name` | C→S | `{name: string}` | host only |
 | `set_visibility` | C→S | `{visibility}` | host only |
 | `start_match` | C→S | `{}` | host only; requires all ready |
-| `lobby_state` | S→C (push) | `{room_id, code, players, ready_set, host_user_id, level, environment_id, state, capacity}` |
+| `lobby_state` | S→C (push) | `{room_id, code, players, ready_set, host_user_id, level, environment_id, state, capacity}` | player entries include `connected`, optional `reconnect_until_server_ts`, and `avatar` |
 
 ### Match (SR) — control + MVP gameplay relay
 
 | Type | Direction | Payload |
 | --- | --- | --- |
 | `match_started` | S→C | `{level, environment_id, seed, start_at_server_ts, your_player_id}` | clients run `LevelGenerator.generate(env, level, seed)` to reproduce geometry — see [[Levels & Environments]] |
+| `match_snapshot` | S→C | `{level, environment_id, seed, start_at_server_ts, your_player_id, room_id, room_state, collected_orbs, placements, final, peer_states, snapshot}` | replayed after reconnect when the retained room is already in match/results |
 | `player_state` | C→S | `{tick, x, y, vx, vy, grounded, facing}` | sent by the local Match scene at ~20 Hz while the room is `in_match` |
 | `peer_state_update` | S→C | `{user_id, display_name, tick, x, y, vx, vy, grounded, facing, server_ts}` | fanout to other players only; clients interpolate remote `MatchPlayer`s |
-| `peer_left` | S→C | `{user_id, display_name}` | removes remote player on disconnect / leave |
+| `peer_left` | S→C | `{user_id, display_name}` | removes remote player on explicit leave or when reconnect grace expires |
 | `orb_collected` | C→S, S→C | C→S `{orb_id}`; S→C `{orb_id, user_id, display_name, server_ts}` | server de-dupes by `orb_id` and broadcasts collection |
 | `player_eliminated` | C→S | `{reason}` | MVP client-reported elimination; server records placement |
 | `match_results` | S→C | `{placements: [...], final}` | partial placement updates while match continues; `final=true` transitions clients to results |

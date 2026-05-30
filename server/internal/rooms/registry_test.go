@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+
+	"github.com/CS-StudentGroup/pdc_final_project/server/internal/avatars"
 )
 
 type sentEnvelope struct {
@@ -76,6 +78,7 @@ func TestRegistryCreateJoinReadyAndHostPromotion(t *testing.T) {
 	}
 
 	reg.UnregisterClient(host.UserID)
+	reg.finalizeReconnectTimeout(host.UserID)
 	hostChanged := findMessage(t, joinerSender.messages, "host_changed")
 	hostPayload := hostChanged.D.(map[string]string)
 	if hostPayload["new_host_player_id"] != "join_user" {
@@ -122,6 +125,97 @@ func TestRegistryHostCanSetEnvironmentAndResetReady(t *testing.T) {
 	}
 	if len(snapshot.ReadySet) != 0 {
 		t.Fatalf("ready_set = %#v, want empty after environment change", snapshot.ReadySet)
+	}
+}
+
+func TestRegistryAvatarUpdateCachesAndBroadcastsToRoom(t *testing.T) {
+	reg := NewRegistry()
+	hostSender := &fakeSender{}
+	joinerSender := &fakeSender{}
+	host := &Client{UserID: "host_user", DisplayName: "host", Sender: hostSender}
+	joiner := &Client{UserID: "join_user", DisplayName: "joiner", Sender: joinerSender}
+	reg.RegisterClient(host)
+	reg.RegisterClient(joiner)
+
+	reg.Handle(context.Background(), host, "create_room", "create", mustJSON(t, map[string]any{
+		"type":       TypeSkywardLobby,
+		"name":       "Avatar Room",
+		"visibility": VisibilityPrivate,
+		"level":      1,
+		"capacity":   5,
+	}))
+	code := findMessage(t, hostSender.messages, "room_created").D.(map[string]any)["code"].(string)
+	reg.Handle(context.Background(), joiner, "join_room", "join", mustJSON(t, map[string]string{"code": code}))
+
+	hostSender.messages = nil
+	joinerSender.messages = nil
+	avatar := avatars.Payload{
+		Model: avatars.Model{ModelType: avatars.DefaultModelType, ModelColor: "Red"},
+	}
+	reg.SetAvatarForClient(context.Background(), joiner.UserID, avatar)
+
+	update := findMessage(t, hostSender.messages, "avatar_updated")
+	payload := update.D.(AvatarUpdatedPayload)
+	if payload.UserID != joiner.UserID || payload.Model.ModelColor != "Red" {
+		t.Fatalf("avatar_updated = %#v, want join_user Red", payload)
+	}
+	snapshot := lastMessage(t, hostSender.messages, "lobby_state").D.(Snapshot)
+	if len(snapshot.Players) != 2 || snapshot.Players[1].Avatar.Model.ModelColor != "Red" {
+		t.Fatalf("snapshot avatars = %#v, want joiner Red", snapshot.Players)
+	}
+	if optionalMessage(joinerSender.messages, "avatar_updated") == nil {
+		t.Fatalf("updated player did not receive avatar_updated: %#v", joinerSender.messages)
+	}
+}
+
+func TestRegistryReconnectReplaysLobbyAndMatchSnapshot(t *testing.T) {
+	reg := NewRegistry()
+	hostSender := &fakeSender{}
+	joinerSender := &fakeSender{}
+	host := &Client{UserID: "host_user", DisplayName: "host", Sender: hostSender}
+	joiner := &Client{UserID: "join_user", DisplayName: "joiner", Sender: joinerSender}
+	reg.RegisterClient(host)
+	reg.RegisterClient(joiner)
+
+	reg.Handle(context.Background(), host, "create_room", "create", mustJSON(t, map[string]any{
+		"type":       TypeSkywardLobby,
+		"name":       "Reconnect Room",
+		"visibility": VisibilityPrivate,
+		"level":      3,
+		"capacity":   5,
+	}))
+	code := findMessage(t, hostSender.messages, "room_created").D.(map[string]any)["code"].(string)
+	reg.Handle(context.Background(), joiner, "join_room", "join", mustJSON(t, map[string]string{"code": code}))
+	reg.Handle(context.Background(), joiner, "set_ready", "ready", mustJSON(t, map[string]bool{"ready": true}))
+	reg.Handle(context.Background(), host, "start_match", "start", mustJSON(t, map[string]any{}))
+	reg.Handle(context.Background(), host, "orb_collected", "", mustJSON(t, map[string]string{"orb_id": "orb:1"}))
+
+	hostSender.messages = nil
+	joinerSender.messages = nil
+	reg.UnregisterClient(joiner.UserID)
+	disconnectedSnapshot := lastMessage(t, hostSender.messages, "lobby_state").D.(Snapshot)
+	if disconnectedSnapshot.Players[1].Connected {
+		t.Fatalf("joiner connected = true after disconnect, want false")
+	}
+	if optionalMessage(hostSender.messages, "peer_left") != nil {
+		t.Fatalf("peer_left sent during reconnect grace: %#v", hostSender.messages)
+	}
+
+	rejoinSender := &fakeSender{}
+	rejoiner := &Client{UserID: "join_user", DisplayName: "joiner", Sender: rejoinSender}
+	reg.RegisterClient(rejoiner)
+	reg.ReplaySession(context.Background(), rejoiner.UserID)
+
+	rejoined := findMessage(t, rejoinSender.messages, "session_rejoined")
+	if rejoined.D.(SessionRejoinedPayload).State != StateInMatch {
+		t.Fatalf("session_rejoined = %#v, want in_match", rejoined.D)
+	}
+	matchSnapshot := findMessage(t, rejoinSender.messages, "match_snapshot").D.(MatchSnapshotPayload)
+	if matchSnapshot.Seed == 0 || matchSnapshot.YourPlayerID != "join_user" {
+		t.Fatalf("match snapshot = %#v, want seed and join_user id", matchSnapshot)
+	}
+	if len(matchSnapshot.CollectedOrbs) != 1 || matchSnapshot.CollectedOrbs[0] != "orb:1" {
+		t.Fatalf("collected_orbs = %#v, want orb:1", matchSnapshot.CollectedOrbs)
 	}
 }
 
@@ -228,6 +322,7 @@ func TestRegistryMatchStateRelayOrbAndCleanup(t *testing.T) {
 	}
 
 	reg.UnregisterClient(joiner.UserID)
+	reg.finalizeReconnectTimeout(joiner.UserID)
 	left := findMessage(t, hostSender.messages, "peer_left")
 	leftPayload := left.D.(map[string]string)
 	if leftPayload["user_id"] != "join_user" {

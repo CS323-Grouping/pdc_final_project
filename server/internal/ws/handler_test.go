@@ -25,7 +25,7 @@ func TestHandlerThroughHTTPXMiddlewareSendsHello(t *testing.T) {
 	}
 
 	handler := httpx.Chain(
-		ws.New(secret, "test-version", nil, nil),
+		ws.New(secret, "test-version", nil, nil, nil),
 		httpx.RequestID,
 		httpx.AccessLog,
 		httpx.Recover,
@@ -84,7 +84,7 @@ func TestHandlerRejectsDuplicateActiveSession(t *testing.T) {
 	}
 
 	handler := httpx.Chain(
-		ws.New(secret, "test-version", nil, nil),
+		ws.New(secret, "test-version", nil, nil, nil),
 		httpx.RequestID,
 		httpx.AccessLog,
 		httpx.Recover,
@@ -121,5 +121,64 @@ func TestHandlerRejectsDuplicateActiveSession(t *testing.T) {
 	}
 	if closeErr.Reason != "account_already_connected" {
 		t.Fatalf("close reason = %q, want account_already_connected", closeErr.Reason)
+	}
+}
+
+func TestHandlerSetAvatarRoundTrip(t *testing.T) {
+	secret := []byte("test-secret")
+	token, _, err := auth.MintAccessToken(secret, "user_123", "kurt")
+	if err != nil {
+		t.Fatalf("mint token: %v", err)
+	}
+
+	handler := httpx.Chain(
+		ws.New(secret, "test-version", nil, nil, nil),
+		httpx.RequestID,
+		httpx.AccessLog,
+		httpx.Recover,
+	)
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws?token=" + url.QueryEscape(token)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	if _, _, err := conn.Read(ctx); err != nil {
+		t.Fatalf("read hello: %v", err)
+	}
+
+	body := `{"t":"set_avatar","id":"avatar-1","d":{"model":{"model_type":"default","model_color":"Red"}}}`
+	if err := conn.Write(ctx, websocket.MessageText, []byte(body)); err != nil {
+		t.Fatalf("write set_avatar: %v", err)
+	}
+	_, data, err := conn.Read(ctx)
+	if err != nil {
+		t.Fatalf("read set_avatar_ok: %v", err)
+	}
+	var got struct {
+		T  string `json:"t"`
+		ID string `json:"id"`
+		D  struct {
+			Avatar struct {
+				Model struct {
+					ModelColor string `json:"model_color"`
+				} `json:"model"`
+			} `json:"avatar"`
+		} `json:"d"`
+	}
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("decode set_avatar_ok: %v", err)
+	}
+	if got.T != "set_avatar_ok" || got.ID != "avatar-1" {
+		t.Fatalf("reply = %s/%s, want set_avatar_ok/avatar-1", got.T, got.ID)
+	}
+	if got.D.Avatar.Model.ModelColor != "Red" {
+		t.Fatalf("model_color = %q, want Red", got.D.Avatar.Model.ModelColor)
 	}
 }

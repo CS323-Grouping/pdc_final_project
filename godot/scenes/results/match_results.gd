@@ -1,6 +1,6 @@
 extends Control
 
-const LOBBY_SCENE: PackedScene = preload("res://scenes/lobby/skyward_lobby.tscn")
+const LOBBY_SCENE := "res://scenes/lobby/skyward_lobby.tscn"
 const ROOM_BROWSER_SCENE := "res://scenes/lobby/room_browser.tscn"
 
 var _busy := false

@@ -22,6 +22,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/CS-StudentGroup/pdc_final_project/server/internal/auth"
+	"github.com/CS-StudentGroup/pdc_final_project/server/internal/avatars"
 	"github.com/CS-StudentGroup/pdc_final_project/server/internal/rooms"
 )
 
@@ -34,11 +35,17 @@ type Handler struct {
 	originPatterns []string
 	sessions       *SessionRegistry
 	rooms          *rooms.Registry
+	avatars        avatarStore
 	connMu         sync.Mutex
 	conns          map[*websocket.Conn]struct{}
 }
 
-func New(jwtSecret []byte, version string, originPatterns []string, roomRegistry *rooms.Registry) *Handler {
+type avatarStore interface {
+	Get(ctx context.Context, userID string) (avatars.Payload, bool, error)
+	Upsert(ctx context.Context, userID string, payload avatars.Payload) (avatars.Payload, error)
+}
+
+func New(jwtSecret []byte, version string, originPatterns []string, roomRegistry *rooms.Registry, avatarStore avatarStore) *Handler {
 	if roomRegistry == nil {
 		roomRegistry = rooms.NewRegistry()
 	}
@@ -48,6 +55,7 @@ func New(jwtSecret []byte, version string, originPatterns []string, roomRegistry
 		originPatterns: append([]string(nil), originPatterns...),
 		sessions:       NewSessionRegistry(),
 		rooms:          roomRegistry,
+		avatars:        avatarStore,
 		conns:          make(map[*websocket.Conn]struct{}),
 	}
 }
@@ -97,9 +105,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.trackConn(conn)
 	defer h.untrackConn(conn)
 	sender := &connSender{conn: conn}
+	avatarPayload := h.avatarForUser(r.Context(), claims.UserID)
 	client := &rooms.Client{
 		UserID:      claims.UserID,
 		DisplayName: claims.DisplayName,
+		Avatar:      avatarPayload,
 		Sender:      sender,
 	}
 	h.rooms.RegisterClient(client)
@@ -117,10 +127,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ServerVersion:   h.version,
 		YourUserID:      claims.UserID,
 		YourDisplayName: claims.DisplayName,
+		YourAvatar:      avatarPayload,
 	}); err != nil {
 		slog.Error("ws hello write failed", "err", err, "user_id", claims.UserID)
 		return
 	}
+	h.rooms.ReplaySession(r.Context(), claims.UserID)
 
 	// Read loop. Phase 1.3 just logs incoming frames; future phases dispatch
 	// by envelope.t.
@@ -155,8 +167,64 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			})
 			continue
 		}
+		if env.T == "set_avatar" {
+			h.handleSetAvatar(r.Context(), client, env.ID, env.D)
+			continue
+		}
 		h.rooms.Handle(r.Context(), client, env.T, env.ID, env.D)
 	}
+}
+
+func (h *Handler) avatarForUser(ctx context.Context, userID string) avatars.Payload {
+	if h.avatars == nil {
+		return avatars.DefaultPayload()
+	}
+	payload, _, err := h.avatars.Get(ctx, userID)
+	if err != nil {
+		slog.Warn("avatar lookup failed", "err", err, "user_id", userID)
+		return avatars.DefaultPayload()
+	}
+	return avatars.NormalizeOrDefault(payload)
+}
+
+func (h *Handler) handleSetAvatar(ctx context.Context, client *rooms.Client, requestID string, raw json.RawMessage) {
+	var payload avatars.Payload
+	if len(raw) == 0 || string(raw) == "null" {
+		raw = []byte("{}")
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		_ = client.Sender.SendEnvelope(ctx, "err", requestID, map[string]string{
+			"code":    "bad_request",
+			"message": "invalid avatar payload: " + err.Error(),
+		})
+		return
+	}
+
+	normalized, err := avatars.NormalizePayload(payload)
+	if err != nil {
+		_ = client.Sender.SendEnvelope(ctx, "err", requestID, map[string]string{
+			"code":    "bad_request",
+			"message": err.Error(),
+		})
+		return
+	}
+	if h.avatars != nil {
+		normalized, err = h.avatars.Upsert(ctx, client.UserID, normalized)
+		if err != nil {
+			slog.Error("avatar upsert failed", "err", err, "user_id", client.UserID)
+			_ = client.Sender.SendEnvelope(ctx, "err", requestID, map[string]string{
+				"code":    "internal",
+				"message": "could not save avatar",
+			})
+			return
+		}
+	}
+
+	client.Avatar = normalized
+	h.rooms.SetAvatarForClient(ctx, client.UserID, normalized)
+	_ = client.Sender.SendEnvelope(ctx, "set_avatar_ok", requestID, map[string]any{
+		"avatar": normalized,
+	})
 }
 
 func (h *Handler) rejectDuplicateSession(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
@@ -209,9 +277,10 @@ type connSender struct {
 }
 
 type helloPayload struct {
-	ServerVersion   string `json:"server_version"`
-	YourUserID      string `json:"your_user_id"`
-	YourDisplayName string `json:"your_display_name"`
+	ServerVersion   string          `json:"server_version"`
+	YourUserID      string          `json:"your_user_id"`
+	YourDisplayName string          `json:"your_display_name"`
+	YourAvatar      avatars.Payload `json:"your_avatar"`
 }
 
 func (s *connSender) SendEnvelope(parent context.Context, msgType, id string, payload any) error {

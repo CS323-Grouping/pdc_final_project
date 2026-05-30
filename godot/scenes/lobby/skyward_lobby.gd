@@ -10,15 +10,19 @@ extends Control
 ## behavior as elsewhere).
 
 const ROOM_BROWSER_SCENE := "res://scenes/lobby/room_browser.tscn"
-const MATCH_SCENE: PackedScene = preload("res://scenes/match/match.tscn")
+const AVATAR_PORTRAIT_SCRIPT := preload("res://scenes/avatar/avatar_portrait.gd")
+const MATCH_SCENE := "res://scenes/match/match.tscn"
 
 var _snapshot: Dictionary = {}
 var _busy := false
 var _environments: Array[LevelEnvironment] = []
 var _selected_env_index := -1
+var _player_portraits: Array = []
+var _transitioning_to_match := false
 
 func _ready() -> void:
 	_load_environments()
+	_ensure_player_portraits()
 	%ReadyButton.pressed.connect(_on_ready_pressed)
 	%StartButton.pressed.connect(_on_start_pressed)
 	%EnvPrevButton.pressed.connect(_on_env_prev_pressed)
@@ -45,9 +49,17 @@ func _on_control_message(envelope: Dictionary) -> void:
 	if msg_type == "lobby_state":
 		var snapshot: Dictionary = envelope.get("d", {}) if envelope.get("d") is Dictionary else {}
 		Session.set_lobby_snapshot(snapshot)
+	elif msg_type == "avatar_updated":
+		var payload: Dictionary = envelope.get("d", {}) if envelope.get("d") is Dictionary else {}
+		var user_id := String(payload.get("user_id", ""))
+		if not user_id.is_empty():
+			AvatarCache.set_avatar(user_id, payload)
 	elif msg_type == "host_changed":
 		print("[Lobby] host changed: %s" % envelope.get("d", {}))
 	elif msg_type == "match_started":
+		if _transitioning_to_match:
+			return
+		_transitioning_to_match = true
 		# Server pushes match_started to every player in the room (including
 		# the host who triggered it). Each recipient gets a payload with
 		# their own user_id under your_player_id, so all clients land here
@@ -179,18 +191,36 @@ func _environment_index(environment_id: String) -> int:
 func _render_players(players_value: Variant) -> void:
 	var rows := [$PlayerList/PlayerRow1, $PlayerList/PlayerRow2, $PlayerList/PlayerRow3, $PlayerList/PlayerRow4]
 	for i in range(rows.size()):
+		rows[i].offset_left = 24.0
 		rows[i].text = "%d. (open slot)" % (i + 1)
+		if i < _player_portraits.size():
+			_player_portraits[i].visible = false
 	if not (players_value is Array):
 		return
 	var players: Array = players_value
+	AvatarCache.cache_players(players)
 	for i in range(min(players.size(), rows.size())):
 		var player: Dictionary = players[i] if players[i] is Dictionary else {}
 		var status := "HOST" if bool(player.get("is_host", false)) else ("READY" if bool(player.get("ready", false)) else "    ")
+		if i < _player_portraits.size():
+			_player_portraits[i].user_id = String(player.get("user_id", ""))
+			_player_portraits[i].visible = true
 		rows[i].text = "%d. %s [%s]" % [
 			i + 1,
 			String(player.get("display_name", "player")).substr(0, 12).to_upper().rpad(12),
 			status,
 		]
+
+func _ensure_player_portraits() -> void:
+	if not _player_portraits.is_empty():
+		return
+	for i in range(4):
+		var portrait = AVATAR_PORTRAIT_SCRIPT.new()
+		portrait.position = Vector2(6, 5 + i * 16)
+		portrait.size = Vector2(12, 12)
+		portrait.visible = false
+		$PlayerList.add_child(portrait)
+		_player_portraits.append(portrait)
 
 func _host_name(snapshot: Dictionary) -> String:
 	var host_id := String(snapshot.get("host_user_id", ""))

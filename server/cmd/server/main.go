@@ -21,6 +21,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/CS-StudentGroup/pdc_final_project/server/internal/auth"
+	"github.com/CS-StudentGroup/pdc_final_project/server/internal/avatars"
 	"github.com/CS-StudentGroup/pdc_final_project/server/internal/config"
 	"github.com/CS-StudentGroup/pdc_final_project/server/internal/db"
 	"github.com/CS-StudentGroup/pdc_final_project/server/internal/httpx"
@@ -63,11 +64,15 @@ func run() error {
 	}
 	defer pool.Close()
 	slog.Info("db connected")
+	if err := avatars.EnsureSchema(ctx, pool); err != nil {
+		return fmt.Errorf("ensure avatar schema: %w", err)
+	}
 
 	// Wire auth.
 	authStore := auth.NewStore(pool)
 	authSvc := auth.NewService(authStore, cfg.JWTSecret)
 	authHandlers := auth.NewHandlers(authSvc)
+	avatarStore := avatars.NewStore(pool)
 	bearer := auth.NewBearerMiddleware(cfg.JWTSecret)
 	// 5 burst, then 1 every 12s = ~5 requests/minute sustained per IP. Applied
 	// across all /auth/* endpoints as a single bucket per IP.
@@ -90,7 +95,7 @@ func run() error {
 	// WebSocket control channel. JWT validated by the handler itself
 	// (from ?token=...) since Godot's WebSocketPeer can't easily set
 	// Authorization headers on connect. Bearer middleware isn't applied.
-	wsHandler := ws.New(cfg.JWTSecret, serverVersion, cfg.WSOriginPatterns, roomRegistry)
+	wsHandler := ws.New(cfg.JWTSecret, serverVersion, cfg.WSOriginPatterns, roomRegistry, avatarStore)
 	mux.Handle("GET /ws", wsHandler)
 
 	handler := httpx.Chain(mux, httpx.RequestID, httpx.AccessLog, httpx.Recover)

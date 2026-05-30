@@ -15,8 +15,8 @@ Phased delivery. Each phase ends with something playable or demoable. No "platfo
       `settings`, `play_options`, `avatar_editor`, `room_browser`, `create_room`, `join_by_code`, `skyward_lobby`
 - [x] `SceneManager` upgraded with back-stack + global `ui_cancel` = back
 - [x] Audit pass: Input Map actions (replaces raw keycodes), theme type variations (replaces per-node font_size overrides), reusable `BackButton` scene, focusable RoomCards, `PackedScene` preloads in scripts (replaces path strings), `tests/` folder + GUT install docs
-- [ ] Open the project in Godot 4.6.2 and confirm the menu + every destination renders + every BACK works
-- [ ] Install GUT addon via Asset Library (deferred to Phase 4a — see `godot/tests/README.md`)
+- [ ] Open the project in Godot 4.6.2 and confirm the menu + every destination renders + every BACK works (still needs an interactive run; headless load is clean — see verify note below)
+- [x] Install GUT addon (done 2026-05-29 — GUT 9.6.0 vendored into `godot/addons/gut/` via git, not Asset Library; runs headless, no editor-plugin enable needed)
 - [ ] New repo `cssocialgame-server` initialized
 - [ ] Hello-world Go server with `/health` endpoint
 - [ ] Docker-compose with go-server + postgres locally
@@ -36,6 +36,12 @@ Done = both projects open, repo discipline established, no code written yet that
 > - Main menu background is animated in-scene using separate cloud/island sprites instead of a 60 FPS sprite sheet. Global gameplay pixel snap remains enabled; the menu background handles its own smooth/subpixel motion.
 > - Reusable `scenes/ui/animated_button.gd` is attached as a child behavior for hover/press scale animations on `Button` and `TextureButton` parents.
 > - A cloud-wipe screen transition was prototyped and removed; `SceneManager` is back-stack only, with direct deferred scene changes.
+
+> [!check] Verify & harden pass (2026-05-29)
+> - **Server:** `go build ./...`, `go vet ./...`, `go test ./...` all clean (`auth`, `rooms`, `ws` packages have passing tests).
+> - **Godot client:** headless import + load is clean — exit 0, zero script/parse errors, `Environments` autoload discovers all 3 envs.
+> - **GUT + determinism test:** installed and green (see Phase 0 / Phase 4a.1 boxes).
+> - **Still outstanding:** (1) interactive Godot run of the full menu→destinations→BACK flow (last Phase 0 box — gated on the server being up for login); (2) full login→room→match e2e, which needs Docker Desktop running for Postgres (daemon was down at verify time).
 
 ## Phase 1 — Auth + WS (split into 1.1 / 1.2 / 1.3)
 
@@ -144,7 +150,7 @@ See [[Levels & Environments]] for the full design driving this split.
 - [x] **User action:** open Godot, navigate to `scenes/match/match.tscn`, hit F6 — should render a tower of platforms and orbs. Change `DEFAULT_SEED` in `match.gd` and re-run to see deterministic variation.
 - [ ] **Deferred to 4a.2:** server `start_match` handler + `match_started` broadcast, lobby START wiring, Session-driven match transition
 - [ ] **Deferred to 4a.3:** Player.tscn (CharacterBody2D), `WebSocketMultiplayerPeer` (HLM), MultiplayerSpawner, MultiplayerSynchronizer for player state, client-side prediction + reconciliation
-- [ ] **Deferred (GUT setup):** install via Asset Library, first test = generator determinism (same `(env, diff, seed)` → byte-identical `LevelData`)
+- [x] **GUT setup + determinism test (done 2026-05-29):** GUT 9.6.0 vendored; `godot/tests/test_level_generator.gd` proves `(env, diff, seed)` → byte-identical `LevelData` across all 3 envs × difficulties 1–10 (4 tests, 10,258 asserts, all green). Run via `scripts/test.ps1`.
 
 Done = the generator visibly produces tower geometry; F6 on Match.tscn renders it; varying the seed varies the level deterministically.
 
@@ -242,21 +248,29 @@ Done = regular 5-player match can play start to finish with results and rematch.
 
 ## Phase 6 — Avatar editor + persistence (1 week)
 
-- [ ] `avatar_editor.tscn` (model picker + image crop)
-- [ ] `set_avatar` round-trip
-- [ ] Avatar cache on client by `user_id`
-- [ ] Render avatars in lobby + match
-- [ ] Postgres `avatars` table
+- [x] `avatar_editor.tscn` (model picker + image crop; done 2026-05-30 — model color picker, file upload, zoom/nudge crop, 32×32 PNG head)
+- [x] `set_avatar` round-trip (done 2026-05-30 — WS request validates, persists, replies `set_avatar_ok`, broadcasts `avatar_updated`)
+- [x] Avatar cache on client by `user_id` (done 2026-05-30 — `AvatarCache` autoload, hello/lobby snapshot hydration)
+- [x] Render avatars in lobby + match (done 2026-05-30 — reusable `AvatarPortrait`, lobby rows, play preview, local/remote match players)
+- [x] Postgres `avatars` table (done 2026-05-30 — `user_id`, model fields, base64 PNG head, `updated_at`)
 
 Done = your avatar follows you across sessions and devices.
 
+> [!check] Phase 6 verify (2026-05-30)
+> - `go test ./...`, `go vet ./...`, and `go build ./...` all clean.
+> - Godot GUT suite clean via `scripts/test.ps1` (7 tests, 10,341 asserts).
+
 ## Phase 7 — Reconnect handling (3 days)
 
-- [ ] Session re-attach on WS reconnect within 30 s
-- [ ] Snapshot replay on rejoin
-- [ ] Client-side reconnect UI (toast + retries)
+- [x] Session re-attach on WS reconnect within 30 s (done 2026-05-30 — socket loss marks players temporarily offline, explicit leave still exits immediately, timeout finalizes the old leave/host-promotion path)
+- [x] Snapshot replay on rejoin (done 2026-05-30 — server pushes `session_rejoined`, `lobby_state`, and `match_snapshot` with seed, collected orbs, placements, and peer states)
+- [x] Client-side reconnect UI (toast + retries; done 2026-05-30 — global toast, 1/2/5/10/10 second retry cadence, current match/lobby survives reattach)
 
 Done = network blip doesn't drop you from a match.
+
+> [!check] Phase 7 verify (2026-05-30)
+> - `go test ./...`, `go vet ./...`, and `go build ./...` all clean.
+> - Godot GUT suite clean via `scripts/test.ps1` (7 tests, 10,341 asserts).
 
 ## Phase 8 — Polish (1 week)
 

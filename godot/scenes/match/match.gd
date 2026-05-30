@@ -21,7 +21,7 @@ const ORB_PICKUP_RADIUS := 10.0
 const ELIMINATION_PADDING := 120.0
 const MATCH_FINISH_Y := 24.0
 const PLAYER_SCENE: PackedScene = preload("res://scenes/match/player.tscn")
-const RESULTS_SCENE: PackedScene = preload("res://scenes/results/match_results.tscn")
+const RESULTS_SCENE := "res://scenes/results/match_results.tscn"
 
 @onready var _camera: Camera2D = %Camera
 @onready var _level_root: Node2D = %LevelRoot
@@ -43,6 +43,7 @@ var _status_text: String = ""
 
 func _ready() -> void:
 	var params: Dictionary = Session.match_params
+	AvatarCache.cache_players(Session.current_room_snapshot.get("players", []))
 	_your_player_id = String(params.get("your_player_id", Session.user_id))
 	if _your_player_id.is_empty():
 		_your_player_id = Session.user_id
@@ -167,6 +168,10 @@ func _on_control_message(envelope: Dictionary) -> void:
 			_handle_orb_collected(payload)
 		"match_results":
 			_handle_match_results(payload)
+		"avatar_updated":
+			_handle_avatar_updated(payload)
+		"match_snapshot":
+			_handle_match_snapshot(payload)
 
 func _handle_peer_state(payload: Dictionary) -> void:
 	var user_id: String = String(payload.get("user_id", ""))
@@ -192,6 +197,35 @@ func _handle_peer_left(payload: Dictionary) -> void:
 		peer.queue_free()
 	_peers.erase(user_id)
 	_update_debug_label()
+
+func _handle_avatar_updated(payload: Dictionary) -> void:
+	var user_id := String(payload.get("user_id", ""))
+	if user_id.is_empty():
+		return
+	AvatarCache.set_avatar(user_id, payload)
+
+func _handle_match_snapshot(payload: Dictionary) -> void:
+	if payload.get("snapshot") is Dictionary:
+		Session.set_lobby_snapshot(payload.get("snapshot"))
+	if payload.get("peer_states") is Array:
+		for state_value in payload.get("peer_states"):
+			if state_value is Dictionary:
+				_handle_peer_state(state_value)
+	if payload.get("collected_orbs") is Array:
+		for orb_id_value in payload.get("collected_orbs"):
+			_mark_orb_collected(String(orb_id_value))
+	if payload.get("placements") is Array:
+		var placements: Array = payload.get("placements")
+		if not placements.is_empty():
+			_apply_placement_status(placements)
+			_update_debug_label()
+	if bool(payload.get("final", false)):
+		_match_finished = true
+		Session.match_results = {
+			"placements": payload.get("placements", []),
+			"final": true,
+		}
+		SceneManager.replace(RESULTS_SCENE)
 
 func _check_orb_pickups() -> void:
 	if _local_done:

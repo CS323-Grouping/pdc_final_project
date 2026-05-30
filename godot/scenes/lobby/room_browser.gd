@@ -13,9 +13,9 @@ extends Control
 ## updates to us once we leave the browser. Server also auto-unsubscribes on
 ## disconnect.
 
-const CREATE_ROOM_SCENE: PackedScene = preload("res://scenes/lobby/create_room.tscn")
-const JOIN_BY_CODE_SCENE: PackedScene = preload("res://scenes/lobby/join_by_code.tscn")
-const LOBBY_SCENE: PackedScene = preload("res://scenes/lobby/skyward_lobby.tscn")
+const CREATE_ROOM_SCENE := "res://scenes/lobby/create_room.tscn"
+const JOIN_BY_CODE_SCENE := "res://scenes/lobby/join_by_code.tscn"
+const LOBBY_SCENE := "res://scenes/lobby/skyward_lobby.tscn"
 const ROOM_CARD_SCENE: PackedScene = preload("res://scenes/lobby/room_card.tscn")
 
 var _busy: bool = false
@@ -24,22 +24,32 @@ func _ready() -> void:
 	%CreateRoomButton.pressed.connect(_on_create_pressed)
 	%JoinByCodeButton.pressed.connect(_on_join_pressed)
 	NetworkBackend.control_message.connect(_on_control_message)
+	NetworkBackend.reconnect_succeeded.connect(_on_reconnect_succeeded)
 	_set_status("")
 	_render_list([])
 
-	if not NetworkBackend.is_control_connected():
-		_set_status("Not connected to server")
-		return
-
-	var err := NetworkBackend.send_envelope({"t": "subscribe_room_list"})
-	if err != OK:
-		_set_status("Subscribe failed (%d)" % err)
+	_subscribe()
 
 func _exit_tree() -> void:
 	if NetworkBackend.control_message.is_connected(_on_control_message):
 		NetworkBackend.control_message.disconnect(_on_control_message)
+	if NetworkBackend.reconnect_succeeded.is_connected(_on_reconnect_succeeded):
+		NetworkBackend.reconnect_succeeded.disconnect(_on_reconnect_succeeded)
 	if NetworkBackend.is_control_connected():
 		NetworkBackend.send_envelope({"t": "unsubscribe_room_list"})
+
+func _on_reconnect_succeeded() -> void:
+	_subscribe()
+
+func _subscribe() -> void:
+	if not NetworkBackend.is_control_connected():
+		_set_status("Not connected to server")
+		return
+	var err := NetworkBackend.send_envelope({"t": "subscribe_room_list"})
+	if err != OK:
+		_set_status("Subscribe failed (%d)" % err)
+	else:
+		_set_status("")
 
 func _on_control_message(envelope: Dictionary) -> void:
 	if String(envelope.get("t", "")) != "room_list_update":

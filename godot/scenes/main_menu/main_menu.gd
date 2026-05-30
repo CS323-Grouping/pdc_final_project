@@ -5,8 +5,8 @@ extends Control
 ## Main entry screen using the exported 320x180 menu art. Play opens the
 ## profile/mode selection screen; settings and exit keep their direct actions.
 
-const SETTINGS_SCENE: PackedScene = preload("res://scenes/main_menu/settings.tscn")
-const PLAY_OPTIONS_SCENE: PackedScene = preload("res://scenes/main_menu/play_options.tscn")
+const SETTINGS_SCENE := "res://scenes/main_menu/settings.tscn"
+const PLAY_OPTIONS_SCENE := "res://scenes/main_menu/play_options.tscn"
 
 const HELP_PAGES: Array[String] = [
 	"Reach the top before the other players.\n\nMove with A/D or Left/Right.\nJump with Space, W, or Up.",

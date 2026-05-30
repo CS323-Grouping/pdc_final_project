@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/CS-StudentGroup/pdc_final_project/server/internal/avatars"
 	"github.com/oklog/ulid/v2"
 )
 
@@ -32,7 +33,8 @@ const (
 	DefaultLevel         = 1
 	DefaultEnvironment   = "sky"
 
-	MatchFinishY = 24.0
+	MatchFinishY       = 24.0
+	ReconnectGraceTime = 30 * time.Second
 )
 
 const codeAlphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
@@ -57,6 +59,7 @@ type Sender interface {
 type Client struct {
 	UserID      string
 	DisplayName string
+	Avatar      avatars.Payload
 	Sender      Sender
 }
 
@@ -66,6 +69,7 @@ type Registry struct {
 	codes       map[string]string
 	userRoom    map[string]string
 	clients     map[string]*Client
+	reconnects  map[string]*time.Timer
 	subscribers map[string]struct{} // user_ids currently watching the public room browser
 }
 
@@ -85,17 +89,21 @@ type Room struct {
 	CreatedAt      time.Time
 	LastActivity   time.Time
 	MatchSeed      int64
+	MatchStartAtMS int64
 	MatchPositions map[string]MatchPlayerState
 	CollectedOrbs  map[string]string
 	Placements     []MatchPlacement
 }
 
 type Player struct {
-	UserID      string `json:"user_id"`
-	DisplayName string `json:"display_name"`
-	Ready       bool   `json:"ready"`
-	IsHost      bool   `json:"is_host"`
-	JoinedAt    string `json:"joined_at"`
+	UserID                 string          `json:"user_id"`
+	DisplayName            string          `json:"display_name"`
+	Ready                  bool            `json:"ready"`
+	IsHost                 bool            `json:"is_host"`
+	JoinedAt               string          `json:"joined_at"`
+	Avatar                 avatars.Payload `json:"avatar"`
+	Connected              bool            `json:"connected"`
+	ReconnectUntilServerTS int64           `json:"reconnect_until_server_ts,omitempty"`
 }
 
 type Snapshot struct {
@@ -185,6 +193,33 @@ type MatchResultsPayload struct {
 	Final      bool             `json:"final"`
 }
 
+type SessionRejoinedPayload struct {
+	RoomID   string   `json:"room_id"`
+	State    string   `json:"state"`
+	Snapshot Snapshot `json:"snapshot"`
+}
+
+type MatchSnapshotPayload struct {
+	Level           int                `json:"level"`
+	EnvironmentID   string             `json:"environment_id"`
+	Seed            int64              `json:"seed"`
+	StartAtServerTS int64              `json:"start_at_server_ts"`
+	YourPlayerID    string             `json:"your_player_id"`
+	RoomID          string             `json:"room_id"`
+	RoomState       string             `json:"room_state"`
+	CollectedOrbs   []string           `json:"collected_orbs"`
+	Placements      []MatchPlacement   `json:"placements"`
+	Final           bool               `json:"final"`
+	PeerStates      []MatchPlayerState `json:"peer_states"`
+	Snapshot        Snapshot           `json:"snapshot"`
+}
+
+type AvatarUpdatedPayload struct {
+	UserID     string        `json:"user_id"`
+	Model      avatars.Model `json:"model"`
+	HeadPNGB64 string        `json:"head_png_b64,omitempty"`
+}
+
 // BrowserEntry is the per-room shape pushed in room_list_update. Stays small
 // on purpose — the browser only needs enough to decide which room to join,
 // not the full lobby snapshot.
@@ -204,6 +239,7 @@ func NewRegistry() *Registry {
 		codes:       make(map[string]string),
 		userRoom:    make(map[string]string),
 		clients:     make(map[string]*Client),
+		reconnects:  make(map[string]*time.Timer),
 		subscribers: make(map[string]struct{}),
 	}
 }
@@ -211,7 +247,18 @@ func NewRegistry() *Registry {
 func (r *Registry) RegisterClient(client *Client) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	client.Avatar = avatars.NormalizeOrDefault(client.Avatar)
 	r.clients[client.UserID] = client
+	r.stopReconnectTimerLocked(client.UserID)
+	if room := r.rooms[r.userRoom[client.UserID]]; room != nil {
+		if player := room.Players[client.UserID]; player != nil {
+			player.DisplayName = client.DisplayName
+			player.Avatar = client.Avatar
+			player.Connected = true
+			player.ReconnectUntilServerTS = 0
+			room.LastActivity = time.Now().UTC()
+		}
+	}
 }
 
 func (r *Registry) UnregisterClient(userID string) {
@@ -220,11 +267,35 @@ func (r *Registry) UnregisterClient(userID string) {
 	roomID := r.userRoom[userID]
 	var sends []sendOp
 	if roomID != "" {
-		sends = r.leaveLocked(userID)
+		sends = r.markDisconnectedLocked(userID)
 	}
 	delete(r.clients, userID)
 	r.mu.Unlock()
 	runSends(sends)
+}
+
+func (r *Registry) ReplaySession(ctx context.Context, userID string) {
+	var sends []sendOp
+
+	r.mu.Lock()
+	client := r.clients[userID]
+	room := r.rooms[r.userRoom[userID]]
+	if client != nil && room != nil && room.Players[userID] != nil {
+		snapshot := room.snapshot()
+		sends = append(sends, reply(client, "session_rejoined", "", SessionRejoinedPayload{
+			RoomID:   room.ID,
+			State:    room.State,
+			Snapshot: snapshot,
+		}))
+		sends = append(sends, reply(client, "lobby_state", "", snapshot))
+		if room.State == StateInMatch || room.State == StateResults {
+			sends = append(sends, reply(client, "match_snapshot", "", room.matchSnapshotFor(userID, snapshot)))
+		}
+		sends = append(sends, r.broadcastLockedExcept(room, "lobby_state", "", snapshot, userID)...)
+	}
+	r.mu.Unlock()
+
+	runSendsWithContext(ctx, sends)
 }
 
 func (r *Registry) Handle(ctx context.Context, client *Client, msgType, requestID string, raw json.RawMessage) {
@@ -258,6 +329,33 @@ func (r *Registry) Handle(ctx context.Context, client *Client, msgType, requestI
 		sends = r.handleUnsubscribeRoomListLocked(client, requestID)
 	default:
 		sends = []sendOp{reply(client, "err", requestID, errorPayload("unknown_message", "unknown control message: "+msgType))}
+	}
+	r.mu.Unlock()
+
+	runSendsWithContext(ctx, sends)
+}
+
+func (r *Registry) SetAvatarForClient(ctx context.Context, userID string, avatar avatars.Payload) {
+	avatar = avatars.NormalizeOrDefault(avatar)
+	var sends []sendOp
+
+	r.mu.Lock()
+	if client := r.clients[userID]; client != nil {
+		client.Avatar = avatar
+	}
+	room := r.rooms[r.userRoom[userID]]
+	if room != nil {
+		if player := room.Players[userID]; player != nil {
+			player.Avatar = avatar
+			room.LastActivity = time.Now().UTC()
+			payload := AvatarUpdatedPayload{
+				UserID:     userID,
+				Model:      avatar.Model,
+				HeadPNGB64: avatar.HeadPNGB64,
+			}
+			sends = append(sends, r.broadcastLocked(room, "avatar_updated", "", payload)...)
+			sends = append(sends, r.broadcastLobbyStateLocked(room)...)
+		}
 	}
 	r.mu.Unlock()
 
@@ -391,10 +489,11 @@ func (r *Registry) handleStartMatchLocked(client *Client, requestID string) []se
 	room.LastActivity = time.Now().UTC()
 	seed := generateMatchSeed()
 	room.MatchSeed = seed
+	startAt := time.Now().UnixMilli() + 1500 // 1.5s countdown until match logic begins
+	room.MatchStartAtMS = startAt
 	room.MatchPositions = make(map[string]MatchPlayerState, len(room.Players))
 	room.CollectedOrbs = make(map[string]string)
 	room.Placements = nil
-	startAt := time.Now().UnixMilli() + 1500 // 1.5s countdown until match logic begins
 
 	sends := []sendOp{}
 	if requestID != "" {
@@ -544,6 +643,7 @@ func (r *Registry) handleRequestRematchLocked(client *Client, requestID string) 
 
 	room.State = StateWaiting
 	room.MatchSeed = 0
+	room.MatchStartAtMS = 0
 	room.MatchPositions = nil
 	room.CollectedOrbs = nil
 	room.Placements = nil
@@ -684,6 +784,10 @@ func (r *Registry) addPlayerLocked(room *Room, client *Client) {
 	if existing := room.Players[client.UserID]; existing != nil {
 		existing.DisplayName = client.DisplayName
 		existing.IsHost = client.UserID == room.HostUserID
+		existing.Avatar = avatars.NormalizeOrDefault(client.Avatar)
+		existing.Connected = true
+		existing.ReconnectUntilServerTS = 0
+		r.stopReconnectTimerLocked(client.UserID)
 		r.userRoom[client.UserID] = room.ID
 		return
 	}
@@ -692,6 +796,8 @@ func (r *Registry) addPlayerLocked(room *Room, client *Client) {
 		DisplayName: client.DisplayName,
 		IsHost:      client.UserID == room.HostUserID,
 		JoinedAt:    time.Now().UTC().Format(time.RFC3339),
+		Avatar:      avatars.NormalizeOrDefault(client.Avatar),
+		Connected:   true,
 	}
 	room.Players[client.UserID] = player
 	room.JoinOrder = append(room.JoinOrder, client.UserID)
@@ -700,6 +806,7 @@ func (r *Registry) addPlayerLocked(room *Room, client *Client) {
 }
 
 func (r *Registry) leaveLocked(userID string) []sendOp {
+	r.stopReconnectTimerLocked(userID)
 	roomID := r.userRoom[userID]
 	if roomID == "" {
 		return nil
@@ -745,6 +852,58 @@ func (r *Registry) leaveLocked(userID string) []sendOp {
 	}
 	sends = append(sends, r.broadcastLobbyStateLocked(room)...)
 	return sends
+}
+
+func (r *Registry) markDisconnectedLocked(userID string) []sendOp {
+	room := r.rooms[r.userRoom[userID]]
+	if room == nil {
+		return nil
+	}
+	player := room.Players[userID]
+	if player == nil {
+		return nil
+	}
+	deadline := time.Now().UTC().Add(ReconnectGraceTime)
+	player.Connected = false
+	player.ReconnectUntilServerTS = deadline.UnixMilli()
+	room.LastActivity = time.Now().UTC()
+	r.stopReconnectTimerLocked(userID)
+	r.reconnects[userID] = time.AfterFunc(ReconnectGraceTime, func() {
+		r.finalizeReconnectTimeout(userID)
+	})
+	return r.broadcastLobbyStateLocked(room)
+}
+
+func (r *Registry) stopReconnectTimerLocked(userID string) {
+	timer := r.reconnects[userID]
+	if timer != nil {
+		timer.Stop()
+		delete(r.reconnects, userID)
+	}
+}
+
+func (r *Registry) finalizeReconnectTimeout(userID string) {
+	var sends []sendOp
+
+	r.mu.Lock()
+	if client := r.clients[userID]; client == nil {
+		room := r.rooms[r.userRoom[userID]]
+		player := (*Player)(nil)
+		if room != nil {
+			player = room.Players[userID]
+		}
+		if room != nil && player != nil && !player.Connected {
+			sends = append(sends, r.leaveLocked(userID)...)
+			sends = append(sends, r.broadcastRoomListUpdateLocked()...)
+		} else {
+			delete(r.reconnects, userID)
+		}
+	} else {
+		delete(r.reconnects, userID)
+	}
+	r.mu.Unlock()
+
+	runSends(sends)
 }
 
 func (r *Registry) broadcastLobbyStateLocked(room *Room) []sendOp {
@@ -865,6 +1024,40 @@ func (room *Room) snapshot() Snapshot {
 		EnvironmentID: room.EnvironmentID,
 		Capacity:      room.Capacity,
 		State:         room.State,
+	}
+}
+
+func (room *Room) matchSnapshotFor(userID string, snapshot Snapshot) MatchSnapshotPayload {
+	collected := make([]string, 0, len(room.CollectedOrbs))
+	for orbID := range room.CollectedOrbs {
+		collected = append(collected, orbID)
+	}
+	sort.Strings(collected)
+
+	peerStates := make([]MatchPlayerState, 0, len(room.MatchPositions))
+	for peerID, state := range room.MatchPositions {
+		if peerID == userID {
+			continue
+		}
+		peerStates = append(peerStates, state)
+	}
+	sort.Slice(peerStates, func(i, j int) bool {
+		return peerStates[i].UserID < peerStates[j].UserID
+	})
+
+	return MatchSnapshotPayload{
+		Level:           room.Level,
+		EnvironmentID:   room.EnvironmentID,
+		Seed:            room.MatchSeed,
+		StartAtServerTS: room.MatchStartAtMS,
+		YourPlayerID:    userID,
+		RoomID:          room.ID,
+		RoomState:       room.State,
+		CollectedOrbs:   collected,
+		Placements:      append([]MatchPlacement(nil), room.Placements...),
+		Final:           room.State == StateResults,
+		PeerStates:      peerStates,
+		Snapshot:        snapshot,
 	}
 }
 

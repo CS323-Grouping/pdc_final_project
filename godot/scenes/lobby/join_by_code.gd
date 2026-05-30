@@ -5,7 +5,7 @@ extends Control
 ## Phase 2 delivers the real 6-char input (auto-uppercase, charset-restricted
 ## per `Networking - Room Model.md`) and the join_room WS message.
 
-const LOBBY_SCENE: PackedScene = preload("res://scenes/lobby/skyward_lobby.tscn")
+const LOBBY_SCENE := "res://scenes/lobby/skyward_lobby.tscn"
 
 var _busy := false
 

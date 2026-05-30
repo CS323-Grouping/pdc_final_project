@@ -9,7 +9,7 @@ extends Control
 ## lobby scene (`replace` so BACK from the lobby returns to the browser, not
 ## here).
 
-const LOBBY_SCENE: PackedScene = preload("res://scenes/lobby/skyward_lobby.tscn")
+const LOBBY_SCENE := "res://scenes/lobby/skyward_lobby.tscn"
 
 var _busy := false
 

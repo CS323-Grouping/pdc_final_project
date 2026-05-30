@@ -89,6 +89,19 @@ CREATE TABLE IF NOT EXISTS room_players (
 CREATE INDEX IF NOT EXISTS room_players_user_id_idx ON room_players (user_id);
 
 -- ---------------------------------------------------------------------------
+-- avatars
+-- ---------------------------------------------------------------------------
+-- Phase 6 account avatar profile. The head image is a tiny cropped PNG encoded
+-- as base64 so it can ride the existing JSON control WebSocket contract.
+CREATE TABLE IF NOT EXISTS avatars (
+    user_id text PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    model_type text NOT NULL DEFAULT 'default',
+    model_color text NOT NULL DEFAULT 'Blue',
+    head_png_b64 text NOT NULL DEFAULT '',
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- ---------------------------------------------------------------------------
 -- updated_at trigger
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION touch_updated_at() RETURNS trigger AS $$
@@ -100,5 +113,10 @@ $$ LANGUAGE plpgsql;
 
 CREATE TRIGGER users_touch_updated_at
     BEFORE UPDATE ON users
+    FOR EACH ROW
+    EXECUTE FUNCTION touch_updated_at();
+
+CREATE TRIGGER avatars_touch_updated_at
+    BEFORE UPDATE ON avatars
     FOR EACH ROW
     EXECUTE FUNCTION touch_updated_at();
